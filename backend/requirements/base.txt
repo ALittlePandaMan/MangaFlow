@@ -9,5 +9,5 @@ numpy>=2.0,<2.3
 opencv-python-headless==4.10.0.84
 httpx>=0.27,<1
 cryptography>=43,<47
-fonttools>=4.54,<5
+fonttools>=4.63.0,<5
 PyYAML>=6.0,<7
