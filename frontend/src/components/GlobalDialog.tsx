@@ -5,7 +5,7 @@ import {createPortal} from 'react-dom'
 import {buttonClass, cn, iconButtonClass, primaryButtonClass, scrollbarClass} from '../ui'
 
 export type DialogTone = 'info' | 'success' | 'warning' | 'danger'
-export type ContentDialogSize = 'small' | 'medium' | 'large'
+export type ContentDialogSize = 'small' | 'medium' | 'large' | 'xlarge'
 
 export interface DialogOptions {
   title?: string
@@ -167,7 +167,7 @@ export function GlobalDialogProvider({children}: {children: ReactNode}) {
     {active && createPortal(<div className="fixed inset-0 z-[200] grid animate-[dialog-backdrop-in_.16s_ease-out] place-items-center bg-[rgb(7_9_8/.76)] p-6 backdrop-blur-md" onMouseDown={event => {
       if (event.target === event.currentTarget && (active.mode !== 'content' || active.options.dismissible)) close(false, active.id)
     }}>
-      <div ref={dialogRef} className={cn('relative max-h-[calc(100vh-48px)] animate-[dialog-card-in_.2s_cubic-bezier(.2,.8,.2,1)] overflow-hidden rounded-2xl bg-surface text-ink shadow-dialog', active.mode === 'content' ? cn('flex w-[min(620px,calc(100vw-48px))] flex-col', active.options.size === 'small' && 'w-[min(420px,calc(100vw-48px))]', active.options.size === 'large' && 'w-[min(760px,calc(100vw-48px))]') : 'w-[min(440px,calc(100vw-48px))]')} role={active.mode === 'alert' ? 'alertdialog' : 'dialog'} aria-modal="true" aria-labelledby="global-dialog-title" aria-describedby={active.mode === 'content' ? active.options.description ? 'global-dialog-description' : undefined : 'global-dialog-message'}>
+      <div ref={dialogRef} className={cn('relative max-h-[calc(100vh-48px)] animate-[dialog-card-in_.2s_cubic-bezier(.2,.8,.2,1)] overflow-hidden rounded-2xl bg-surface text-ink shadow-dialog', active.mode === 'content' ? cn('flex w-[min(620px,calc(100vw-48px))] flex-col', active.options.size === 'small' && 'w-[min(420px,calc(100vw-48px))]', active.options.size === 'large' && 'w-[min(760px,calc(100vw-48px))]', active.options.size === 'xlarge' && 'w-[min(960px,calc(100vw-48px))]') : 'w-[min(440px,calc(100vw-48px))]')} role={active.mode === 'alert' ? 'alertdialog' : 'dialog'} aria-modal="true" aria-labelledby="global-dialog-title" aria-describedby={active.mode === 'content' ? active.options.description ? 'global-dialog-description' : undefined : 'global-dialog-message'}>
         {(active.mode !== 'content' || active.options.dismissible) && <button data-dialog-close className={cn(iconButtonClass, 'absolute right-3 top-3 z-10 border-transparent bg-transparent text-muted hover:translate-y-0 hover:border-line hover:text-ink')} aria-label="关闭" onClick={() => close(false, active.id)}><X size={17}/></button>}
         {active.mode === 'content' ? <>
           <header className="shrink-0 border-b border-line-subtle bg-surface pb-4 pl-6 pr-14 pt-5"><div><span className={cn('mb-1 block font-mono text-[9px] font-medium leading-[normal] tracking-[2px]', toneTextClass(active.options.tone))}>MANGAFLOW · DIALOG</span><h2 className="m-0 text-xl leading-tight" id="global-dialog-title">{active.options.title}</h2>{active.options.description && <p className="mb-0 mt-2 text-[11px] leading-[1.55] text-muted" id="global-dialog-description">{active.options.description}</p>}</div></header>

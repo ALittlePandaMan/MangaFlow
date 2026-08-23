@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { Tool, ViewMode } from '../types'
+import type { Tool, ViewMode } from '../../types'
 
 export interface LayerVisibility {
   original: boolean
@@ -42,7 +42,18 @@ export const useEditorStore = create<EditorState>((set) => ({
   brushSize: 28,
   brushHardness: 0.8,
   setView: view => set({ view, layers: { ...viewLayers[view] } }),
-  setTool: tool => set({ tool }),
+  setTool: tool => set(state => {
+    const createsRegion = tool === 'rectangle' || tool === 'polygon' || tool === 'lasso'
+    return {
+      tool,
+      // A polygon draft is drawn independently of the detection layer, while
+      // completed regions belong to that layer. Keep it visible so closing a
+      // draft cannot make a newly-created region appear to vanish.
+      layers: createsRegion && !state.layers.detection
+        ? {...state.layers, detection: true}
+        : state.layers,
+    }
+  }),
   setZoom: zoom => set({ zoom: Math.min(6, Math.max(0.05, zoom)) }),
   select: (id, additive = false) => set(state => {
     if (!id) return { selectedIds: [] }

@@ -8,9 +8,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.api import fonts, images, models, projects, regions, review, tasks
+from app.api.router import api_router
 from app.core.config import get_settings
-from app.core.database import initialize_database
+from app.core.database import SessionLocal, initialize_database
+from app.services.model_manifest import (
+    apply_model_manifest,
+    load_model_manifest,
+    persist_model_settings,
+    preload_manifest_models,
+)
 from app.storage import get_storage
 from app.tasks import task_manager
 
@@ -19,11 +25,52 @@ logging.basicConfig(
     level=logging.DEBUG if settings.debug else logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
+logger = logging.getLogger(__name__)
+
+
+def provision_models_from_manifest() -> None:
+    """Seed portable defaults and warm local model caches before accepting work."""
+    manifest_path = settings.model_manifest_path
+    if manifest_path is None:
+        return
+    try:
+        manifest = load_model_manifest(manifest_path)
+        with SessionLocal() as db:
+            applied = apply_model_manifest(db, manifest)
+            preload = preload_manifest_models(db, manifest) if settings.auto_provision_models else []
+            persist_model_settings(
+                db,
+                manifest_path,
+                environment_path=settings.environment_file_path,
+            )
+        for item in applied:
+            logger.info(
+                "Model manifest %s: %s -> %s (%s)",
+                item["action"],
+                item["kind"],
+                item["provider"],
+                manifest_path,
+            )
+        for item in preload:
+            if item["status"] in {"error", "dependency_missing", "missing"}:
+                logger.error(
+                    "Model preload failed for %s/%s: %s",
+                    item["kind"],
+                    item["provider"],
+                    item["error"],
+                )
+            elif item["status"] == "ready":
+                logger.info("Model preload ready: %s/%s", item["kind"], item["provider"])
+    except Exception:
+        # Keep the API available so the required-setup screen can explain and
+        # repair an invalid manifest or a provider download failure.
+        logger.exception("Unable to apply model manifest %s", manifest_path)
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     initialize_database()
+    provision_models_from_manifest()
     task_manager.start()
     task_manager.recover_interrupted()
     yield
@@ -46,8 +93,7 @@ app.add_middleware(
 )
 app.mount("/media", StaticFiles(directory=get_storage().root), name="media")
 
-for router in (projects.router, images.router, regions.router, tasks.router, models.router, fonts.router, review.router):
-    app.include_router(router, prefix=settings.api_prefix)
+app.include_router(api_router, prefix=settings.api_prefix)
 
 
 @app.get("/health", tags=["system"])

@@ -8,23 +8,15 @@ from typing import Any
 
 from PIL import ImageFont
 
-VERTICAL_FORMS = str.maketrans(
-    {
-        "（": "︵",
-        "）": "︶",
-        "(": "︵",
-        ")": "︶",
-        "【": "︻",
-        "】": "︼",
-        "「": "﹁",
-        "」": "﹂",
-        "『": "﹃",
-        "』": "﹄",
-        "…": "︙",
-        "—": "︱",
-    }
-)
-ROTATED_VERTICAL_PUNCTUATION = set("、。，．！？：；ー～〜")
+VERTICAL_FORM_MAP = {
+    "（": "︵", "）": "︶", "(": "︵", ")": "︶",
+    "【": "︻", "】": "︼", "「": "﹁", "」": "﹂", "『": "﹃", "』": "﹄",
+    ",": "︐", "，": "︐", "、": "︑", ".": "︒", "．": "︒", "。": "︒",
+    ":": "︓", "：": "︓", ";": "︔", "；": "︔",
+    "!": "︕", "！": "︕", "?": "︖", "？": "︖",
+    "…": "︙", "—": "︱", "ー": "︱", "～": "︴", "〜": "︴",
+}
+VERTICAL_FORMS = str.maketrans(VERTICAL_FORM_MAP)
 
 
 @dataclass(slots=True)
@@ -274,8 +266,11 @@ class MangaLayoutEngine:
 
     @staticmethod
     def _rotate_in_vertical(character: str) -> bool:
-        if character in ROTATED_VERTICAL_PUNCTUATION:
-            return True
+        # Characters with Unicode vertical presentation forms must stay
+        # upright. Rotating them produces a sideways question/exclamation
+        # mark in exported vertical dialogue.
+        if character in VERTICAL_FORM_MAP:
+            return False
         category = unicodedata.category(character)
         return character.isascii() and (character.isalnum() or category.startswith("P"))
 

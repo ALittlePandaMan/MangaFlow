@@ -4,6 +4,8 @@ from io import BytesIO
 from pathlib import Path
 
 import pytest
+from app.core.database import SessionLocal
+from app.models import ImagePage, ProcessingTask
 from app.pipeline.processor import PipelineProcessor
 from PIL import Image
 
@@ -34,16 +36,7 @@ def test_project_page_and_region_crud(client) -> None:
     assert edited_project.status_code == 200, edited_project.text
     assert edited_project.json()["name"] == "第一话·修订"
     assert edited_project.json()["description"] == "项目说明"
-    cover = client.put(
-        f"/api/projects/{project['id']}/cover",
-        files={"file": ("cover.png", image_file(), "image/png")},
-    )
-    assert cover.status_code == 200, cover.text
-    assert cover.json()["cover_url"].startswith("/media/")
-    assert client.get(cover.json()["cover_url"]).status_code == 200
-    removed_cover = client.delete(f"/api/projects/{project['id']}/cover")
-    assert removed_cover.status_code == 200, removed_cover.text
-    assert removed_cover.json()["cover_url"] is None
+    assert project["cover_url"] is None
     upload = client.post(
         f"/api/projects/{project['id']}/images",
         files={"files": ("page-001.png", image_file(), "image/png")},
@@ -52,6 +45,9 @@ def test_project_page_and_region_crud(client) -> None:
     page = upload.json()[0]
     assert page["width"] == 320 and page["height"] == 480
     assert page["original_url"].startswith("/media/")
+    project_with_cover = client.get(f"/api/projects/{project['id']}")
+    assert project_with_cover.status_code == 200, project_with_cover.text
+    assert project_with_cover.json()["cover_url"].startswith(page["original_url"].split("?", 1)[0])
     created = client.post(
         f"/api/images/{page['id']}/regions",
         json={"bbox": [100, 40, 80, 140], "orientation": "vertical", "source_text": "こんにちは"},
@@ -62,6 +58,8 @@ def test_project_page_and_region_crud(client) -> None:
     assert len(region["polygon"]) == 4
     assert region["translated_bbox"] == region["bbox"]
     assert region["translated_polygon"] == region["polygon"]
+    assert region["perspective_warp"] is False
+    assert region["layout_data"]["manual"] is True
 
     translated_geometry = client.patch(
         f"/api/regions/{region['id']}",
@@ -78,6 +76,18 @@ def test_project_page_and_region_crud(client) -> None:
         [245.0, 145.0],
         [125.0, 145.0],
     ]
+    with SessionLocal() as db:
+        persisted_page = db.get(ImagePage, page["id"])
+        assert persisted_page is not None
+        persisted_page.rendered_path = "projects/cached-render.png"
+        persisted_page.text_layer_path = "projects/cached-layer.png"
+        db.commit()
+    perspective = client.patch(f"/api/regions/{region['id']}", json={"perspective_warp": True})
+    assert perspective.status_code == 200, perspective.text
+    assert perspective.json()["perspective_warp"] is True
+    invalidated_page = client.get(f"/api/images/{page['id']}").json()
+    assert invalidated_page["rendered_url"] is None
+    assert invalidated_page["text_layer_url"] is None
     updated = client.patch(f"/api/regions/{region['id']}", json={"translated_text": "你好", "locked": True})
     assert updated.status_code == 200
     assert updated.json()["translated_text"] == "你好"
@@ -113,6 +123,56 @@ def test_project_page_and_region_crud(client) -> None:
     assert revisions.status_code == 200 and len(revisions.json()) >= 2
 
 
+def test_batch_recognition_only_enqueues_pages_without_completed_ocr(client, monkeypatch) -> None:
+    monkeypatch.setattr("app.api.tasks.task_manager.dispatch", lambda _task_id: None)
+    project = client.post("/api/projects", json={"name": "batch-unrecognized-only"}).json()
+    pages = client.post(
+        f"/api/projects/{project['id']}/images",
+        files=[
+            ("files", (f"page-{index}.png", image_file(), "image/png"))
+            for index in range(5)
+        ],
+    ).json()
+
+    for page, source_text in zip(pages[1:4], ["recognized", "recognized before later failure", ""], strict=True):
+        response = client.post(
+            f"/api/images/{page['id']}/regions",
+            json={"bbox": [40, 50, 80, 140], "source_text": source_text},
+        )
+        assert response.status_code == 201, response.text
+
+    with SessionLocal() as db:
+        db.get(ImagePage, pages[1]["id"]).status = "OCR_DONE"
+        db.get(ImagePage, pages[2]["id"]).status = "FAILED"
+        db.get(ImagePage, pages[3]["id"]).status = "FAILED"
+        db.commit()
+
+    exempt = client.patch(f"/api/images/{pages[4]['id']}/ocr-exempt", params={"exempt": True})
+    assert exempt.status_code == 200, exempt.text
+    assert exempt.json()["ocr_exempt"] is True
+
+    response = client.post(
+        f"/api/projects/{project['id']}/batch-process",
+        json={
+            "start_stage": "detection",
+            "end_stage": "ocr",
+            "force": False,
+            "only_unrecognized": True,
+            "image_ids": [page["id"] for page in pages],
+        },
+    )
+    assert response.status_code == 202, response.text
+    tasks = response.json()
+    assert {task["image_id"] for task in tasks} == {pages[0]["id"], pages[3]["id"]}
+
+    with SessionLocal() as db:
+        for task in tasks:
+            queued = db.get(ProcessingTask, task["id"])
+            assert queued is not None
+            queued.status = "CANCELLED"
+        db.commit()
+
+
 def test_image_page_can_be_reordered_and_deleted(client) -> None:
     project = client.post("/api/projects", json={"name": "page-management"}).json()
     pages = [
@@ -131,6 +191,8 @@ def test_image_page_can_be_reordered_and_deleted(client) -> None:
     assert reordered.status_code == 200, reordered.text
     listed = client.get(f"/api/projects/{project['id']}/images").json()
     assert [item["id"] for item in listed] == [pages[2]["id"], pages[1]["id"], pages[0]["id"]]
+    project_after_reorder = client.get(f"/api/projects/{project['id']}").json()
+    assert project_after_reorder["cover_url"].startswith(pages[2]["original_url"].split("?", 1)[0])
 
     deleted = client.delete(f"/api/images/{pages[1]['id']}")
 

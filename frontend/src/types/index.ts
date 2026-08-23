@@ -25,6 +25,7 @@ export interface ImagePage {
   status: string
   current_stage: string | null
   error_message: string | null
+  ocr_exempt: boolean
   original_url: string
   clean_url: string | null
   rendered_url: string | null
@@ -60,6 +61,7 @@ export interface TextRegion {
   line_spacing: number
   character_spacing: number
   rotation: number
+  perspective_warp: boolean
   opacity: number
   locked: boolean
   visible: boolean
@@ -116,8 +118,49 @@ export interface ModelBootstrapEntry {
   provider: string
   action: 'created' | 'updated' | 'kept'
   installed: boolean
-  status: 'configured' | 'ready' | 'dependency_missing' | 'error'
+  status: 'configured' | 'ready' | 'configuration_required' | 'dependency_missing' | 'error'
   error: string | null
+}
+
+export interface DeviceProfile {
+  platform: {
+    system: string
+    architecture: string
+  }
+  cpu: {
+    logical_cores: number
+    memory_gb: number | null
+  }
+  gpu: {
+    available: boolean
+    devices: Array<{
+      index: number
+      name: string
+      memory_gb: number
+      compute_capability: string
+    }>
+  }
+  runtimes: {
+    torch: {installed: boolean, cuda_available: boolean, version?: string, cuda_version?: string, error?: string}
+    paddle: {installed: boolean, cuda_available: boolean, version?: string, error?: string}
+  }
+  recommendation: {
+    profile: 'cpu' | 'gpu'
+    provider_devices: Record<string, string>
+    summary: string
+  }
+}
+
+export interface SetupStatus {
+  first_run: boolean
+  ready: boolean
+  validated: boolean
+  stages: Array<{
+    kind: string
+    provider: string | null
+    status: 'ready' | 'missing' | 'error'
+    message: string
+  }>
 }
 
 export interface ModelConfiguration {

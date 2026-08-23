@@ -2,7 +2,11 @@
 .env
 .env.*
 !.env.example
+config.yaml
 *.local
+
+# Project-local agent skills
+.agents/
 
 # Python environments and caches
 .venv/

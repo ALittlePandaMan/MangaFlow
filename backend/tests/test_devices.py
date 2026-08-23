@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import sys
+from types import SimpleNamespace
+
 from app.services import device
 
 
@@ -26,6 +29,12 @@ def test_paddle_falls_back_to_cpu_when_gpu_is_unavailable(monkeypatch) -> None:
     monkeypatch.setattr(device, "paddle_cuda_available", lambda: False)
     assert device.resolve_paddle_device("auto") == "cpu"
     assert device.resolve_paddle_device("gpu:0") == "cpu"
+
+
+def test_paddle_probe_does_not_break_setup_when_runtime_is_partially_initialized(monkeypatch) -> None:
+    monkeypatch.setitem(sys.modules, "paddle", SimpleNamespace())
+
+    assert device.paddle_cuda_available() is False
 
 
 def test_accelerator_error_detects_nested_cuda_failure() -> None:

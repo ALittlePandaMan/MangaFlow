@@ -12,9 +12,12 @@ from sqlalchemy.orm import Session, selectinload
 from app.api.helpers import image_read, project_read, require_project
 from app.core.config import get_settings
 from app.core.database import get_db
-from app.models import ImagePage, Project
+from app.models import ImagePage, ProcessingTask, Project
+from app.models.enums import TaskStatus
+from app.pipeline.processor import PipelineProcessor
 from app.schemas.domain import ExportRequest, ImageRead, ProjectCreate, ProjectRead, ProjectUpdate
-from app.services.exporting import export_project
+from app.services.exporting import export_project, import_project_archive
+from app.services.rendering.pillow_renderer import RENDER_OUTPUT_VERSION
 from app.storage import StorageError, get_storage
 
 router = APIRouter(tags=["projects"])
@@ -26,6 +29,25 @@ def create_project(payload: ProjectCreate, db: Session = Depends(get_db)) -> Pro
     db.add(project)
     db.commit()
     db.refresh(project)
+    return project_read(project)
+
+
+@router.post("/projects/import", response_model=ProjectRead, status_code=201)
+def import_project(file: UploadFile = File(...), db: Session = Depends(get_db)) -> ProjectRead:
+    if Path(file.filename or "").suffix.lower() != ".zip":
+        raise HTTPException(422, "请选择 MangaFlow 导出的 ZIP 项目包")
+    maximum = get_settings().max_upload_mb * 1024 * 1024 * 10
+    if file.size is not None and file.size > maximum:
+        raise HTTPException(413, "项目包体积超过导入限制")
+    try:
+        project = import_project_archive(
+            file.file,
+            db,
+            get_storage(),
+            maximum_uncompressed_bytes=maximum,
+        )
+    except StorageError as exc:
+        raise HTTPException(400, str(exc)) from exc
     return project_read(project)
 
 
@@ -50,40 +72,6 @@ def update_project(project_id: str, payload: ProjectUpdate, db: Session = Depend
     project = require_project(db, project_id)
     for field, value in payload.model_dump(exclude_unset=True).items():
         setattr(project, field, value)
-    db.commit()
-    db.refresh(project)
-    return project_read(project)
-
-
-@router.put("/projects/{project_id}/cover", response_model=ProjectRead)
-def upload_project_cover(
-    project_id: str,
-    file: UploadFile = File(...),
-    db: Session = Depends(get_db),
-) -> ProjectRead:
-    project = require_project(db, project_id)
-    maximum = get_settings().max_upload_mb * 1024 * 1024
-    if file.size is not None and file.size > maximum:
-        raise HTTPException(400, f"Cover exceeds the {get_settings().max_upload_mb} MB limit")
-    try:
-        project.cover_path = get_storage().save_project_cover(
-            project_id,
-            file.filename or "cover.png",
-            file.file,
-        )
-        db.commit()
-        db.refresh(project)
-        return project_read(project)
-    except StorageError as exc:
-        raise HTTPException(400, str(exc)) from exc
-
-
-@router.delete("/projects/{project_id}/cover", response_model=ProjectRead)
-def delete_project_cover(project_id: str, db: Session = Depends(get_db)) -> ProjectRead:
-    project = require_project(db, project_id)
-    if project.cover_path:
-        get_storage().absolute(project.cover_path).unlink(missing_ok=True)
-    project.cover_path = None
     db.commit()
     db.refresh(project)
     return project_read(project)
@@ -213,5 +201,53 @@ def export(project_id: str, payload: ExportRequest, db: Session = Depends(get_db
     )
     if project is None:
         raise HTTPException(404, "Project not found")
-    archive = export_project(project, payload.formats, get_storage())
-    return FileResponse(archive, filename=f"{project.name}-export.zip", media_type="application/zip")
+    storage = get_storage()
+    rendered_formats = {"translated", "text_layer"}.intersection(payload.formats)
+    pages_to_render = [
+        page
+        for page in project.pages
+        if (
+            "translated" in rendered_formats
+            and (not page.rendered_path or not storage.absolute(page.rendered_path).is_file())
+        )
+        or (
+            "text_layer" in rendered_formats
+            and (not page.text_layer_path or not storage.absolute(page.text_layer_path).is_file())
+        )
+        or (
+            bool(rendered_formats)
+            and any(
+                region.visible
+                and bool(region.translated_text.strip())
+                and (region.layout_data or {}).get("render_output_version") != RENDER_OUTPUT_VERSION
+                for region in page.regions
+            )
+        )
+    ]
+    if pages_to_render:
+        active_task = db.scalar(
+            select(ProcessingTask.id).where(
+                ProcessingTask.project_id == project.id,
+                ProcessingTask.status.in_(
+                    [TaskStatus.QUEUED.value, TaskStatus.RUNNING.value, TaskStatus.PAUSED.value]
+                ),
+            )
+        )
+        if active_task:
+            raise HTTPException(409, "Wait for the current processing task to finish before exporting")
+        processor = PipelineProcessor(db)
+        try:
+            for page in pages_to_render:
+                # Region/style edits intentionally invalidate both cached
+                # outputs. Rebuild them from the latest database state so an
+                # export cannot silently omit a translated image or text layer.
+                processor.render(page, None, region_id=None)
+            db.commit()
+        except Exception as exc:
+            db.rollback()
+            raise HTTPException(500, f"Could not rebuild translated output for export: {exc}") from exc
+    archive = export_project(project, payload.formats, storage)
+    requested = set(payload.formats)
+    export_kind = "source-project" if "project" in requested else "translated" if "translated" in requested else "clean" if "clean" in requested else "export"
+    safe_name = "".join(character for character in project.name if character.isalnum() or character in "-_. ").strip()[:80] or "mangaflow"
+    return FileResponse(archive, filename=f"{safe_name}-{export_kind}.zip", media_type="application/zip")

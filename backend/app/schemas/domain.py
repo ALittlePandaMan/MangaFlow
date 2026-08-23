@@ -54,6 +54,7 @@ class ImageRead(ORMModel):
     status: str
     current_stage: str | None
     error_message: str | None
+    ocr_exempt: bool = False
     original_url: str | None = None
     clean_url: str | None = None
     rendered_url: str | None = None
@@ -85,6 +86,7 @@ class RegionBase(BaseModel):
     line_spacing: float = Field(default=1.15, ge=0.5, le=4.0)
     character_spacing: float = Field(default=0.0, ge=-20.0, le=100.0)
     rotation: float = Field(default=0.0, ge=-360.0, le=360.0)
+    perspective_warp: bool = False
     opacity: float = Field(default=1.0, ge=0.0, le=1.0)
     locked: bool = False
     visible: bool = True
@@ -131,6 +133,7 @@ class RegionUpdate(BaseModel):
     line_spacing: float | None = Field(default=None, ge=0.5, le=4.0)
     character_spacing: float | None = Field(default=None, ge=-20.0, le=100.0)
     rotation: float | None = Field(default=None, ge=-360.0, le=360.0)
+    perspective_warp: bool | None = None
     opacity: float | None = Field(default=None, ge=0.0, le=1.0)
     locked: bool | None = None
     visible: bool | None = None
@@ -163,6 +166,7 @@ class RegionRead(ORMModel):
     line_spacing: float
     character_spacing: float
     rotation: float
+    perspective_warp: bool
     opacity: float
     locked: bool
     visible: bool
@@ -252,8 +256,17 @@ class ModelDiscoveryRequest(BaseModel):
     config_id: str | None = None
 
 
+class BootstrapModelSelection(BaseModel):
+    kind: Literal["detection", "ocr", "translation", "inpainting", "rendering"]
+    provider: str
+    device: Literal["cpu", "cuda:0"] | None = None
+    config: dict[str, Any] = Field(default_factory=dict)
+    api_key: str | None = None
+
+
 class BootstrapModelsRequest(BaseModel):
     stages: list[Literal["detection", "ocr", "translation", "inpainting", "rendering"]] | None = None
+    selections: list[BootstrapModelSelection] = Field(default_factory=list)
     preload: bool = True
     upgrade_fallbacks: bool = False
 
@@ -266,6 +279,7 @@ class ExportRequest(BaseModel):
 
 class BatchProcessRequest(ProcessRequest):
     image_ids: list[str] | None = None
+    only_unrecognized: bool = False
 
 
 class QualityIssue(BaseModel):

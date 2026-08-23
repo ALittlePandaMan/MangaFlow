@@ -1,27 +1,77 @@
-import { BookOpenText, Download, ImagePlus, Layers3, LoaderCircle, Play, RotateCcw, Trash2, Upload } from 'lucide-react'
+import { Archive, BookOpenText, CheckCircle2, ChevronDown, Download, Eraser, Image as ImageIcon, ImagePlus, Languages, Layers3, RotateCcw, ScanText, TextCursorInput, Trash2, Upload } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from 'react'
 import { createPortal } from 'react-dom'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
-import { EditorToolbar } from '../components/EditorToolbar'
-import { Loading, useAppHeaderSlots } from '../components/AppShell'
+import { useAppHeaderSlots } from '../components/AppShell'
 import { useGlobalDialog } from '../components/GlobalDialog'
-import { RegionProperties } from '../components/RegionProperties'
+import { BlockingLoader, ButtonLoading, CircularProgress, EditorSkeleton, InlineLoading, useDelayedMinimumLoadingTime, useMinimumLoadingTime } from '../components/LoadingUI'
 import { DEFAULT_FONT_FAMILIES } from '../constants/fonts'
-import { MangaCanvas } from '../editor/MangaCanvas'
+import { EditorToolbar } from '../features/editor/components/EditorToolbar'
+import { MangaCanvas } from '../features/editor/components/MangaCanvas'
+import { RegionProperties } from '../features/editor/components/RegionProperties'
+import {preloadImage, versionedImageSource} from '../features/editor/hooks/useImage'
+import { useEditorStore } from '../features/editor/store'
 import { ApiError, api } from '../services/api'
-import { useEditorStore } from '../stores/editor'
 import type { FontResource, ImagePage, ProcessingTask, Project, TextRegion, Tool, ViewMode } from '../types'
 import {buttonClass, cn, dangerButtonClass, eyebrowClass, iconButtonClass, primaryButtonClass, textareaClass} from '../ui'
 
 type HistoryEntry = {id: string, before: TextRegion, after: TextRegion}
-type PendingChange = {before: TextRegion, patch: Partial<TextRegion>, timer: number}
+type PendingChange = {before: TextRegion, patch: Partial<TextRegion>, timer: number, version: number}
 type TaskUpdateHandler = (task: ProcessingTask) => void | Promise<void>
 type PageContextMenu = {x: number, y: number, pageId: string}
 type PagePress = {pageId: string, fromIndex: number, overIndex: number, pointerId: number, startX: number, startY: number, active: boolean}
 type PageDrag = {pageId: string, fromIndex: number, overIndex: number}
+type PageWorkflowStage = 'ocr' | 'translation' | 'inpainting' | 'rendering'
+type ExportKind = 'project' | 'translated' | 'clean'
+
+const EXPORT_OPTIONS: Array<{kind: ExportKind, label: string, detail: string, formats: string[]}> = [
+  {kind: 'project', label: '导出源项目', detail: '完整工程包，可再次导入 MangaFlow 继续编辑', formats: ['project']},
+  {kind: 'translated', label: '导出翻译后图片', detail: '仅打包所有页面的最终译图', formats: ['translated']},
+  {kind: 'clean', label: '导出净图', detail: '未修复的页面会自动使用原图', formats: ['clean']},
+]
 
 const PAGE_DRAG_START_THRESHOLD = 3
+
+function preserveLocalRegionGeometry(nextRegions: TextRegion[], currentRegions: TextRegion[]) {
+  if (!currentRegions.length) return nextRegions
+  const currentById = new Map(currentRegions.map(region => [region.id, region]))
+  return nextRegions.map(region => {
+    const current = currentById.get(region.id)
+    if (!current) return region
+    return {
+      ...region,
+      bbox: [...current.bbox],
+      polygon: current.polygon.map(point => [...point]),
+      translated_bbox: [...current.translated_bbox],
+      translated_polygon: current.translated_polygon.map(point => [...point]),
+      rotation: current.rotation,
+      perspective_warp: current.perspective_warp,
+    }
+  })
+}
+
+/**
+ * A same-page response can have been requested before a local create/delete
+ * finished. In that case the current ID set is newer than the response: merge
+ * fresh server fields into matching regions without resurrecting or dropping
+ * regions from the newer local list.
+ */
+function reconcileRegionSnapshot(nextRegions: TextRegion[], currentRegions: TextRegion[]) {
+  const nextById = new Map(nextRegions.map(region => [region.id, region]))
+  return currentRegions.map(current => {
+    const next = nextById.get(current.id)
+    return next ? preserveLocalRegionGeometry([next], [current])[0] : current
+  })
+}
+
+function samePolygon(first: number[][], second: number[][]) {
+  return first.length === second.length && first.every((point, index) => {
+    const other = second[index]
+    return point.length >= 2 && other?.length >= 2 &&
+      Math.abs(point[0] - other[0]) < .001 && Math.abs(point[1] - other[1]) < .001
+  })
+}
 
 export function EditorPage() {
   const {projectId = '', imageId} = useParams()
@@ -33,10 +83,19 @@ export function EditorPage() {
   const [regions, setRegions] = useState<TextRegion[]>([])
   const [fontResources, setFontResources] = useState<FontResource[]>([])
   const regionsRef = useRef<TextRegion[]>([])
+  const regionStateRevision = useRef(0)
+  const pageLoadGeneration = useRef(0)
+  const currentPageId = useRef<string | null>(null)
+  const loadedProjectId = useRef<string | null>(null)
   const pending = useRef<Map<string, PendingChange>>(new Map())
+  const regionEditVersions = useRef<Map<string, number>>(new Map())
+  const regionSaveQueues = useRef<Map<string, Promise<TextRegion | undefined>>>(new Map())
   const [undoStack, setUndoStack] = useState<HistoryEntry[]>([])
   const [redoStack, setRedoStack] = useState<HistoryEntry[]>([])
   const [loading, setLoading] = useState(true)
+  const [switchingPage, setSwitchingPage] = useState(false)
+  const showingInitialLoading = useMinimumLoadingTime(loading, 420)
+  const showingPageSwitch = useDelayedMinimumLoadingTime(switchingPage, 180, 240)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [runningRegionAction, setRunningRegionAction] = useState<string | null>(null)
@@ -44,12 +103,21 @@ export function EditorPage() {
   const [showContext, setShowContext] = useState(false)
   const [contextText, setContextText] = useState('{}')
   const [schedulingProcess, setSchedulingProcess] = useState(false)
+  const [runningWorkflowStage, setRunningWorkflowStage] = useState<PageWorkflowStage | null>(null)
   const [runningPageTask, setRunningPageTask] = useState<ProcessingTask | null>(null)
   const [schedulingBatch, setSchedulingBatch] = useState(false)
+  const [batchProgress, setBatchProgress] = useState<number | null>(null)
   const [resettingPage, setResettingPage] = useState(false)
   const [uploadingPages, setUploadingPages] = useState(false)
   const [deletingPageId, setDeletingPageId] = useState<string | null>(null)
+  const [updatingPageRecognitionId, setUpdatingPageRecognitionId] = useState<string | null>(null)
   const [reorderingPages, setReorderingPages] = useState(false)
+  const [reorderProgress, setReorderProgress] = useState<number | null>(null)
+  const [exporting, setExporting] = useState(false)
+  const [exportKind, setExportKind] = useState<ExportKind | null>(null)
+  const [exportMenuOpen, setExportMenuOpen] = useState(false)
+  const exportMenuRef = useRef<HTMLDivElement>(null)
+  const [savingContext, setSavingContext] = useState(false)
   const [pageContextMenu, setPageContextMenu] = useState<PageContextMenu | null>(null)
   const [pageDrag, setPageDrag] = useState<PageDrag | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
@@ -63,27 +131,64 @@ export function EditorPage() {
   const taskMonitorGeneration = useRef(0)
   const recoveredTaskId = useRef<string | null>(null)
   const taskSyncVersion = useRef('')
-  const {selectedIds, select, setTool, tool, view} = useEditorStore()
+  const {selectedIds, select, setTool, setView, tool, view} = useEditorStore()
   const {confirm: confirmDialog, isOpen: dialogOpen} = useGlobalDialog()
   const {editorTarget} = useAppHeaderSlots()
-  const editorBusy = schedulingProcess || schedulingBatch || resettingPage || uploadingPages || !!deletingPageId || reorderingPages || !!runningRegionAction
+  const blockingBusy = schedulingProcess || schedulingBatch || resettingPage || uploadingPages || !!deletingPageId || !!updatingPageRecognitionId || reorderingPages || exporting || !!runningRegionAction
+  const editorBusy = blockingBusy || switchingPage
 
-  const setRegionState = (next: TextRegion[]) => { regionsRef.current = next; setRegions(next) }
+  const setRegionState = useCallback((next: TextRegion[]) => {
+    regionStateRevision.current += 1
+    regionsRef.current = next
+    setRegions(next)
+  }, [])
   const refreshPages = useCallback(async () => {
     const next = await api.projects.images(projectId)
     setPages(next)
     if (page) setPage(next.find(item => item.id === page.id) || page)
     return next
   }, [projectId, page?.id])
-  const loadPage = useCallback(async (id: string, preservedSelection?: string | null) => {
+  const loadPage = useCallback(async (id: string, preservedSelection?: string | null, preserveGeometry = false) => {
+    const generation = ++pageLoadGeneration.current
+    const revisionBeforeRequest = regionStateRevision.current
+    const samePageBeforeRequest = currentPageId.current === id
     const [nextPage, nextRegions] = await Promise.all([api.images.get(id), api.images.regions(id)])
-    setPage(nextPage); setRegionState(nextRegions); setUndoStack([]); setRedoStack([])
+    const editorStore = useEditorStore.getState()
+    let initialView = editorStore.view
+    // Before the first repair, users are reviewing detector/OCR geometry.
+    // Open that workflow on the source frame so dragging a box cannot be
+    // mistaken for editing the independent translated layout frame.
+    if (!nextPage.clean_url && initialView === 'translated') {
+      initialView = 'original'
+      editorStore.setView(initialView)
+    }
+    const cleanSource = nextPage.clean_url ? versionedImageSource(nextPage.clean_url, nextPage.updated_at) : nextPage.original_url
+    const initialSources = initialView === 'comparison'
+      ? [nextPage.original_url, cleanSource]
+      : [initialView === 'original' ? nextPage.original_url : cleanSource]
+    await Promise.all(initialSources.map(source => preloadImage(source).catch(() => undefined)))
+    if (generation !== pageLoadGeneration.current) return nextRegions
+    const localStateChanged = samePageBeforeRequest && currentPageId.current === id && revisionBeforeRequest !== regionStateRevision.current
+    const resolvedRegions = localStateChanged
+      ? reconcileRegionSnapshot(nextRegions, regionsRef.current)
+      : preserveGeometry ? preserveLocalRegionGeometry(nextRegions, regionsRef.current) : nextRegions
+    currentPageId.current = id
+    setPage(nextPage); setRegionState(resolvedRegions); setUndoStack([]); setRedoStack([])
     const target = preservedSelection === undefined ? searchParams.get('region') : preservedSelection
-    select(target && nextRegions.some(region => region.id === target) ? target : null)
-    return nextRegions
+    select(target && resolvedRegions.some(region => region.id === target) ? target : null)
+    return resolvedRegions
   }, [searchParams, select])
 
   useEffect(() => {
+    let disposed = false
+    const initialProjectLoad = loadedProjectId.current !== projectId
+    if (initialProjectLoad) {
+      setLoading(true)
+      setSwitchingPage(false)
+    } else {
+      setSwitchingPage(true)
+      select(null)
+    }
     const load = async () => {
       try {
         const [nextProject, nextPages, globalFonts, projectFonts] = await Promise.all([
@@ -92,6 +197,7 @@ export function EditorPage() {
           api.fonts.list().catch(() => []),
           api.projects.fonts(projectId).catch(() => []),
         ])
+        if (disposed) return
         setProject(nextProject); setPages(nextPages); setContextText(JSON.stringify(nextProject.translation_context || {}, null, 2))
         setFontResources([...new Map([...projectFonts, ...globalFonts].map(font => [font.name, font])).values()])
         const target = imageId || nextPages[0]?.id
@@ -99,10 +205,21 @@ export function EditorPage() {
           if (!imageId) navigate(`/projects/${projectId}/editor/${target}`, {replace: true})
           await loadPage(target)
         }
-      } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)) }
-      finally { setLoading(false) }
+      } catch (reason) {
+        if (!disposed) setError(reason instanceof Error ? reason.message : String(reason))
+      } finally {
+        if (!disposed) {
+          loadedProjectId.current = projectId
+          if (initialProjectLoad) setLoading(false)
+          else setSwitchingPage(false)
+        }
+      }
     }
     void load()
+    return () => {
+      disposed = true
+      pageLoadGeneration.current += 1
+    }
   }, [projectId, imageId])
 
   useEffect(() => {
@@ -157,20 +274,54 @@ export function EditorPage() {
 
   useEffect(() => setPageContextMenu(null), [page?.id])
 
+  useEffect(() => {
+    if (!exportMenuOpen) return
+    const dismiss = (event: PointerEvent) => {
+      if (!exportMenuRef.current?.contains(event.target as Node)) setExportMenuOpen(false)
+    }
+    const escape = (event: KeyboardEvent) => {if (event.key === 'Escape') setExportMenuOpen(false)}
+    const close = () => setExportMenuOpen(false)
+    window.addEventListener('pointerdown', dismiss)
+    window.addEventListener('keydown', escape)
+    window.addEventListener('resize', close)
+    window.addEventListener('scroll', close, true)
+    return () => {
+      window.removeEventListener('pointerdown', dismiss)
+      window.removeEventListener('keydown', escape)
+      window.removeEventListener('resize', close)
+      window.removeEventListener('scroll', close, true)
+    }
+  }, [exportMenuOpen])
+
   const commitPendingRegion = async (id: string, change: PendingChange) => {
     if (pending.current.get(id) !== change) return regionsRef.current.find(region => region.id === id)
     window.clearTimeout(change.timer)
     pending.current.delete(id)
-    try {
-      const updated = await api.regions.update(id, change.patch)
-      setRegionState(regionsRef.current.map(region => region.id === id ? updated : region))
-      setUndoStack(stack => [...stack.slice(-99), {id, before: change.before, after: updated}]); setRedoStack([])
-      return updated
-    } catch (reason) {
-      setRegionState(regionsRef.current.map(region => region.id === id ? change.before : region))
-      setError(reason instanceof Error ? reason.message : String(reason))
-      throw reason
-    }
+    const previousSave = regionSaveQueues.current.get(id)
+    const save = (previousSave ? previousSave.catch(() => undefined) : Promise.resolve()).then(async () => {
+      try {
+        const updated = await api.regions.update(id, change.patch)
+        // A slower save must not paint its response over a newer drag that is
+        // already visible locally. The queued newer save will apply next.
+        if ((regionEditVersions.current.get(id) || 0) === change.version) {
+          setRegionState(regionsRef.current.map(region => region.id === id ? updated : region))
+        }
+        setUndoStack(stack => [...stack.slice(-99), {id, before: change.before, after: updated}]); setRedoStack([])
+        return updated
+      } catch (reason) {
+        if ((regionEditVersions.current.get(id) || 0) === change.version) {
+          setRegionState(regionsRef.current.map(region => region.id === id ? change.before : region))
+        }
+        setError(reason instanceof Error ? reason.message : String(reason))
+        throw reason
+      }
+    })
+    regionSaveQueues.current.set(id, save)
+    void save.then(
+      () => { if (regionSaveQueues.current.get(id) === save) regionSaveQueues.current.delete(id) },
+      () => { if (regionSaveQueues.current.get(id) === save) regionSaveQueues.current.delete(id) },
+    )
+    return save
   }
 
   const updateRegion = async (id: string, patch: Partial<TextRegion>) => {
@@ -180,10 +331,37 @@ export function EditorPage() {
     if (existing) window.clearTimeout(existing.timer)
     const before = existing?.before || current
     const mergedPatch = {...existing?.patch, ...patch}
+    const version = (regionEditVersions.current.get(id) || 0) + 1
+    regionEditVersions.current.set(id, version)
     setRegionState(regionsRef.current.map(region => region.id === id ? {...region, ...patch} : region))
-    const change: PendingChange = {before, patch: mergedPatch, timer: 0}
+    const change: PendingChange = {before, patch: mergedPatch, timer: 0, version}
     change.timer = window.setTimeout(() => {void commitPendingRegion(id, change).catch(() => undefined)}, 320)
     pending.current.set(id, change)
+  }
+
+  const flushPendingRegions = async (regionIds?: string[]) => {
+    const requestedIds = regionIds ? new Set(regionIds) : null
+    while (true) {
+      const changes = [...pending.current.entries()].filter(([id]) => !requestedIds || requestedIds.has(id))
+      if (changes.length) await Promise.all(changes.map(([id, change]) => commitPendingRegion(id, change)))
+      const saves = [...regionSaveQueues.current.entries()]
+        .filter(([id]) => !requestedIds || requestedIds.has(id))
+        .map(([, save]) => save)
+      if (saves.length) await Promise.all(saves)
+      const hasPending = [...pending.current.keys()].some(id => !requestedIds || requestedIds.has(id))
+      const hasSaving = [...regionSaveQueues.current.keys()].some(id => !requestedIds || requestedIds.has(id))
+      if (!hasPending && !hasSaving) return
+    }
+  }
+
+  const requireSourceGeometryForFirstRepair = (targetRegions: TextRegion[]) => {
+    const hasUnreviewedSeparateGeometry = view === 'translated' && targetRegions.some(region =>
+      !region.mask_url && !samePolygon(region.polygon, region.translated_polygon))
+    if (!hasUnreviewedSeparateGeometry) return false
+    setView('original')
+    setError('')
+    setNotice('首次修复使用原文框生成文字 Mask。已切换到原图，请核对原文框后再次点击重新修复；刚才调整的译文框位置已保留。')
+    return true
   }
 
   const applyHistory = useCallback(async (direction: 'undo' | 'redo') => {
@@ -256,19 +434,42 @@ export function EditorPage() {
     return () => window.removeEventListener('keydown', handleShortcut)
   }, [applyHistory, dialogOpen, editorBusy, redoStack.length, showContext, undoStack.length])
 
-  const createRegion = async (polygon: number[][], bbox: number[]) => {
-    if (!page) return
-    const created = await api.regions.create(page.id, {polygon, bbox, reading_order: regions.length + 1, orientation: bbox[3] > bbox[2] * 1.2 ? 'vertical' : 'horizontal'})
-    setRegionState([...regionsRef.current, created]); select(created.id); setTool('select')
+  const createRegion = async (polygon: number[][], bbox: number[]): Promise<boolean> => {
+    if (!page || editorBusy) return false
+    const requestedPageId = page.id
+    setRunningRegionAction('create'); setError('')
+    try {
+      const nextReadingOrder = regionsRef.current.reduce((maximum, region) => Math.max(maximum, region.reading_order), 0) + 1
+      const created = await api.regions.create(requestedPageId, {polygon, bbox, reading_order: nextReadingOrder, orientation: bbox[3] > bbox[2] * 1.2 ? 'vertical' : 'horizontal'})
+      if (currentPageId.current !== requestedPageId) return false
+      const store = useEditorStore.getState()
+      if (!store.layers.detection) store.toggleLayer('detection')
+      setRegionState([...regionsRef.current.filter(region => region.id !== created.id), created]); select(created.id); setTool('select')
+      return true
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason))
+      return false
+    } finally {
+      setRunningRegionAction(null)
+    }
   }
   const saveMask = async (id: string, blob: Blob) => {
-    const updated = await api.regions.mask(id, blob)
-    setRegionState(regionsRef.current.map(region => region.id === id ? updated : region)); setMaskRevision(value => value + 1)
+    if (editorBusy) return
+    setRunningRegionAction('mask-save'); setError('')
+    try {
+      const updated = await api.regions.mask(id, blob)
+      setRegionState(regionsRef.current.map(region => region.id === id ? updated : region)); setMaskRevision(value => value + 1)
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason))
+      throw reason
+    } finally {
+      setRunningRegionAction(null)
+    }
   }
-  const reloadCurrent = useCallback(async () => {
+  const reloadCurrent = useCallback(async (preserveGeometry = true) => {
     if (!page) return
     const selectedId = useEditorStore.getState().selectedIds[0] || null
-    const [nextRegions] = await Promise.all([loadPage(page.id, selectedId), refreshPages()])
+    const [nextRegions] = await Promise.all([loadPage(page.id, selectedId, preserveGeometry), refreshPages()])
     setMaskRevision(value => value + 1)
     return nextRegions.find(region => region.id === selectedId)
   }, [page?.id, loadPage, refreshPages])
@@ -310,12 +511,22 @@ export function EditorPage() {
     const version = `${task.id}:${task.current_stage || ''}:${task.progress}:${task.updated_at}`
     if (taskSyncVersion.current === version) return
     taskSyncVersion.current = version
+    const monitorGeneration = taskMonitorGeneration.current
+    const revisionBeforeRequest = regionStateRevision.current
+    const requestedPageId = page.id
     const selectedId = useEditorStore.getState().selectedIds[0] || null
-    const [nextPage, nextRegions] = await Promise.all([api.images.get(page.id), api.images.regions(page.id)])
+    const [nextPage, nextRegions] = await Promise.all([api.images.get(requestedPageId), api.images.regions(requestedPageId)])
+    if (monitorGeneration !== taskMonitorGeneration.current || nextPage.id !== requestedPageId) return
     setPage(nextPage)
     setPages(current => current.map(item => item.id === nextPage.id ? nextPage : item))
-    setRegionState(nextRegions)
-    if (selectedId && !nextRegions.some(region => region.id === selectedId)) select(null)
+    // A region may be created or edited while this refresh is in flight. Do
+    // not let an older response replace that newer local state; the next task
+    // update (or final reload) will fetch an authoritative list again.
+    if (revisionBeforeRequest === regionStateRevision.current) {
+      const resolvedRegions = preserveLocalRegionGeometry(nextRegions, regionsRef.current)
+      setRegionState(resolvedRegions)
+      if (selectedId && !resolvedRegions.some(region => region.id === selectedId)) select(null)
+    }
   }, [page?.id, select])
 
   const refreshAfterTask = async (taskId: string, onUpdate?: TaskUpdateHandler) => {
@@ -396,7 +607,8 @@ export function EditorPage() {
       select(null)
       if (deleted.rebuild_task) {
         setNotice('正在恢复净图并重新生成译文图层…')
-        const result = await refreshAfterTask(deleted.rebuild_task.id)
+        setRunningPageTask(deleted.rebuild_task)
+        const result = await refreshAfterTask(deleted.rebuild_task.id, syncTaskProgress)
         if (result?.task.status === 'COMPLETED') setNotice(`${multiple ? '所选区域' : '区域'}已删除，净图和译文已重新生成。`)
         else setNotice('')
       } else {
@@ -408,7 +620,7 @@ export function EditorPage() {
       deleteBusy.current = false
       setRunningRegionAction(null)
     }
-  }, [confirmDialog, editorBusy, refreshAfterTask, selectedIds, select])
+  }, [confirmDialog, editorBusy, refreshAfterTask, selectedIds, select, syncTaskProgress])
 
   useEffect(() => {
     const handleDelete = (event: KeyboardEvent) => {
@@ -468,6 +680,8 @@ export function EditorPage() {
         if (!page || regionActionBusy.current) return
         const regionIds = selectedIds.filter(id => regionsRef.current.some(region => region.id === id))
         if (regionIds.length < 2) return
+        const targetRegions = regionsRef.current.filter(region => regionIds.includes(region.id))
+        if (name === 'inpaint' && requireSourceGeometryForFirstRepair(targetRegions)) return
         const stage = ({
           ocr: {start_stage: 'ocr', end_stage: 'ocr'},
           translate: {start_stage: 'translation', end_stage: 'translation'},
@@ -479,16 +693,14 @@ export function EditorPage() {
         blurActiveControl()
         setRunningRegionAction(name); setError(''); setNotice(`正在为 ${regionIds.length} 个所选区域重新${actionLabel}…`)
         try {
-          for (const id of regionIds) {
-            const change = pending.current.get(id)
-            if (change) await commitPendingRegion(id, change)
-          }
+          await flushPendingRegions(regionIds)
           const task = await api.images.process(page.id, {
             ...stage,
             force: true,
             options: {...options, ...(name === 'ocr' ? {crop_padding: 4} : {}), region_ids: regionIds},
           })
-          const result = await refreshAfterTask(task.id)
+          setRunningPageTask(task)
+          const result = await refreshAfterTask(task.id, syncTaskProgress)
           if (!result || result.task.status !== 'COMPLETED') {
             setNotice('')
             return
@@ -520,7 +732,8 @@ export function EditorPage() {
           select(merged.id)
           if (mergedResult.rebuild_task) {
             setNotice('区域已合并，正在重新生成 Mask、净图和译文…')
-            const result = await refreshAfterTask(mergedResult.rebuild_task.id)
+            setRunningPageTask(mergedResult.rebuild_task)
+            const result = await refreshAfterTask(mergedResult.rebuild_task.id, syncTaskProgress)
             if (result?.task.status === 'COMPLETED') setNotice(`${selectedIds.length} 个区域已合并，净图和译文已重新生成。`)
             else setNotice('')
           } else {
@@ -541,15 +754,15 @@ export function EditorPage() {
         regionActionBusy.current = true
         setRunningRegionAction('visibility'); setError(''); blurActiveControl()
         try {
-          let activeRegion = selected
-          const pendingChange = pending.current.get(selectedId)
-          if (pendingChange) activeRegion = await commitPendingRegion(selectedId, pendingChange) || activeRegion
+          await flushPendingRegions([selectedId])
+          const activeRegion = regionsRef.current.find(region => region.id === selectedId) || selected
           const updated = await api.regions.update(selectedId, {visible: !activeRegion.visible})
           setRegionState(regionsRef.current.map(region => region.id === selectedId ? updated : region))
           if (page?.rendered_url || page?.text_layer_url) {
             setNotice(updated.visible ? '正在恢复当前区域的译文显示…' : '正在从译图中隐藏当前区域…')
             const task = await api.regions.stage(selectedId, 'render')
-            const result = await refreshAfterTask(task.id)
+            setRunningPageTask(task)
+            const result = await refreshAfterTask(task.id, syncTaskProgress)
             if (!result || result.task.status !== 'COMPLETED') return
           }
           setNotice(updated.visible ? '当前区域已打开，预览和导出将显示译文。' : '当前区域已关闭，预览和导出将不显示译文。')
@@ -560,17 +773,18 @@ export function EditorPage() {
       }
       else if (['ocr','translate','inpaint','render'].includes(name)) {
         if (regionActionBusy.current) return
+        if (name === 'inpaint' && requireSourceGeometryForFirstRepair([selected])) return
         regionActionBusy.current = true
         const runningMessage = ({ocr: '正在重新识别当前区域…', translate: '正在重新翻译当前区域…', inpaint: '正在重新生成 Mask 并修复背景…', render: '正在重新生成排版…'} as Record<string, string>)[name]
         blurActiveControl()
         setRunningRegionAction(name); setNotice(runningMessage || '正在处理当前区域…'); setError('')
         try {
-          let activeRegion = selected
-          const pendingChange = pending.current.get(selectedId)
-          if (pendingChange) activeRegion = await commitPendingRegion(selectedId, pendingChange) || activeRegion
+          await flushPendingRegions([selectedId])
+          const activeRegion = regionsRef.current.find(region => region.id === selectedId) || selected
           const before = activeRegion
           const task = await api.regions.stage(selectedId, name, options)
-          const result = await refreshAfterTask(task.id)
+          setRunningPageTask(task)
+          const result = await refreshAfterTask(task.id, syncTaskProgress)
           if (!result || result.task.status !== 'COMPLETED') return
           const updated = result.region
           if (name === 'translate' && updated?.layout_data.translation_fallback) {
@@ -592,8 +806,13 @@ export function EditorPage() {
       }
       else if (['dilate','erode','clear-mask'].includes(name)) {
         const operation = name === 'clear-mask' ? 'clear' : name
-        const updated = await api.regions.maskOperation(selectedId, operation, 3)
-        setRegionState(regionsRef.current.map(region => region.id === selectedId ? updated : region)); setMaskRevision(value => value + 1)
+        setRunningRegionAction(name)
+        try {
+          const updated = await api.regions.maskOperation(selectedId, operation, 3)
+          setRegionState(regionsRef.current.map(region => region.id === selectedId ? updated : region)); setMaskRevision(value => value + 1)
+        } finally {
+          setRunningRegionAction(null)
+        }
       }
     } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)) }
   }
@@ -611,7 +830,7 @@ export function EditorPage() {
     if (editorBusy || pagePressRef.current?.active) return
     setPageContextMenu({
       x: Math.max(8, Math.min(event.clientX, window.innerWidth - 190)),
-      y: Math.max(8, Math.min(event.clientY, window.innerHeight - 92)),
+      y: Math.max(8, Math.min(event.clientY, window.innerHeight - 140)),
       pageId: item.id,
     })
   }
@@ -643,6 +862,7 @@ export function EditorPage() {
       if (page?.id === pageId) {
         pending.current.forEach(change => window.clearTimeout(change.timer))
         pending.current.clear()
+        currentPageId.current = null
         select(null); setRegionState([]); setPage(null); setUndoStack([]); setRedoStack([])
         const next = remaining[Math.min(targetIndex, remaining.length - 1)]
         navigate(next ? `/projects/${projectId}/editor/${next.id}` : `/projects/${projectId}/editor`, {replace: true})
@@ -656,6 +876,26 @@ export function EditorPage() {
     }
   }
 
+  const togglePageOcrExempt = async (pageId: string) => {
+    if (editorBusy) return
+    const target = pages.find(item => item.id === pageId)
+    if (!target) return
+    const exempt = !target.ocr_exempt
+    setPageContextMenu(null)
+    setUpdatingPageRecognitionId(pageId)
+    setError('')
+    try {
+      const updated = await api.images.setOcrExempt(pageId, exempt)
+      setPages(current => current.map(item => item.id === pageId ? updated : item))
+      if (page?.id === pageId) setPage(updated)
+      setNotice(exempt ? '该图片已标记为已翻译，批量识别时会自动跳过。' : '已取消已翻译标记，该图片会重新进入批量识别范围。')
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason))
+    } finally {
+      setUpdatingPageRecognitionId(null)
+    }
+  }
+
   const reorderPage = async (pageId: string, fromIndex: number, toIndex: number) => {
     if (editorBusy || fromIndex === toIndex || fromIndex < 0 || toIndex < 0 || fromIndex >= pages.length || toIndex >= pages.length) return
     const previousPages = [...pages]
@@ -665,11 +905,15 @@ export function EditorPage() {
     const [moved] = nextPages.splice(fromIndex, 1)
     nextPages.splice(toIndex, 0, moved)
     setPages(nextPages)
-    setReorderingPages(true); setError(''); setNotice('正在保存页面顺序…')
+    setReorderingPages(true); setReorderProgress(0); setError(''); setNotice('正在保存页面顺序…')
     try {
       const direction = toIndex > fromIndex ? 1 : -1
+      const moveCount = Math.abs(toIndex - fromIndex)
+      let completed = 0
       for (let index = fromIndex + direction; direction > 0 ? index <= toIndex : index >= toIndex; index += direction) {
         await api.images.reorder(pageId, previousPages[index].order_index)
+        completed += 1
+        setReorderProgress(completed / moveCount)
       }
       const refreshedPages = await refreshPages()
       if (activePageId) {
@@ -688,6 +932,7 @@ export function EditorPage() {
       setError(reason instanceof Error ? reason.message : String(reason))
     } finally {
       setReorderingPages(false)
+      setReorderProgress(null)
     }
   }
 
@@ -782,70 +1027,94 @@ export function EditorPage() {
     }
   }
 
-  const flushPendingRegions = async () => {
-    const changes = [...pending.current.entries()]
-    await Promise.all(changes.map(([id, change]) => commitPendingRegion(id, change)))
-  }
-
-  // Only a completed OCR stage is ready for manual confirmation. Detection
-  // boxes can already exist while OCR is still running (or after an interrupted
-  // task), and treating those partial results as reviewed would skip OCR.
-  const awaitingManualReview = page?.status === 'OCR_DONE'
-
-  const processCurrentPage = async () => {
+  const processPageStage = async (stage: PageWorkflowStage) => {
     if (!page || editorBusy) return
-    const continueAfterReview = awaitingManualReview
-    const replacingExisting = regionsRef.current.length > 0
-    if (continueAfterReview && !await confirmDialog({
-      title: '确认区域并继续处理？',
-      message: '请确认当前仅保留需要清除和翻译的文字区域。继续后系统才会生成 Mask、清除原文字、修复背景并重新排版。',
-      tone: 'warning',
-      confirmLabel: '确认并继续',
-    })) return
-    if (!continueAfterReview && replacingExisting && !await confirmDialog({
-      title: '重新检测当前页？',
-      message: '系统将重新检测文字区域并执行 OCR，但会在清除文字和修复背景前停止，等待人工核对。已锁定区域会保留。',
-      tone: 'warning',
-      confirmLabel: '重新检测',
-    })) return
+    if (stage === 'inpainting' && requireSourceGeometryForFirstRepair(regionsRef.current)) return
+    const rank = pageWorkflowRank(page, regionsRef.current)
+    const requiredRank: Record<PageWorkflowStage, number> = {ocr: 0, translation: 1, inpainting: 2, rendering: 3}
+    if (rank < requiredRank[stage]) return
+    const currentRegions = regionsRef.current
+    const startsWithDetection = stage === 'ocr' && currentRegions.length === 0
+    const request = ({
+      ocr: {
+        start_stage: startsWithDetection ? 'detection' : 'ocr',
+        end_stage: 'ocr',
+        force: !startsWithDetection,
+        options: {crop_padding: 4},
+      },
+      translation: {start_stage: 'translation', end_stage: 'translation', force: true, options: {}},
+      inpainting: {start_stage: 'mask', end_stage: 'inpainting', force: true, options: {rebuild_clean: true}},
+      rendering: {start_stage: 'rendering', end_stage: 'rendering', force: true, options: {}},
+    } as const)[stage]
+    const startingNotices: Record<PageWorkflowStage, string> = {
+      ocr: startsWithDetection ? '正在检测文字区域并执行 OCR…' : '正在重新 OCR 当前页的文字区域…',
+      translation: '正在重新翻译当前页，完成后才能执行修复…',
+      inpainting: '正在重新生成文字 Mask 并修复背景…',
+      rendering: '正在根据当前译文重新排版…',
+    }
+    const completedNotices: Record<PageWorkflowStage, string> = {
+      ocr: 'OCR 已完成，请核对文字区域和原文；确认无误后再执行重新翻译。',
+      translation: '翻译已完成，可以继续执行重新修复。',
+      inpainting: '背景修复已完成，可以继续执行重新排版。',
+      rendering: '当前页重新排版已完成。',
+    }
     blurActiveControl()
     setSchedulingProcess(true)
+    setRunningWorkflowStage(stage)
     setRunningPageTask(null)
-    setNotice(continueAfterReview ? '正在根据已确认的区域生成净图和译文…' : '正在检测文字区域并执行 OCR…')
+    setNotice(startingNotices[stage])
     try {
       await flushPendingRegions()
-      const task = await api.images.process(page.id, {
-        start_stage: continueAfterReview ? 'translation' : 'detection',
-        end_stage: continueAfterReview ? 'rendering' : 'ocr',
-        force: continueAfterReview || replacingExisting,
-        options: {},
-      })
+      const task = await api.images.process(page.id, request)
       setRunningPageTask(task)
       const result = await refreshAfterTask(task.id, syncTaskProgress)
-      if (result?.task.status === 'COMPLETED') {
-        setNotice(continueAfterReview ? '净图和译文已生成。' : '检测和 OCR 已完成，请核对文字区域，删除或调整后再点击“确认区域并继续”。')
-      }
+      if (result?.task.status === 'COMPLETED') setNotice(completedNotices[stage])
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason))
     } finally {
       setSchedulingProcess(false)
+      setRunningWorkflowStage(null)
       setRunningPageTask(null)
     }
   }
 
   const batchRecognize = async () => {
     if (!pages.length || editorBusy) return
+    const candidates = pages.filter(item => item.id !== page?.id && pageNeedsOcr(item))
+    if (!candidates.length) {
+      setError('')
+      setNotice('其余图片都已完成 OCR，没有需要批量识别的页面。')
+      return
+    }
     if (!await confirmDialog({
-      title: '批量检测与识别？',
-      message: '所有页面只执行文字检测和 OCR，不会清除文字或修改背景。完成后需要逐页人工核对并确认继续。',
+      title: `批量识别其余 ${candidates.length} 张图片？`,
+      message: '只处理尚未完成 OCR 的其他图片；已翻译页面和正在执行任务的页面会跳过。该操作不会清除文字或修改背景。',
       tone: 'info',
       confirmLabel: '开始批量识别',
     })) return
     blurActiveControl()
-    setSchedulingBatch(true); setError(''); setNotice(`正在批量识别 ${pages.length} 页…`)
+    setSchedulingBatch(true); setBatchProgress(0); setError(''); setNotice(`正在批量识别其余 ${candidates.length} 页…`)
     try {
-      const tasks = await api.projects.batch(projectId, {start_stage: 'detection', end_stage: 'ocr', force: false, options: {}})
-      const results = await Promise.all(tasks.map(task => waitForTask(task.id)))
+      const tasks = await api.projects.batch(projectId, {
+        start_stage: 'detection',
+        end_stage: 'ocr',
+        force: false,
+        options: {},
+        image_ids: candidates.map(item => item.id),
+        only_unrecognized: true,
+      })
+      if (!tasks.length) {
+        await refreshPages()
+        setNotice('其余图片都已完成 OCR，没有创建新的识别任务。')
+        return
+      }
+      let completed = 0
+      const results = await Promise.all(tasks.map(async task => {
+        const result = await waitForTask(task.id)
+        completed += 1
+        setBatchProgress(completed / Math.max(1, tasks.length))
+        return result
+      }))
       await refreshPages()
       const failed = results.filter(task => task?.status === 'FAILED')
       if (failed.length) { setNotice(''); setError(`${failed.length} 个页面识别失败，请检查页面状态。`) }
@@ -854,6 +1123,7 @@ export function EditorPage() {
       setNotice(''); setError(reason instanceof Error ? reason.message : String(reason))
     } finally {
       setSchedulingBatch(false)
+      setBatchProgress(null)
     }
   }
 
@@ -872,7 +1142,7 @@ export function EditorPage() {
       pending.current.clear()
       await api.images.reset(page.id)
       select(null)
-      await reloadCurrent()
+      await reloadCurrent(false)
       setNotice('当前页已恢复到默认原图状态。')
     } catch (reason) {
       setNotice(''); setError(reason instanceof Error ? reason.message : String(reason))
@@ -881,10 +1151,53 @@ export function EditorPage() {
     }
   }
 
+  const exportProject = async (kind: ExportKind) => {
+    if (editorBusy || exporting) return
+    const option = EXPORT_OPTIONS.find(item => item.kind === kind)
+    if (!option) return
+    setExportMenuOpen(false)
+    setExporting(true)
+    setExportKind(kind)
+    setError('')
+    setNotice('')
+    try {
+      // Flush debounced text/style edits first so an immediate export cannot
+      // race the 320 ms autosave window and package the previous rendering.
+      await flushPendingRegions()
+      await api.projects.export(projectId, option.formats, `${project?.name || 'mangaflow'}-${kind}.zip`)
+      setNotice(`${option.label}已生成并开始下载。`)
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason))
+    } finally {
+      setExporting(false)
+      setExportKind(null)
+    }
+  }
+
+  const saveTranslationContext = async () => {
+    if (savingContext) return
+    setSavingContext(true)
+    setError('')
+    try {
+      const parsed = JSON.parse(contextText)
+      const updated = await api.projects.update(projectId, {translation_context: parsed})
+      setProject(updated)
+      setShowContext(false)
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'JSON 格式错误')
+    } finally {
+      setSavingContext(false)
+    }
+  }
+
   const selectedScope = selectedIds.length > 1 ? `${selectedIds.length} 个所选区域` : '当前区域'
-  const busyLabel = deletingPageId
+  const busyLabel = exporting
+    ? ({project:'正在打包可编辑源项目…', translated:'正在生成并导出翻译后图片…', clean:'正在导出净图…'} as Record<ExportKind, string>)[exportKind || 'project']
+    : deletingPageId
     ? '正在删除图片…'
-    : reorderingPages
+    : updatingPageRecognitionId
+      ? '正在更新图片识别状态…'
+      : reorderingPages
       ? '正在保存页面顺序…'
       : uploadingPages
       ? '正在导入图片…'
@@ -893,34 +1206,91 @@ export function EditorPage() {
       : schedulingBatch
       ? '正在批量检测并识别…'
       : schedulingProcess
-        ? pageTaskBusyLabel(runningPageTask, awaitingManualReview)
-        : ({ocr: `正在重新 OCR ${selectedScope}…`, translate: `正在重新翻译${selectedScope}…`, inpaint: `正在重新修复${selectedScope}…`, render: `正在重新排版${selectedScope}…`, merge: '正在合并所选区域…', delete: '正在删除所选区域…', visibility: '正在更新区域显示…'} as Record<string, string>)[runningRegionAction || ''] || '正在处理…'
+        ? pageTaskBusyLabel(runningPageTask, runningWorkflowStage)
+        : ({ocr: `正在重新 OCR ${selectedScope}…`, translate: `正在重新翻译${selectedScope}…`, inpaint: `正在重新修复${selectedScope}…`, render: `正在重新排版${selectedScope}…`, merge: '正在合并所选区域…', delete: '正在删除所选区域…', visibility: '正在更新区域显示…', create: '正在创建文字区域…', 'mask-save': '正在保存文字 Mask…', dilate: '正在膨胀文字 Mask…', erode: '正在收缩文字 Mask…', 'clear-mask': '正在清空文字 Mask…'} as Record<string, string>)[runningRegionAction || ''] || '正在处理…'
+  const activePageTask = runningPageTask && ['QUEUED', 'RUNNING'].includes(runningPageTask.status.toUpperCase())
+    ? runningPageTask
+    : null
+  const busyProgress = schedulingBatch
+    ? batchProgress
+    : reorderingPages
+      ? reorderProgress
+      : activePageTask && (schedulingProcess || !!runningRegionAction)
+        ? activePageTask.progress
+        : null
 
-  if (loading) return <Loading label="正在打开 MangaFlow 工作台…" />
+  if (showingInitialLoading) return <EditorSkeleton/>
   const headerButtonClass = `${buttonClass} !h-8 !min-h-8 px-3 py-0 text-[11px]`
+  const workflowRank = page ? pageWorkflowRank(page, regions) : 0
+  const nextWorkflowStage: PageWorkflowStage | null = workflowRank < 1
+    ? 'ocr'
+    : workflowRank < 2
+      ? 'translation'
+      : workflowRank < 3
+        ? 'inpainting'
+        : workflowRank < 4
+          ? 'rendering'
+          : null
+  const workflowButtons: Array<{stage: PageWorkflowStage, label: string, requiredRank: number, title: string, icon: typeof ScanText}> = [
+    {stage: 'ocr', label: '重新 OCR', requiredRank: 0, title: regions.length ? '重新识别当前页已有文字区域' : '当前页没有文字区域，将先自动检测再执行 OCR', icon: ScanText},
+    {stage: 'translation', label: '重新翻译', requiredRank: 1, title: workflowRank >= 1 ? '使用最新 OCR 原文重新翻译' : '请先完成重新 OCR', icon: Languages},
+    {stage: 'inpainting', label: '重新修复', requiredRank: 2, title: workflowRank >= 2 ? '重新生成文字 Mask 并修复背景' : '请先依次完成重新 OCR 和重新翻译', icon: Eraser},
+    {stage: 'rendering', label: '重新排版', requiredRank: 3, title: workflowRank >= 3 ? '使用当前译文和样式重新排版' : '请先依次完成 OCR、翻译和修复', icon: TextCursorInput},
+  ]
+  const contextPage = pageContextMenu ? pages.find(item => item.id === pageContextMenu.pageId) : undefined
+  const selectedPageId = imageId || page?.id
   if (!project) return <div className="grid h-full place-content-center text-center"><h2>无法打开项目</h2><p className="text-muted">{error}</p><Link className="text-accent" to="/projects">返回项目</Link></div>
   return <>
     {editorTarget && createPortal(<>
       <div className="ml-auto flex items-center gap-2">
         <button className={headerButtonClass} onClick={() => setShowContext(true)} disabled={editorBusy}><BookOpenText size={16}/>翻译上下文</button>
-        <button className={`${dangerButtonClass} !h-8 !min-h-8 px-3 py-0 text-[11px]`} onClick={() => void resetCurrentPage()} disabled={!page || editorBusy || (page.status === 'UPLOADED' && !regions.length && !page.clean_url && !page.rendered_url)}>{resettingPage ? <LoaderCircle className="animate-spin" size={16}/> : <RotateCcw size={16}/>}<span>{resettingPage ? '恢复中…' : '重置当前页'}</span></button>
-        <button className={headerButtonClass} disabled={editorBusy} onClick={() => api.projects.export(projectId, ['translated','clean','text_layer','json','masks','project'])}><Download size={16}/>导出</button>
-        <button className={`${primaryButtonClass} !h-8 !min-h-8 px-3 py-0 text-[11px]`} onClick={processCurrentPage} disabled={!page || editorBusy} title={awaitingManualReview ? '确认保留的区域并继续生成净图和译文' : '仅执行文字检测和 OCR'}>{schedulingProcess ? <LoaderCircle className="animate-spin" size={16}/> : <Play size={16}/>}<span>{schedulingProcess ? '处理中…' : awaitingManualReview ? '确认区域并继续' : regions.length ? '重新检测并识别' : '检测并识别'}</span></button>
-        <button className={headerButtonClass} onClick={() => void batchRecognize()} disabled={editorBusy}>{schedulingBatch ? <LoaderCircle className="animate-spin" size={16}/> : <Layers3 size={16}/>}<span>{schedulingBatch ? '批量识别中…' : '批量识别'}</span></button>
+        <button className={`${dangerButtonClass} !h-8 !min-h-8 px-3 py-0 text-[11px]`} onClick={() => void resetCurrentPage()} disabled={!page || editorBusy || (page.status === 'UPLOADED' && !regions.length && !page.clean_url && !page.rendered_url)}>{resettingPage ? <ButtonLoading label="恢复中…"/> : <><RotateCcw size={16}/>重置当前页</>}</button>
+        <div className="relative" ref={exportMenuRef}>
+          <button className={headerButtonClass} disabled={editorBusy || exporting} aria-haspopup="menu" aria-expanded={exportMenuOpen} onClick={() => setExportMenuOpen(open => !open)}>{exporting ? <ButtonLoading label="导出中…"/> : <><Download size={16}/>导出<ChevronDown className={cn('transition-transform', exportMenuOpen && 'rotate-180')} size={13}/></>}</button>
+          {exportMenuOpen && <div className="absolute right-0 top-[calc(100%+8px)] z-[90] w-[292px] overflow-hidden rounded-xl border border-line-strong bg-[rgb(24_27_23/.98)] p-1.5 text-secondary shadow-dialog backdrop-blur-xl" role="menu" aria-label="选择导出内容">
+            {EXPORT_OPTIONS.map(option => {
+              const unavailable = !pages.length
+              const Icon = option.kind === 'project' ? Archive : option.kind === 'translated' ? ImageIcon : Eraser
+              return <button key={option.kind} type="button" role="menuitem" disabled={unavailable} className="flex min-h-[58px] w-full cursor-pointer items-center gap-3 rounded-lg border-0 bg-transparent px-3 py-2 text-left outline-none transition-colors hover:bg-hover disabled:cursor-not-allowed disabled:opacity-35" onClick={() => void exportProject(option.kind)}>
+                <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-accent/10 text-accent"><Icon size={16}/></span>
+                <span className="min-w-0"><strong className="block text-[11px] font-semibold text-ink">{option.label}</strong><small className="mt-1 block text-[9px] leading-relaxed text-muted">{option.detail}</small></span>
+              </button>
+            })}
+          </div>}
+        </div>
+        <button className={headerButtonClass} onClick={() => void batchRecognize()} disabled={editorBusy} title="只识别当前页之外尚未完成 OCR 的图片">{schedulingBatch ? <ButtonLoading label="批量识别中…"/> : <><Layers3 size={16}/>批量识别</>}</button>
       </div>
     </>, editorTarget)}
-    <div className="grid h-full grid-rows-[44px_minmax(0,1fr)] bg-canvas">
-    <EditorToolbar onUndo={() => applyHistory('undo')} onRedo={() => applyHistory('redo')} canUndo={!!undoStack.length} canRedo={!!redoStack.length} disabled={editorBusy}/>
+    <div className="editor-content-enter grid h-full grid-rows-[44px_minmax(0,1fr)] bg-canvas">
+    <EditorToolbar
+      onUndo={() => applyHistory('undo')}
+      onRedo={() => applyHistory('redo')}
+      canUndo={!!undoStack.length}
+      canRedo={!!redoStack.length}
+      disabled={editorBusy}
+      rightActions={<div className="flex items-center gap-1 rounded-lg bg-panel p-1" aria-label="当前页处理流程">
+        {workflowButtons.map(({stage, label, requiredRank, title, icon: Icon}) => <button
+          key={stage}
+          className={cn(nextWorkflowStage === stage ? primaryButtonClass : buttonClass, '!h-7 !min-h-7 px-2 py-0 text-[10px]')}
+          onClick={() => void processPageStage(stage)}
+          disabled={!page || editorBusy || workflowRank < requiredRank}
+          title={title}
+        >{schedulingProcess && runningWorkflowStage === stage ? <ButtonLoading label={`${label.replace('重新 ', '')} 中…`}/> : <><Icon size={14}/>{label}</>}</button>)}
+      </div>}
+    />
     <div className="grid min-h-0 grid-cols-[192px_minmax(0,1fr)_320px] max-[1200px]:grid-cols-[176px_minmax(0,1fr)_300px]">
       <aside className="flex min-h-0 flex-col border-r border-line-subtle bg-panel">
-        <div className="flex h-[38px] shrink-0 items-center justify-between border-b border-line-subtle px-3 font-mono text-[10px] uppercase text-muted"><span>页面</span><button className={cn(iconButtonClass, 'border-0 bg-transparent')} disabled={editorBusy} title="导入图片" aria-label="导入图片" onClick={openImagePicker}>{uploadingPages ? <LoaderCircle className="animate-spin" size={16}/> : <ImagePlus size={16}/>}</button></div>
+        <div className="flex h-[38px] shrink-0 items-center justify-between border-b border-line-subtle px-3 font-mono text-[10px] uppercase text-muted"><span>页面</span><button className={cn(iconButtonClass, 'border-0 bg-transparent')} disabled={editorBusy} title="导入图片" aria-label="导入图片" onClick={openImagePicker}>{uploadingPages ? <ButtonLoading compact label="正在导入图片"/> : <ImagePlus size={16}/>}</button></div>
         <div ref={pageListRef} className="min-h-0 flex-1 overflow-auto p-2 [scrollbar-color:#44443e_transparent] [scrollbar-width:thin]" onContextMenu={openImagePickerFromBlank}>{pages.map((item, index) => <button
           key={item.id}
           data-page-id={item.id}
           data-page-index={index}
+          aria-current={selectedPageId === item.id ? 'page' : undefined}
           className={cn(
-            'relative mb-2 block w-full cursor-grab touch-pan-y rounded-lg border border-transparent bg-transparent p-2 text-left outline-none transition-[background-color,opacity,transform,box-shadow] hover:bg-raised active:cursor-grabbing',
-            page?.id === item.id && 'bg-raised',
+            'relative mb-2 block w-full cursor-grab touch-pan-y rounded-lg border p-2 text-left outline-none transition-[background-color,border-color,opacity,transform,box-shadow,filter] focus-visible:border-accent/70 focus-visible:ring-2 focus-visible:ring-accent/25 active:cursor-grabbing',
+            selectedPageId === item.id
+              ? 'border-accent !bg-accent !text-canvas shadow-[0_8px_24px_rgb(0_0_0/.3)] hover:brightness-105'
+              : 'border-transparent bg-transparent hover:bg-raised',
             pageDrag?.pageId === item.id && 'z-10 scale-[1.015] cursor-grabbing bg-raised opacity-70 shadow-panel',
             pageDrag && pageDrag.overIndex === index && pageDrag.fromIndex !== index && (pageDrag.overIndex > pageDrag.fromIndex
               ? 'after:absolute after:-bottom-1 after:inset-x-1 after:h-0.5 after:rounded-full after:bg-accent after:shadow-[0_0_8px_var(--color-accent)]'
@@ -933,29 +1303,30 @@ export function EditorPage() {
             if (!editorBusy) navigate(`/projects/${projectId}/editor/${item.id}`)
           }}
         >
-          <div className="relative flex aspect-[3/4] w-full justify-center overflow-hidden bg-[#0a0a09]"><img className="pointer-events-none size-full select-none object-contain" draggable={false} src={item.rendered_url || item.original_url} alt={item.filename}/><span className="absolute bottom-1 left-1 bg-canvas px-1 py-0.5 font-mono text-[9px]">{String(index + 1).padStart(2,'0')}</span></div>
-          <small className="mt-2 block truncate text-[10px] text-secondary" title={item.filename}>{item.filename}</small><i className={cn('mt-1 block truncate font-mono text-[8px] not-italic', pageState(item).className)}>{pageState(item).label}</i>
+          <div className={cn('relative flex aspect-[3/4] w-full justify-center overflow-hidden bg-[#0a0a09] transition-shadow', selectedPageId === item.id && 'ring-1 ring-inset ring-canvas/50')}><img className="pointer-events-none size-full select-none object-contain" draggable={false} src={item.rendered_url || item.original_url} alt={item.filename}/><span className={cn('absolute bottom-1 left-1 bg-canvas px-1 py-0.5 font-mono text-[9px]', selectedPageId === item.id && 'text-accent')}>{String(index + 1).padStart(2,'0')}</span>{activePageTask?.image_id === item.id && <span className="absolute right-1 top-1 grid rounded-full bg-canvas/90 p-1 shadow-panel"><CircularProgress value={activePageTask.progress} size={34} label={`${item.filename} 处理进度`}/></span>}</div>
+          <small className={cn('mt-2 block truncate text-[10px]', selectedPageId === item.id ? 'font-semibold text-canvas' : 'text-secondary')} title={item.filename}>{item.filename}</small><i className={cn('mt-1 block truncate font-mono text-[8px] not-italic', selectedPageId === item.id ? 'text-canvas/75' : pageState(item).className)}>{pageState(item).label}</i>
         </button>)}
         {!pages.length && <div className="flex min-h-full items-center justify-center"><button className={`${buttonClass} min-h-[140px] w-full flex-col border-dashed bg-transparent text-muted`} disabled={editorBusy} onClick={openImagePicker}><Upload size={22}/>导入漫画图片</button></div>}
         </div>
       </aside>
-      <main className="relative min-h-0 min-w-0 bg-canvas bg-[linear-gradient(45deg,var(--color-panel)_25%,transparent_25%),linear-gradient(-45deg,var(--color-panel)_25%,transparent_25%),linear-gradient(45deg,transparent_75%,var(--color-panel)_75%),linear-gradient(-45deg,transparent_75%,var(--color-panel)_75%)] [background-position:0_0,0_10px,10px_-10px,-10px_0] [background-size:20px_20px]">{page ? <MangaCanvas key={page.id} page={page} regions={regions} onCreate={createRegion} onUpdate={updateRegion} onSaveMask={saveMask} onRegionAction={(id, name, options) => {void action(name, options, id)}} runningAction={runningRegionAction} maskRevision={maskRevision}/> : <div className="flex h-full flex-col items-center justify-center text-muted"><ImagePlus size={36}/><h3 className="mb-1 mt-3 text-base text-secondary">导入漫画页面</h3><p className="mb-4 mt-0 text-xs">支持 JPG、PNG 和 WebP，可一次选择多张。</p><button className={`${primaryButtonClass} !min-h-[34px]`} disabled={editorBusy} onClick={openImagePicker}>选择图片</button></div>}</main>
-      <RegionProperties region={selectedIds.length === 1 ? regions.find(region => region.id === selectedIds[0]) : undefined} selectedCount={selectedIds.length} fontOptions={[...DEFAULT_FONT_FAMILIES.map(font => font.name), ...fontResources.map(font => font.name)]} busyAction={runningRegionAction} onUpdate={updateRegion} onAction={action}/>
+      <main className="relative min-h-0 min-w-0 bg-canvas bg-[linear-gradient(45deg,var(--color-panel)_25%,transparent_25%),linear-gradient(-45deg,var(--color-panel)_25%,transparent_25%),linear-gradient(45deg,transparent_75%,var(--color-panel)_75%),linear-gradient(-45deg,transparent_75%,var(--color-panel)_75%)] [background-position:0_0,0_10px,10px_-10px,-10px_0] [background-size:20px_20px]">{page ? <MangaCanvas page={page} regions={regions} onCreate={createRegion} onUpdate={updateRegion} onSaveMask={saveMask} onRegionAction={(id, name, options) => {void action(name, options, id)}} runningAction={runningRegionAction} maskRevision={maskRevision}/> : <div className="flex h-full flex-col items-center justify-center text-muted"><ImagePlus size={36}/><h3 className="mb-1 mt-3 text-base text-secondary">导入漫画页面</h3><p className="mb-4 mt-0 text-xs">支持 JPG、PNG 和 WebP，可一次选择多张。</p><button className={`${primaryButtonClass} !min-h-[34px]`} disabled={editorBusy} onClick={openImagePicker}>选择图片</button></div>}{showingPageSwitch && <div className="absolute inset-0 z-[65] cursor-wait" aria-busy="true" aria-live="polite"><span className="absolute left-1/2 top-3 -translate-x-1/2 rounded-lg bg-surface/95 px-3 py-2 shadow-panel"><InlineLoading label="正在切换图片"/></span></div>}</main>
+      <RegionProperties region={selectedIds.length === 1 ? regions.find(region => region.id === selectedIds[0]) : undefined} selectedRegions={regions.filter(region => selectedIds.includes(region.id))} selectedCount={selectedIds.length} fontOptions={[...DEFAULT_FONT_FAMILIES.map(font => font.name), ...fontResources.map(font => font.name)]} busyAction={runningRegionAction} onUpdate={updateRegion} onAction={action}/>
     </div>
     {pageContextMenu && createPortal(<div ref={pageContextMenuRef} className="fixed z-[110] w-[182px] overflow-hidden rounded-xl border border-line-strong bg-[rgb(24_27_23/.98)] p-1 text-secondary shadow-dialog backdrop-blur-xl" style={{left: pageContextMenu.x, top: pageContextMenu.y}} role="menu" aria-label="图片操作">
       <div className="flex h-9 items-center border-b border-line-subtle px-2"><span className="min-w-0 truncate text-[10px] text-muted" title={pages.find(item => item.id === pageContextMenu.pageId)?.filename}>{pages.find(item => item.id === pageContextMenu.pageId)?.filename}</span></div>
+      <button className="mt-1 flex h-9 w-full cursor-pointer items-center gap-2 rounded-lg border-0 bg-transparent px-3 text-left text-[11px] text-secondary outline-none transition-colors hover:bg-hover hover:text-ink disabled:cursor-default disabled:opacity-60" type="button" role="menuitem" disabled={!!contextPage && !contextPage.ocr_exempt && !pageNeedsOcr(contextPage)} onClick={() => void togglePageOcrExempt(pageContextMenu.pageId)}><CheckCircle2 size={15} className="text-accent"/>{contextPage?.ocr_exempt ? '取消已翻译' : '已翻译'}</button>
       <button className="mt-1 flex h-9 w-full cursor-pointer items-center gap-2 rounded-lg border-0 bg-transparent px-3 text-left text-[11px] text-[#d9a09a] outline-none transition-colors hover:bg-danger/20 hover:text-white" type="button" role="menuitem" onClick={() => void deletePage(pageContextMenu.pageId)}><Trash2 size={15}/>删除图片</button>
     </div>, document.body)}
-    {showContext && <div className="fixed inset-0 z-[90] grid place-items-center bg-black/60 backdrop-blur-sm"><div className="w-[min(650px,70vw)] overflow-hidden rounded-xl border border-line-strong bg-surface shadow-dialog"><header className="flex items-center justify-between border-b border-line-subtle px-5 py-4"><div><span className={eyebrowClass}>PROJECT CONTEXT</span><h2 className="mb-0 mt-1 text-xl">翻译上下文</h2></div><button className={cn(iconButtonClass, 'border-0 bg-transparent text-xl')} onClick={() => setShowContext(false)}>×</button></header><p className="px-5 text-xs text-muted">以 JSON 保存人物名、术语、口癖、称谓和章节背景；整页翻译时会随 Region ID 一起发送。</p><textarea className={cn(textareaClass, 'mx-5 mb-5 min-h-[310px] w-[calc(100%-40px)] font-mono text-[11px] leading-relaxed')} value={contextText} onChange={event => setContextText(event.target.value)} spellCheck={false}/><footer className="flex justify-end gap-2 border-t border-line-subtle px-5 py-4"><button className={`${buttonClass} !min-h-[34px]`} onClick={() => setShowContext(false)}>取消</button><button className={`${primaryButtonClass} !min-h-[34px]`} onClick={async () => {try {const parsed = JSON.parse(contextText); const updated = await api.projects.update(projectId, {translation_context: parsed}); setProject(updated); setShowContext(false)} catch (reason) {setError(reason instanceof Error ? reason.message : 'JSON 格式错误')}}}>保存上下文</button></footer></div></div>}
-    {editorBusy && <div className="fixed inset-0 z-[75] flex cursor-wait items-center justify-center bg-canvas/50 backdrop-blur-[2px]" role="status" aria-live="assertive" aria-label={busyLabel}><div className="flex min-w-[260px] items-center gap-3 rounded-xl bg-surface px-5 py-4 text-ink shadow-panel"><LoaderCircle className="shrink-0 animate-spin text-accent" size={24}/><span className="flex flex-col gap-1"><strong className="text-xs">{busyLabel}</strong><small className="text-[10px] text-muted">任务完成前暂时不能进行其他操作</small></span></div></div>}
-    {!editorBusy && (error ? <div className="pointer-events-none fixed left-1/2 top-[72px] z-[120] flex w-max max-w-[min(600px,calc(100vw-36px))] -translate-x-1/2 items-center gap-3 rounded-lg bg-danger/25 py-3 pl-4 pr-2 text-[#ffe3df] shadow-panel" role="alert"><span className="min-w-0 text-[11px] leading-relaxed">{error}</span><button className="pointer-events-auto grid size-7 cursor-pointer place-items-center rounded-md border-0 bg-transparent p-0 text-lg text-current opacity-70 hover:bg-white/10 hover:opacity-100" type="button" aria-label="关闭提示" onClick={() => {setError(''); setNotice('')}}>×</button></div> : notice && <div className="pointer-events-none fixed left-1/2 top-[72px] z-[120] flex w-max max-w-[min(600px,calc(100vw-36px))] -translate-x-1/2 items-center gap-3 rounded-lg bg-success/20 py-3 pl-4 pr-2 text-[#c7f7e9] shadow-panel" role="status"><span className="min-w-0 text-[11px] leading-relaxed">{notice}</span><button className="pointer-events-auto grid size-7 cursor-pointer place-items-center rounded-md border-0 bg-transparent p-0 text-lg text-current opacity-70 hover:bg-white/10 hover:opacity-100" type="button" aria-label="关闭提示" onClick={() => {setNotice(''); setError('')}}>×</button></div>)}
+    {showContext && <div className="fixed inset-0 z-[90] grid place-items-center bg-black/60 backdrop-blur-sm"><div className="w-[min(650px,70vw)] overflow-hidden rounded-xl border border-line-strong bg-surface shadow-dialog"><header className="flex items-center justify-between border-b border-line-subtle px-5 py-4"><div><span className={eyebrowClass}>PROJECT CONTEXT</span><h2 className="mb-0 mt-1 text-xl">翻译上下文</h2></div><button className={cn(iconButtonClass, 'border-0 bg-transparent text-xl')} disabled={savingContext} onClick={() => setShowContext(false)}>×</button></header><p className="px-5 text-xs text-muted">以 JSON 保存人物名、术语、口癖、称谓和章节背景；整页翻译时会随 Region ID 一起发送。</p><textarea className={cn(textareaClass, 'mx-5 mb-5 min-h-[310px] w-[calc(100%-40px)] font-mono text-[11px] leading-relaxed')} disabled={savingContext} value={contextText} onChange={event => setContextText(event.target.value)} spellCheck={false}/><footer className="flex justify-end gap-2 border-t border-line-subtle px-5 py-4"><button className={`${buttonClass} !min-h-[34px]`} disabled={savingContext} onClick={() => setShowContext(false)}>取消</button><button className={`${primaryButtonClass} !min-h-[34px]`} disabled={savingContext} onClick={() => void saveTranslationContext()}>{savingContext ? <ButtonLoading label="保存中…"/> : '保存上下文'}</button></footer></div></div>}
+    {blockingBusy && <BlockingLoader label={busyLabel} progress={busyProgress}/>}
+    {!blockingBusy && (error ? <div className="pointer-events-none fixed left-1/2 top-[72px] z-[120] flex w-max max-w-[min(600px,calc(100vw-36px))] -translate-x-1/2 items-center gap-3 rounded-lg bg-danger/25 py-3 pl-4 pr-2 text-[#ffe3df] shadow-panel" role="alert"><span className="min-w-0 text-[11px] leading-relaxed">{error}</span><button className="pointer-events-auto grid size-7 cursor-pointer place-items-center rounded-md border-0 bg-transparent p-0 text-lg text-current opacity-70 hover:bg-white/10 hover:opacity-100" type="button" aria-label="关闭提示" onClick={() => {setError(''); setNotice('')}}>×</button></div> : notice && <div className="pointer-events-none fixed left-1/2 top-[72px] z-[120] flex w-max max-w-[min(600px,calc(100vw-36px))] -translate-x-1/2 items-center gap-3 rounded-lg bg-success/20 py-3 pl-4 pr-2 text-[#c7f7e9] shadow-panel" role="status"><span className="min-w-0 text-[11px] leading-relaxed">{notice}</span><button className="pointer-events-auto grid size-7 cursor-pointer place-items-center rounded-md border-0 bg-transparent p-0 text-lg text-current opacity-70 hover:bg-white/10 hover:opacity-100" type="button" aria-label="关闭提示" onClick={() => {setNotice(''); setError('')}}>×</button></div>)}
     <input ref={fileRef} disabled={editorBusy} hidden type="file" accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp" multiple onChange={event => void upload(event.currentTarget.files)}/>
   </div>
   </>
 }
 
 function editable(region: TextRegion): Partial<TextRegion> {
-  const keys: (keyof TextRegion)[] = ['polygon','bbox','translated_polygon','translated_bbox','source_text','translated_text','confidence','orientation','reading_order','panel_id','bubble_id','region_type','font_size','font_family','font_weight','text_color','stroke_color','stroke_width','alignment','line_spacing','character_spacing','rotation','opacity','locked','visible']
+  const keys: (keyof TextRegion)[] = ['polygon','bbox','translated_polygon','translated_bbox','source_text','translated_text','confidence','orientation','reading_order','panel_id','bubble_id','region_type','font_size','font_family','font_weight','text_color','stroke_color','stroke_width','alignment','line_spacing','character_spacing','rotation','perspective_warp','opacity','locked','visible']
   return Object.fromEntries(keys.map(key => [key, region[key]])) as Partial<TextRegion>
 }
 
@@ -988,8 +1359,13 @@ function blurActiveControl() {
   if (document.activeElement instanceof HTMLElement) document.activeElement.blur()
 }
 
-function pageTaskBusyLabel(task: ProcessingTask | null, continueAfterReview: boolean): string {
-  if (!task?.current_stage) return continueAfterReview ? '正在生成净图和译文…' : '正在检测并识别当前页…'
+function pageTaskBusyLabel(task: ProcessingTask | null, requestedStage: PageWorkflowStage | null): string {
+  if (!task?.current_stage) return ({
+    ocr: '正在重新 OCR 当前页…',
+    translation: '正在重新翻译当前页…',
+    inpainting: '正在重新修复当前页…',
+    rendering: '正在重新排版当前页…',
+  } as Record<PageWorkflowStage, string>)[requestedStage || 'ocr']
   if (task.current_stage === 'detection') return '正在检测文字区域…'
   if (task.current_stage === 'ocr') {
     if (task.message.startsWith('Loading OCR model')) return '检测完成，正在加载 OCR 模型…'
@@ -1004,7 +1380,29 @@ function pageTaskBusyLabel(task: ProcessingTask | null, continueAfterReview: boo
   } as Record<string, string>)[task.current_stage] || '正在处理当前页…'
 }
 
+function pageWorkflowRank(page: ImagePage, regions: TextRegion[]): number {
+  const ranks: Record<string, number> = {
+    UPLOADED: 0, DETECTING: 0, DETECTED: 0, OCR_RUNNING: 0,
+    OCR_DONE: 1, TRANSLATING: 1,
+    TRANSLATED: 2, MASK_GENERATING: 2, INPAINTING: 2,
+    INPAINTED: 3, LAYOUTING: 3, RENDERING: 3,
+    COMPLETED: 4, NEEDS_REVIEW: 4,
+  }
+  if (page.status !== 'FAILED') return ranks[page.status] ?? 0
+  if (page.rendered_url || page.text_layer_url) return 4
+  if (page.clean_url) return 3
+  const recognized = regions.filter(region => region.source_text.trim())
+  if (recognized.length && recognized.every(region => region.translated_text.trim())) return 2
+  if (recognized.length) return 1
+  return 0
+}
+
+function pageNeedsOcr(page: ImagePage): boolean {
+  return !page.ocr_exempt && ['UPLOADED', 'DETECTED', 'FAILED'].includes(page.status)
+}
+
 function pageState(page: ImagePage): {className: string, label: string} {
+  if (page.ocr_exempt) return {className: 'text-accent', label: '已翻译'}
   const status = page.status === 'NEEDS_REVIEW' ? 'COMPLETED' : page.status
   const labels: Record<string, string> = {
     UPLOADED: '未识别', DETECTING: '检测中', DETECTED: '待识别', OCR_RUNNING: '识别中', OCR_DONE: '待确认',

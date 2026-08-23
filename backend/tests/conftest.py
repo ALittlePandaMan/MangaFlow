@@ -11,6 +11,9 @@ TEST_DATA = Path(tempfile.mkdtemp(prefix="mangaflow-tests-"))
 os.environ["MANGAFLOW_DATA_DIR"] = str(TEST_DATA)
 os.environ["MANGAFLOW_DATABASE_URL"] = f"sqlite:///{TEST_DATA / 'test.db'}"
 os.environ["MANGAFLOW_TASK_CONCURRENCY"] = "1"
+os.environ["MANGAFLOW_MODEL_DIR"] = str(TEST_DATA / "models")
+os.environ["MANGAFLOW_MODEL_MANIFEST_PATH"] = ""
+os.environ["MANGAFLOW_ENVIRONMENT_FILE_PATH"] = str(TEST_DATA / ".env")
 
 from app.main import app  # noqa: E402
 

@@ -10,7 +10,6 @@ import httpx
 from app.services.base import ProviderCapabilities, ProviderError, Translator
 from app.services.translation.prompts import DEFAULT_TRANSLATION_PROMPT
 
-
 API_PROTOCOL_ALIASES = {
     "auto": "auto",
     "openai": "openai",

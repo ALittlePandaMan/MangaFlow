@@ -1,0 +1,6 @@
+* text=auto eol=lf
+
+*.sh text eol=lf
+*.py text eol=lf
+*.{ts,tsx,js,json,css,html,yaml,yml,md} text eol=lf
+*.{png,jpg,jpeg,gif,webp,ico,ttf,otf,ttc,otc,zip} binary

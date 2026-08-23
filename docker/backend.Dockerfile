@@ -16,7 +16,10 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 RUN sed '/^paddlepaddle==/d' /tmp/requirements-models.txt > /tmp/requirements-models-gpu.txt \
     && pip install --no-cache-dir --timeout 300 --retries 10 -r /tmp/requirements-models-gpu.txt
 RUN pip install --no-cache-dir --no-deps simple-lama-inpainting==0.1.2
-RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 && rm -rf /var/lib/apt/lists/*
+# Paddle's native extension looks for libgomp through the system loader. The
+# PyTorch base image already ships the library in Conda, so register that copy
+# instead of downloading a duplicate Ubuntu package during every image build.
+RUN ln -sf /opt/conda/lib/libgomp.so.1 /usr/local/lib/libgomp.so.1 && ldconfig
 COPY backend /app/backend
 WORKDIR /app/backend
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

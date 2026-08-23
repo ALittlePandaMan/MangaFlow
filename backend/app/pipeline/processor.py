@@ -3,9 +3,12 @@ from __future__ import annotations
 import logging
 import shutil
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 import cv2
+import numpy as np
+from PIL import Image
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
@@ -14,12 +17,14 @@ from app.core.secrets import get_secret_store
 from app.models import ImagePage, ModelConfig, ProcessingTask, TextRegion, Translation
 from app.models.enums import PageStatus, PipelineStage, TaskStatus
 from app.services.inpainting import create_text_mask
+from app.services.model_manifest import persist_model_settings
 from app.services.model_provisioning import ensure_recommended_config
 from app.services.quality import evaluate_page
 from app.services.regions import save_revision
 from app.services.registry import registry
 from app.storage import get_storage
 from app.utils.geometry import reading_order_japanese
+from app.utils.image_metadata import load_rgb_with_metadata, save_png_with_metadata
 
 logger = logging.getLogger(__name__)
 STAGES = ["detection", "ocr", "translation", "mask", "inpainting", "rendering"]
@@ -50,8 +55,10 @@ class PipelineProcessor:
         self.db = db
         self.storage = get_storage()
         self.settings = get_settings()
+        self._active_task_id: str | None = None
 
     async def execute(self, task_id: str) -> None:
+        self._active_task_id = task_id
         task = self._task(task_id)
         page = self.db.scalar(
             select(ImagePage)
@@ -87,6 +94,10 @@ class PipelineProcessor:
             page.current_stage = stage
             page.status = PAGE_RUNNING_STATUS[stage]
             page.error_message = None
+            if stage in {"detection", "ocr"} and bool((page.metadata_json or {}).get("ocr_exempt", False)):
+                metadata = dict(page.metadata_json or {})
+                metadata.pop("ocr_exempt", None)
+                page.metadata_json = metadata
             self.db.commit()
             if stage == "detection":
                 self.detect(page, payload.get("provider"), force=force)
@@ -114,7 +125,13 @@ class PipelineProcessor:
             elif stage == "mask":
                 self.generate_masks(page, force=force, region_id=region_id, region_ids=region_ids, options=options)
             elif stage == "inpainting":
-                self.inpaint(page, payload.get("provider"), region_id=region_id, region_ids=region_ids)
+                self.inpaint(
+                    page,
+                    payload.get("provider"),
+                    region_id=region_id,
+                    region_ids=region_ids,
+                    rebuild_clean=bool(options.get("rebuild_clean", False)),
+                )
             elif stage == "rendering":
                 self.render(page, payload.get("provider"), region_id=region_id)
             page.status = PAGE_DONE_STATUS[stage]
@@ -140,8 +157,16 @@ class PipelineProcessor:
         if existing and not force:
             return
         self._invalidate_outputs(page, clean=True)
+        preserved: list[TextRegion] = []
         for region in existing:
-            if not region.locked:
+            layout_data = region.layout_data or {}
+            # API-created regions were historically stored without provenance.
+            # Treat those legacy records as manual too. Detector output always
+            # carries the `detection` key, even when its metadata is empty.
+            is_manual = bool(layout_data.get("manual")) or "detection" not in layout_data
+            if region.locked or is_manual:
+                preserved.append(region)
+            else:
                 self.db.delete(region)
         self.db.flush()
         provider, _ = self._provider("detection", provider_name)
@@ -150,7 +175,7 @@ class PipelineProcessor:
         raw = [{"bbox": result.bbox} for result in detected]
         order = reading_order_japanese(raw)
         rank = {source_index: position + 1 for position, source_index in enumerate(order)}
-        used_keys = {region.region_key for region in existing if region.locked}
+        used_keys = {region.region_key for region in preserved}
         next_number = 1
         for index, result in enumerate(detected):
             while f"R{next_number:03d}" in used_keys:
@@ -322,7 +347,11 @@ class PipelineProcessor:
         options: dict[str, Any],
         region_ids: set[str] | None = None,
     ) -> None:
-        self._invalidate_outputs(page, clean=True)
+        # A selected-region repair reuses the current clean image for every
+        # unselected mask. Keep that page-level result available until the
+        # inpainting stage has built the incremental replacement.
+        partial_repair = bool(region_id or region_ids) and not bool(options.get("rebuild_clean", False))
+        self._invalidate_outputs(page, clean=not partial_repair)
         page_directory = self.storage.page_dir(page.project_id, page.id)
         source = self.storage.absolute(page.original_path)
         for region in self._regions(page, region_id, region_ids):
@@ -351,11 +380,17 @@ class PipelineProcessor:
         *,
         region_id: str | None,
         region_ids: set[str] | None = None,
+        rebuild_clean: bool = False,
     ) -> None:
         self._invalidate_outputs(page, clean=False)
         provider, _ = self._provider("inpainting", provider_name)
-        selected_ids = {region.id for region in self._regions(page, region_id, region_ids)}
+        selected_regions = self._regions(page, region_id, region_ids)
+        selected_ids = {region.id for region in selected_regions}
         page_directory = self.storage.page_dir(page.project_id, page.id)
+        if (region_id or region_ids) and not rebuild_clean:
+            self._inpaint_selected(page, provider, selected_regions, page_directory)
+            return
+
         current = self.storage.absolute(page.original_path)
         final = page_directory / "clean" / "clean.png"
         regions = [
@@ -392,6 +427,85 @@ class PipelineProcessor:
         page.clean_path = self.storage.relative(final)
         self.db.flush()
 
+    def _inpaint_selected(
+        self,
+        page: ImagePage,
+        provider: Any,
+        selected_regions: list[TextRegion],
+        page_directory: Path,
+    ) -> None:
+        """Replace only selected repairs while retaining cached unselected pixels.
+
+        The incremental source is rebuilt from the immutable original. Pixels
+        from the existing clean image are copied back only through unselected
+        masks, so an old selected mask that shrank or moved cannot leave a
+        repaired ghost behind. The provider then receives only the union of the
+        newly selected masks and therefore never reruns inference for other
+        regions.
+        """
+
+        original_path = self.storage.absolute(page.original_path)
+        original, metadata = load_rgb_with_metadata(original_path)
+        selected_ids = {region.id for region in selected_regions}
+        selected_mask = self._combined_region_mask(selected_regions)
+        unselected_mask = self._combined_region_mask(
+            [region for region in page.regions if region.id not in selected_ids and region.pixel_mask_path]
+        )
+        expected_shape = (original.height, original.width)
+        if selected_mask is not None and selected_mask.shape != expected_shape:
+            raise ValueError("Selected masks must match the original page dimensions")
+        if unselected_mask is not None and unselected_mask.shape != expected_shape:
+            raise ValueError("Unselected masks must match the original page dimensions")
+
+        source = original
+        if page.clean_path and unselected_mask is not None:
+            clean_path = self.storage.absolute(page.clean_path)
+            if clean_path.exists():
+                clean, _ = load_rgb_with_metadata(clean_path)
+                if clean.size != original.size:
+                    raise ValueError("Clean image dimensions must match the original page")
+                preserve = np.where(unselected_mask > 8, 255, 0).astype(np.uint8)
+                source = Image.composite(clean, original, Image.fromarray(preserve))
+
+        suffix = self._active_task_id or "manual"
+        source_path = page_directory / "versions" / f"selected-inpaint-source-{suffix}.png"
+        mask_path = page_directory / "versions" / f"selected-inpaint-mask-{suffix}.png"
+        intermediate = page_directory / "versions" / f"inpaint-selected-{suffix}.png"
+        final = page_directory / "clean" / "clean.png"
+        save_png_with_metadata(source, source_path, metadata)
+
+        current = source_path
+        if selected_mask is not None:
+            if not cv2.imwrite(str(mask_path), selected_mask):
+                raise ValueError("Cannot write selected inpainting mask")
+            provider.inpaint(source_path, mask_path, intermediate, "background_complex")
+            current = intermediate
+            for region in selected_regions:
+                if not region.pixel_mask_path:
+                    continue
+                region.region_type = "background_complex"
+                save_revision(self.db, region, "inpainted")
+                region.inpainted_path = self.storage.relative(intermediate)
+
+        shutil.copy2(current, final)
+        page.clean_path = self.storage.relative(final)
+        self.db.flush()
+        source_path.unlink(missing_ok=True)
+        mask_path.unlink(missing_ok=True)
+
+    def _combined_region_mask(self, regions: list[TextRegion]) -> np.ndarray | None:
+        combined = None
+        for region in regions:
+            if not region.pixel_mask_path:
+                continue
+            mask = cv2.imread(str(self.storage.absolute(region.pixel_mask_path)), cv2.IMREAD_GRAYSCALE)
+            if mask is None:
+                raise ValueError(f"Cannot read mask for region {region.region_key}")
+            if combined is not None and mask.shape != combined.shape:
+                raise ValueError("All page masks must have matching dimensions")
+            combined = mask if combined is None else cv2.bitwise_or(combined, mask)
+        return combined
+
     def render(self, page: ImagePage, provider_name: str | None, *, region_id: str | None) -> None:
         provider, _ = self._provider("rendering", provider_name)
         background = self.storage.absolute(page.clean_path or page.original_path)
@@ -420,6 +534,11 @@ class PipelineProcessor:
         if configured is None and not requested and self.settings.auto_provision_models:
             configured, _ = ensure_recommended_config(self.db, kind)
             self.db.commit()
+            persist_model_settings(
+                self.db,
+                self.settings.model_manifest_path,
+                environment_path=self.settings.environment_file_path,
+            )
         if configured:
             config = dict(configured.config or {})
             secret = get_secret_store().decrypt(configured.encrypted_api_key)

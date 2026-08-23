@@ -8,15 +8,27 @@ from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.core.config import get_settings
 from app.core.database import get_db
 from app.core.secrets import get_secret_store
 from app.models import ModelConfig
 from app.schemas.domain import BootstrapModelsRequest, ModelConfigCreate, ModelDiscoveryRequest
-from app.services.model_provisioning import bootstrap_recommended_models
+from app.services.device import device_profile
+from app.services.model_manifest import persist_model_settings
+from app.services.model_provisioning import bootstrap_recommended_models, setup_status_report
 from app.services.registry import registry
 from app.services.translation.providers import api_auth_headers, normalize_api_base_url, resolve_api_protocol
 
 router = APIRouter(tags=["models"])
+
+
+def _persist_active_settings(db: Session) -> None:
+    settings = get_settings()
+    persist_model_settings(
+        db,
+        settings.model_manifest_path,
+        environment_path=settings.environment_file_path,
+    )
 
 
 def _safe_config(item: ModelConfig) -> dict:
@@ -43,6 +55,21 @@ def _safe_config(item: ModelConfig) -> dict:
 def list_models(db: Session = Depends(get_db)) -> dict:
     configured = list(db.scalars(select(ModelConfig).order_by(ModelConfig.kind, ModelConfig.name)).all())
     return {"available": registry.describe(), "configured": [_safe_config(item) for item in configured]}
+
+
+@router.get("/models/device-profile")
+def get_device_profile() -> dict:
+    return device_profile()
+
+
+@router.get("/models/setup-status")
+def get_setup_status(db: Session = Depends(get_db)) -> dict:
+    return setup_status_report(db)
+
+
+@router.post("/models/setup-status/verify")
+def verify_setup_status(db: Session = Depends(get_db)) -> dict:
+    return setup_status_report(db, validate_models=True)
 
 
 @router.post("/models/discover")
@@ -150,17 +177,24 @@ def configure_model(payload: ModelConfigCreate, db: Session = Depends(get_db)) -
         db.rollback()
         raise HTTPException(409, "A model config with this kind and name already exists") from exc
     db.refresh(item)
+    _persist_active_settings(db)
     return _safe_config(item)
 
 
 @router.post("/models/bootstrap")
 def bootstrap_models(payload: BootstrapModelsRequest, db: Session = Depends(get_db)) -> dict:
-    report = bootstrap_recommended_models(
-        db,
-        stages=payload.stages,
-        preload=payload.preload,
-        upgrade_fallbacks=payload.upgrade_fallbacks,
-    )
+    try:
+        report = bootstrap_recommended_models(
+            db,
+            stages=payload.stages,
+            preload=payload.preload,
+            upgrade_fallbacks=payload.upgrade_fallbacks,
+            selections=[selection.model_dump() for selection in payload.selections],
+        )
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(422, str(exc)) from exc
+    _persist_active_settings(db)
     return {
         "ok": all(entry["status"] not in {"error", "dependency_missing"} for entry in report),
         "models": report,
@@ -194,6 +228,7 @@ def update_model_config(config_id: str, payload: ModelConfigCreate, db: Session 
         db.rollback()
         raise HTTPException(409, "A model config with this kind and name already exists") from exc
     db.refresh(item)
+    _persist_active_settings(db)
     return _safe_config(item)
 
 
@@ -204,3 +239,4 @@ def delete_model_config(config_id: str, db: Session = Depends(get_db)) -> None:
         raise HTTPException(404, "Model config not found")
     db.delete(item)
     db.commit()
+    _persist_active_settings(db)

@@ -94,12 +94,18 @@ interface NumberControlProps {
   placeholder?: string
   ariaLabel?: string
   compact?: boolean
+  mixed?: boolean
+  onStep?: (direction: 1 | -1) => void
 }
 
-export function NumberControl({value, defaultValue = '', onChange, name, min, max, step = 1, disabled = false, placeholder, ariaLabel, compact = false}: NumberControlProps) {
-  const [draft, setDraft] = useState(String(value ?? defaultValue))
+export function NumberControl({value, defaultValue = '', onChange, name, min, max, step = 1, disabled = false, placeholder, ariaLabel, compact = false, mixed = false, onStep}: NumberControlProps) {
+  const [draft, setDraft] = useState(mixed ? '' : String(value ?? defaultValue))
   const [focused, setFocused] = useState(false)
-  useEffect(() => { if (!focused && value !== undefined) setDraft(String(value)) }, [focused, value])
+  useEffect(() => {
+    if (focused) return
+    if (mixed) setDraft('')
+    else if (value !== undefined) setDraft(String(value))
+  }, [focused, mixed, value])
 
   const normalize = (candidate: number) => {
     let next = candidate
@@ -120,6 +126,10 @@ export function NumberControl({value, defaultValue = '', onChange, name, min, ma
     if (next.trim() && Number.isFinite(parsed)) onChange?.(parsed)
   }
   const stepBy = (direction: 1 | -1) => {
+    if (mixed && onStep) {
+      onStep(direction)
+      return
+    }
     const parsed = Number(draft)
     const fallback = value ?? (min !== undefined ? min : 0)
     commit((Number.isFinite(parsed) ? parsed : fallback) + direction * step)

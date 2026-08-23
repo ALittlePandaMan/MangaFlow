@@ -32,6 +32,7 @@ SNAPSHOT_FIELDS = (
     "line_spacing",
     "character_spacing",
     "rotation",
+    "perspective_warp",
     "opacity",
     "locked",
     "visible",
@@ -73,7 +74,12 @@ def create_region(db: Session, page: ImagePage, data: RegionCreate) -> TextRegio
         values["translated_bbox"] = deepcopy(values["bbox"])
     if not values["translated_polygon"]:
         values["translated_polygon"] = deepcopy(values["polygon"])
-    region = TextRegion(image_id=page.id, region_key=data.region_key or next_region_key(db, page.id), **values)
+    region = TextRegion(
+        image_id=page.id,
+        region_key=data.region_key or next_region_key(db, page.id),
+        layout_data={"manual": True},
+        **values,
+    )
     db.add(region)
     db.flush()
     save_revision(db, region, "created")
@@ -115,6 +121,7 @@ def copy_region(db: Session, region: TextRegion, offset: float = 12) -> TextRegi
     values["translated_bbox"] = [translated_bbox[0] + offset, translated_bbox[1] + offset, translated_bbox[2], translated_bbox[3]]
     values["translated_polygon"] = [[point[0] + offset, point[1] + offset] for point in translated_polygon]
     values["locked"] = False
+    values["layout_data"] = {**(values.get("layout_data") or {}), "manual": True}
     duplicate = TextRegion(image_id=region.image_id, region_key=next_region_key(db, region.image_id), **values)
     db.add(duplicate)
     db.flush()
@@ -147,12 +154,14 @@ def merge_regions(db: Session, regions: list[TextRegion]) -> TextRegion:
     ]
     target.translated_polygon = bbox_to_polygon(target.translated_bbox)
     target.rotation = 0.0
+    target.perspective_warp = False
     joiner = "" if target.orientation == "vertical" else " "
     target.source_text = joiner.join(region.source_text for region in ordered if region.source_text)
     target.translated_text = joiner.join(region.translated_text for region in ordered if region.translated_text)
     target.confidence = min((region.confidence for region in ordered), default=0.0)
     target.visible = any(region.visible for region in ordered)
     target.pixel_mask_path = None
+    target.layout_data = {**(target.layout_data or {}), "manual": True}
     for region in ordered[1:]:
         db.delete(region)
     db.flush()
@@ -171,9 +180,11 @@ def split_region(db: Session, region: TextRegion, axis: str = "auto") -> list[Te
     region.polygon = bbox_to_polygon(boxes[0])
     region.translated_bbox = translated_boxes[0]
     region.translated_polygon = bbox_to_polygon(translated_boxes[0])
+    region.perspective_warp = False
     region.source_text = source_parts[0]
     region.translated_text = translated_parts[0]
     region.pixel_mask_path = None
+    region.layout_data = {**(region.layout_data or {}), "manual": True}
     values = region_snapshot(region)
     values["bbox"] = boxes[1]
     values["polygon"] = bbox_to_polygon(boxes[1])

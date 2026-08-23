@@ -1,7 +1,7 @@
 import { AlertOctagon, AlertTriangle, ArrowLeft, ExternalLink } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { Loading } from '../components/AppShell'
+import { ReviewSkeleton } from '../components/LoadingUI'
 import { api } from '../services/api'
 import type { Project, QualityIssue } from '../types'
 import {cn, eyebrowClass, pageClass} from '../ui'
@@ -12,7 +12,7 @@ export function ReviewPage() {
   const [issues, setIssues] = useState<QualityIssue[]>([])
   const [loading, setLoading] = useState(true)
   useEffect(() => { Promise.all([api.projects.get(projectId), api.projects.review(projectId)]).then(([item, found]) => {setProject(item); setIssues(found)}).finally(() => setLoading(false)) }, [projectId])
-  if (loading) return <Loading label="正在执行质量检查…"/>
+  if (loading) return <ReviewSkeleton/>
   const groups = issues.reduce<Record<string, QualityIssue[]>>((result, issue) => {
     ;(result[issue.image_id] ||= []).push(issue)
     return result

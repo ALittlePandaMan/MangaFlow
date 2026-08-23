@@ -42,11 +42,8 @@ def initialize_database() -> None:
     Base.metadata.create_all(bind=engine)
     # create_all does not add columns to databases created by older releases.
     # Keep this small compatibility migration here until formal migrations are introduced.
-    project_columns = {column["name"] for column in inspect(engine).get_columns("projects")}
     region_columns = {column["name"] for column in inspect(engine).get_columns("text_regions")}
     with engine.begin() as connection:
-        if "cover_path" not in project_columns:
-            connection.execute(text("ALTER TABLE projects ADD COLUMN cover_path TEXT"))
         if "visible" not in region_columns:
             connection.execute(text("ALTER TABLE text_regions ADD COLUMN visible BOOLEAN NOT NULL DEFAULT TRUE"))
         if "translated_polygon" not in region_columns:
@@ -55,3 +52,7 @@ def initialize_database() -> None:
         if "translated_bbox" not in region_columns:
             connection.execute(text("ALTER TABLE text_regions ADD COLUMN translated_bbox JSON NOT NULL DEFAULT '[]'"))
             connection.execute(text("UPDATE text_regions SET translated_bbox = bbox"))
+        if "perspective_warp" not in region_columns:
+            connection.execute(
+                text("ALTER TABLE text_regions ADD COLUMN perspective_warp BOOLEAN NOT NULL DEFAULT FALSE")
+            )

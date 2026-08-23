@@ -38,9 +38,10 @@ def require_task(db: Session, task_id: str) -> ProcessingTask:
 
 def project_read(project: Project) -> ProjectRead:
     result = ProjectRead.model_validate(project)
-    cover_url = get_storage().media_url(project.cover_path)
-    if cover_url:
-        cover_url = f"{cover_url}?v={int(project.updated_at.timestamp() * 1000)}"
+    cover_page = min(project.pages, key=lambda page: page.order_index, default=None)
+    cover_url = get_storage().media_url(cover_page.original_path) if cover_page else None
+    if cover_url and cover_page:
+        cover_url = f"{cover_url}?v={int(cover_page.updated_at.timestamp() * 1000)}"
     return result.model_copy(update={"page_count": len(project.pages), "cover_url": cover_url})
 
 
@@ -55,6 +56,7 @@ def image_read(page: ImagePage) -> ImageRead:
 
     return result.model_copy(
         update={
+            "ocr_exempt": bool((page.metadata_json or {}).get("ocr_exempt", False)),
             "original_url": versioned(page.original_path),
             "clean_url": versioned(page.clean_path),
             "rendered_url": versioned(page.rendered_path),

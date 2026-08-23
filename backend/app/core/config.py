@@ -27,6 +27,8 @@ class Settings(BaseSettings):
     cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:5173"])
     data_dir: Path = REPOSITORY_ROOT / "data"
     model_dir: Path = REPOSITORY_ROOT / "models"
+    model_manifest_path: Path | None = None
+    environment_file_path: Path = REPOSITORY_ROOT / ".env"
     database_url: str | None = None
     max_upload_mb: int = 100
     ocr_review_threshold: float = 0.65
@@ -44,6 +46,11 @@ class Settings(BaseSettings):
             except json.JSONDecodeError:
                 return [item.strip() for item in value.split(",") if item.strip()]
         return value
+
+    @field_validator("model_manifest_path", mode="before")
+    @classmethod
+    def parse_optional_path(cls, value: Any) -> Any:
+        return None if value is None or (isinstance(value, str) and not value.strip()) else value
 
     @property
     def resolved_database_url(self) -> str:

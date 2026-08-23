@@ -1,8 +1,9 @@
-import { ArrowRight, FolderPlus, ImagePlus, Languages, LoaderCircle, Pencil, Trash2 } from 'lucide-react'
+import { ArchiveRestore, ArrowRight, FolderPlus, Languages, Pencil, Trash2, Upload } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { EmptyState, Loading } from '../components/AppShell'
+import { EmptyState } from '../components/AppShell'
 import { useGlobalDialog } from '../components/GlobalDialog'
+import {ButtonLoading, ProjectsSkeleton, useMinimumLoadingTime} from '../components/LoadingUI'
 import { api } from '../services/api'
 import type { Project } from '../types'
 import {buttonClass, dangerButtonClass, eyebrowClass, inputClass, pageClass, primaryButtonClass, textareaClass} from '../ui'
@@ -11,6 +12,8 @@ export function ProjectsPage() {
   const [projects, setProjects] = useState<Project[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [deletingProjectId, setDeletingProjectId] = useState('')
+  const showingInitialLoading = useMinimumLoadingTime(loading, 500)
   const navigate = useNavigate()
   const {confirm: confirmDialog, openDialog} = useGlobalDialog()
 
@@ -35,18 +38,32 @@ export function ProjectsPage() {
       />,
     })
   }
+  const openImportProjectDialog = () => {
+    openDialog({
+      title:'导入源项目',
+      description:'选择由 MangaFlow“导出源项目”生成的 ZIP 工程包，页面、文字区域、译文和样式会恢复为可编辑状态。',
+      size:'small',
+      content:({close}) => <ImportProjectForm
+        onCancel={close}
+        onImport={async file => {
+          const imported = await api.projects.import(file)
+          await refresh()
+          close()
+          navigate(`/projects/${imported.id}/editor`)
+        }}
+      />,
+    })
+  }
   const openEditProjectDialog = (project: Project) => {
     openDialog({
       title:'编辑项目',
-      description:'修改项目名称、说明和项目列表中展示的封面图。',
-      size:'medium',
+      description:'修改项目名称和项目说明。项目封面会自动使用排序第一的漫画图片。',
+      size:'small',
       content:({close}) => <EditProjectForm
         project={project}
         onCancel={close}
         onSave={async payload => {
-          let updated = await api.projects.update(project.id, {name:payload.name, description:payload.description})
-          if (payload.cover) updated = await api.projects.uploadCover(project.id, payload.cover)
-          else if (payload.removeCover) updated = await api.projects.removeCover(project.id)
+          const updated = await api.projects.update(project.id, {name:payload.name, description:payload.description})
           setProjects(current => current.map(item => item.id === updated.id ? updated : item))
           close()
         }}
@@ -61,18 +78,20 @@ export function ProjectsPage() {
       confirmLabel: '删除项目',
     })
     if (!accepted) return
+    setDeletingProjectId(project.id)
     try {
       await api.projects.remove(project.id)
       setProjects(current => current.filter(item => item.id !== project.id))
     }
     catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)) }
+    finally {setDeletingProjectId('')}
   }
 
-  if (loading) return <Loading label="正在读取项目…" />
-  return <section className={pageClass}>
+  if (showingInitialLoading) return <ProjectsSkeleton/>
+  return <section className={`${pageClass} page-content-enter`}>
     <div className="mb-8 flex items-end justify-between gap-6">
       <div><span className={eyebrowClass}>WORKSPACES</span><h1 className="mb-2 mt-2 text-[34px] leading-tight tracking-[-1.5px] text-ink">漫画翻译项目</h1><p className="m-0 text-sm text-muted">从原稿到修复、排版与交付，所有页面都保留可编辑工程数据。</p></div>
-      <button className={`${primaryButtonClass} min-h-[42px] px-4`} onClick={openCreateProjectDialog}><FolderPlus size={18}/>新建项目</button>
+      <div className="flex items-center gap-2"><button className={`${buttonClass} min-h-[42px] px-4`} onClick={openImportProjectDialog}><ArchiveRestore size={18}/>导入源项目</button><button className={`${primaryButtonClass} min-h-[42px] px-4`} onClick={openCreateProjectDialog}><FolderPlus size={18}/>新建项目</button></div>
     </div>
     {error && <div className="my-3 rounded-lg bg-danger/15 px-4 py-3 text-xs text-[#ffb0a9]">{error}</div>}
     {!projects.length ? <EmptyState title="还没有漫画项目" detail="创建第一个项目，然后批量导入 JPG、PNG 或 WebP 原稿。" action={<button className={primaryButtonClass} onClick={openCreateProjectDialog}>开始创建</button>} /> :
@@ -84,55 +103,59 @@ export function ProjectsPage() {
           <div className="mt-4 flex gap-2">
             <button className={`${primaryButtonClass} mr-auto`} onClick={() => navigate(`/projects/${project.id}/editor`)}>打开工作台 <ArrowRight size={15}/></button>
             <button className={buttonClass} title="编辑项目" aria-label={`编辑项目 ${project.name}`} onClick={() => openEditProjectDialog(project)}><Pencil size={16}/></button>
-            <button className={dangerButtonClass} title="删除项目" onClick={() => removeProject(project)}><Trash2 size={16}/></button>
+            <button className={dangerButtonClass} disabled={Boolean(deletingProjectId)} title="删除项目" onClick={() => removeProject(project)}>{deletingProjectId === project.id ? <ButtonLoading compact label="正在删除项目"/> : <Trash2 size={16}/>}</button>
           </div>
         </div>
       </article>)}</div>}
   </section>
 }
 
+function ImportProjectForm({onCancel, onImport}: {onCancel: () => void; onImport: (file: File) => Promise<void>}) {
+  const input = useRef<HTMLInputElement>(null)
+  const [file, setFile] = useState<File | null>(null)
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState('')
+  const submit = async () => {
+    if (!file || submitting) return
+    setSubmitting(true); setError('')
+    try {await onImport(file)}
+    catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason))
+      setSubmitting(false)
+    }
+  }
+  return <form onSubmit={event => {event.preventDefault(); void submit()}}>
+    <div className="p-6">
+      <button type="button" disabled={submitting} className="flex min-h-[118px] w-full cursor-pointer flex-col items-center justify-center gap-3 rounded-xl border border-dashed border-line-strong bg-canvas px-5 text-center text-secondary outline-none transition-colors hover:border-accent/60 hover:bg-accent/[.03] hover:text-ink focus-visible:ring-3 focus-visible:ring-accent/15 disabled:cursor-not-allowed disabled:opacity-50" onClick={() => input.current?.click()}>
+        <span className="grid size-10 place-items-center rounded-xl bg-accent/10 text-accent"><Upload size={19}/></span>
+        <span className="max-w-full"><strong className="block truncate text-xs">{file?.name || '选择 MangaFlow 项目包'}</strong><small className="mt-1 block text-[10px] text-muted">仅支持“导出源项目”生成的 ZIP 文件</small></span>
+      </button>
+      <input ref={input} hidden type="file" accept=".zip,application/zip" disabled={submitting} onChange={event => setFile(event.target.files?.[0] || null)}/>
+      {error && <div className="mt-3 rounded-lg bg-danger/15 px-3 py-2 text-xs text-[#ffb0a9]">{error}</div>}
+    </div>
+    <div className="flex justify-end gap-2 border-t border-line-subtle px-6 py-4">
+      <button className={buttonClass} disabled={submitting} onClick={onCancel} type="button">取消</button>
+      <button className={primaryButtonClass} disabled={!file || submitting} type="submit">{submitting ? <ButtonLoading label="正在导入…"/> : <><ArchiveRestore size={16}/>导入并打开</>}</button>
+    </div>
+  </form>
+}
+
 interface EditProjectPayload {
   name: string
   description: string
-  cover: File | null
-  removeCover: boolean
 }
 
 function EditProjectForm({project, onCancel, onSave}: {project: Project; onCancel: () => void; onSave: (payload: EditProjectPayload) => Promise<void>}) {
   const [name, setName] = useState(project.name)
   const [description, setDescription] = useState(project.description || '')
-  const [cover, setCover] = useState<File | null>(null)
-  const [coverPreview, setCoverPreview] = useState<string | null>(project.cover_url)
-  const [removeCover, setRemoveCover] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')
-  const coverInput = useRef<HTMLInputElement>(null)
-  const objectUrl = useRef<string | null>(null)
-
-  useEffect(() => () => {if (objectUrl.current) URL.revokeObjectURL(objectUrl.current)}, [])
-
-  const chooseCover = (file: File | undefined) => {
-    if (!file) return
-    if (objectUrl.current) URL.revokeObjectURL(objectUrl.current)
-    objectUrl.current = URL.createObjectURL(file)
-    setCover(file)
-    setCoverPreview(objectUrl.current)
-    setRemoveCover(false)
-    if (coverInput.current) coverInput.current.value = ''
-  }
-  const clearCover = () => {
-    if (objectUrl.current) URL.revokeObjectURL(objectUrl.current)
-    objectUrl.current = null
-    setCover(null)
-    setCoverPreview(null)
-    setRemoveCover(!!project.cover_url)
-  }
   const submit = async () => {
     const projectName = name.trim()
     if (!projectName || submitting) return
     setSubmitting(true); setError('')
     try {
-      await onSave({name:projectName, description:description.trim(), cover, removeCover})
+      await onSave({name:projectName, description:description.trim()})
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason))
       setSubmitting(false)
@@ -140,29 +163,17 @@ function EditProjectForm({project, onCancel, onSave}: {project: Project; onCance
   }
 
   return <form onSubmit={event => {event.preventDefault(); void submit()}}>
-    <div className="grid gap-5 p-6 sm:grid-cols-[190px_minmax(0,1fr)]">
-      <div>
-        <span className="mb-2 block text-xs text-secondary">项目封面</span>
-        <div className="relative grid aspect-[4/3] w-full place-items-center overflow-hidden rounded-xl bg-raised text-muted shadow-[inset_0_0_0_1px_var(--color-line-subtle)]">
-          {coverPreview ? <img className="size-full object-cover" src={coverPreview} alt="项目封面预览"/> : <span className="flex flex-col items-center gap-2 text-[10px]"><ImagePlus size={25}/>暂无封面</span>}
-        </div>
-        <div className="mt-2 grid grid-cols-2 gap-2">
-          <button className={`${buttonClass} !min-h-8 px-2 text-[10px]`} disabled={submitting} onClick={() => coverInput.current?.click()} type="button"><ImagePlus size={14}/>{coverPreview ? '更换' : '选择'}</button>
-          <button className={`${dangerButtonClass} !min-h-8 px-2 text-[10px]`} disabled={submitting || !coverPreview} onClick={clearCover} type="button"><Trash2 size={14}/>移除</button>
-        </div>
-        <input ref={coverInput} hidden type="file" accept="image/jpeg,image/png,image/webp" onChange={event => chooseCover(event.currentTarget.files?.[0])}/>
-      </div>
-      <div className="min-w-0">
-        <label className="block text-xs text-secondary" htmlFor="edit-project-name">项目名称</label>
-        <input autoFocus className={`${inputClass} mt-2 min-h-[44px]`} disabled={submitting} id="edit-project-name" maxLength={200} value={name} onChange={event => setName(event.target.value)} placeholder="输入项目名称"/>
-        <label className="mt-4 block text-xs text-secondary" htmlFor="edit-project-description">项目说明</label>
-        <textarea className={`${textareaClass} mt-2 min-h-[126px] resize-none`} disabled={submitting} id="edit-project-description" maxLength={2000} value={description} onChange={event => setDescription(event.target.value)} placeholder="简单说明章节、剧情或翻译要求"/>
-      </div>
-      {error && <div className="rounded-lg bg-danger/15 px-3 py-2 text-xs text-[#ffb0a9] sm:col-span-2">{error}</div>}
+    <div className="p-6">
+      <label className="block text-xs text-secondary" htmlFor="edit-project-name">项目名称</label>
+      <input autoFocus className={`${inputClass} mt-2 min-h-[44px]`} disabled={submitting} id="edit-project-name" maxLength={200} value={name} onChange={event => setName(event.target.value)} placeholder="输入项目名称"/>
+      <label className="mt-4 block text-xs text-secondary" htmlFor="edit-project-description">项目说明</label>
+      <textarea className={`${textareaClass} mt-2 min-h-[126px] resize-none`} disabled={submitting} id="edit-project-description" maxLength={2000} value={description} onChange={event => setDescription(event.target.value)} placeholder="简单说明章节、剧情或翻译要求"/>
+      <p className="mb-0 mt-3 text-[10px] leading-relaxed text-muted">项目封面自动使用页面列表中排序第一的原图。</p>
+      {error && <div className="mt-3 rounded-lg bg-danger/15 px-3 py-2 text-xs text-[#ffb0a9]">{error}</div>}
     </div>
     <div className="flex justify-end gap-2 border-t border-line-subtle px-6 py-4">
       <button className={buttonClass} disabled={submitting} onClick={onCancel} type="button">取消</button>
-      <button className={primaryButtonClass} disabled={!name.trim() || submitting} type="submit">{submitting ? <LoaderCircle className="animate-spin" size={16}/> : <Pencil size={16}/>} {submitting ? '保存中…' : '保存修改'}</button>
+      <button className={primaryButtonClass} disabled={!name.trim() || submitting} type="submit">{submitting ? <ButtonLoading label="保存中…"/> : <><Pencil size={16}/>保存修改</>}</button>
     </div>
   </form>
 }
@@ -204,8 +215,7 @@ function CreateProjectForm({onCancel, onCreate}: {onCancel: () => void; onCreate
     <div className="flex justify-end gap-2 border-t border-line-subtle px-6 py-4">
       <button className={buttonClass} disabled={submitting} onClick={onCancel} type="button">取消</button>
       <button className={primaryButtonClass} disabled={!name.trim() || submitting} type="submit">
-        {submitting ? <LoaderCircle className="animate-spin" size={16}/> : <FolderPlus size={16}/>}
-        {submitting ? '创建中…' : '创建项目'}
+        {submitting ? <ButtonLoading label="创建中…"/> : <><FolderPlus size={16}/>创建项目</>}
       </button>
     </div>
   </form>

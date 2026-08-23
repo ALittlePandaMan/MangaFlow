@@ -1,4 +1,4 @@
-import type { FontResource, ImagePage, ModelBootstrapEntry, ModelConfiguration, ModelDescriptor, ProcessingTask, Project, QualityIssue, TextRegion } from '../types'
+import type { DeviceProfile, FontResource, ImagePage, ModelBootstrapEntry, ModelConfiguration, ModelDescriptor, ProcessingTask, Project, QualityIssue, SetupStatus, TextRegion } from '../types'
 
 export class ApiError extends Error {
   constructor(public status: number, message: string) {
@@ -24,6 +24,14 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 const json = (value: unknown) => JSON.stringify(value)
 const defaultProcess = { start_stage: 'detection', end_stage: 'ocr', force: false, options: {} }
+const responseFilename = (response: Response, fallback: string) => {
+  const disposition = response.headers.get('Content-Disposition') || ''
+  const encoded = disposition.match(/filename\*=UTF-8''([^;]+)/i)?.[1]
+  if (encoded) {
+    try { return decodeURIComponent(encoded) } catch { /* use the fallback */ }
+  }
+  return disposition.match(/filename="?([^";]+)"?/i)?.[1] || fallback
+}
 
 export const api = {
   projects: {
@@ -31,11 +39,6 @@ export const api = {
     get: (id: string) => request<Project>(`/projects/${id}`),
     create: (payload: Partial<Project>) => request<Project>('/projects', { method: 'POST', body: json(payload) }),
     update: (id: string, payload: Partial<Project>) => request<Project>(`/projects/${id}`, { method: 'PATCH', body: json(payload) }),
-    uploadCover: (id: string, file: File) => {
-      const form = new FormData(); form.append('file', file)
-      return request<Project>(`/projects/${id}/cover`, {method:'PUT', body:form})
-    },
-    removeCover: (id: string) => request<Project>(`/projects/${id}/cover`, {method:'DELETE'}),
     remove: (id: string) => request<void>(`/projects/${id}`, { method: 'DELETE' }),
     images: (id: string) => request<ImagePage[]>(`/projects/${id}/images`),
     upload: async (id: string, files: File[]) => {
@@ -43,26 +46,36 @@ export const api = {
       files.forEach(file => form.append('files', file))
       return request<ImagePage[]>(`/projects/${id}/images`, { method: 'POST', body: form })
     },
+    import: async (file: File) => {
+      const form = new FormData(); form.append('file', file)
+      return request<Project>('/projects/import', {method: 'POST', body: form})
+    },
     fonts: (id: string) => request<FontResource[]>(`/projects/${id}/fonts`),
     uploadFont: async (id: string, file: File) => {
       const form = new FormData(); form.append('file', file)
       return request<FontResource>(`/projects/${id}/fonts`, {method: 'POST', body: form})
     },
-    batch: (id: string, payload = defaultProcess) => request<ProcessingTask[]>(`/projects/${id}/batch-process`, { method: 'POST', body: json(payload) }),
+    batch: (id: string, payload: typeof defaultProcess & {image_ids?: string[], only_unrecognized?: boolean} = defaultProcess) => request<ProcessingTask[]>(`/projects/${id}/batch-process`, { method: 'POST', body: json(payload) }),
     review: (id: string) => request<QualityIssue[]>(`/projects/${id}/review`),
     exportUrl: (id: string) => `/api/projects/${id}/export`,
-    export: async (id: string, formats: string[]) => {
+    export: async (id: string, formats: string[], fallbackFilename = 'mangaflow-export.zip') => {
       const response = await fetch(`/api/projects/${id}/export`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: json({ formats }),
       })
-      if (!response.ok) throw new ApiError(response.status, '导出失败')
+      if (!response.ok) {
+        let message = '导出失败'
+        try {message = (await response.json()).detail || message} catch { /* response is not JSON */ }
+        throw new ApiError(response.status, message)
+      }
       const blob = await response.blob()
       const url = URL.createObjectURL(blob)
       const link = document.createElement('a')
       link.href = url
-      link.download = 'mangaflow-export.zip'
+      link.download = responseFilename(response, fallbackFilename)
+      document.body.appendChild(link)
       link.click()
-      URL.revokeObjectURL(url)
+      link.remove()
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000)
     },
   },
   images: {
@@ -71,6 +84,7 @@ export const api = {
     remove: (id: string) => request<void>(`/images/${id}`, {method: 'DELETE'}),
     reorder: (id: string, orderIndex: number) => request<ImagePage>(`/images/${id}/order?order_index=${orderIndex}`, {method: 'PATCH'}),
     reset: (id: string) => request<ImagePage>(`/images/${id}/reset`, {method: 'POST'}),
+    setOcrExempt: (id: string, exempt: boolean) => request<ImagePage>(`/images/${id}/ocr-exempt?exempt=${exempt}`, {method: 'PATCH'}),
     process: (id: string, payload = defaultProcess) => request<ProcessingTask>(`/images/${id}/process`, { method: 'POST', body: json(payload) }),
     stage: (id: string, stage: string, options: Record<string, unknown> = {}) => request<ProcessingTask>(`/images/${id}/${stage}`, {
       method: 'POST', body: json({ ...defaultProcess, options }),
@@ -103,10 +117,13 @@ export const api = {
   },
   models: {
     list: () => request<{available: ModelDescriptor[], configured: ModelConfiguration[]}>('/models'),
+    deviceProfile: () => request<DeviceProfile>('/models/device-profile'),
+    setupStatus: () => request<SetupStatus>('/models/setup-status'),
+    verifySetup: () => request<SetupStatus>('/models/setup-status/verify', {method:'POST'}),
     discover: (payload: {base_url: string, api_protocol?: string, api_key?: string, config_id?: string}) => request<{models: string[], endpoint: string, base_url: string, protocol: string}>('/models/discover', {method: 'POST', body: json(payload)}),
     create: (payload: Record<string, unknown>) => request<ModelConfiguration>('/models/config', { method: 'POST', body: json(payload) }),
     update: (id: string, payload: Record<string, unknown>) => request<ModelConfiguration>(`/models/config/${id}`, { method: 'PATCH', body: json(payload) }),
-    bootstrap: (payload = {preload: true, upgrade_fallbacks: true}) => request<{ok: boolean, models: ModelBootstrapEntry[]}>('/models/bootstrap', { method: 'POST', body: json(payload) }),
+    bootstrap: (payload: {preload?: boolean, upgrade_fallbacks?: boolean, stages?: string[], selections?: Array<{kind: string, provider: string, device?: string, config?: Record<string, unknown>, api_key?: string}>} = {preload: true, upgrade_fallbacks: true}) => request<{ok: boolean, models: ModelBootstrapEntry[]}>('/models/bootstrap', { method: 'POST', body: json(payload) }),
     remove: (id: string) => request<void>(`/models/config/${id}`, { method: 'DELETE' }),
   },
   fonts: {

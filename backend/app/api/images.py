@@ -7,6 +7,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.api.helpers import image_read, require_page
+from app.application import enqueue_page_task
 from app.core.database import get_db
 from app.models import ImagePage, ProcessingTask
 from app.models.enums import PageStatus, TaskStatus
@@ -67,6 +68,28 @@ def reset_image(image_id: str, db: Session = Depends(get_db)) -> ImageRead:
     return image_read(page)
 
 
+@router.patch("/images/{image_id}/ocr-exempt", response_model=ImageRead)
+def set_image_ocr_exempt(image_id: str, exempt: bool, db: Session = Depends(get_db)) -> ImageRead:
+    page = require_page(db, image_id)
+    active_task = db.scalar(
+        select(ProcessingTask.id).where(
+            ProcessingTask.image_id == image_id,
+            ProcessingTask.status.in_([TaskStatus.QUEUED.value, TaskStatus.RUNNING.value, TaskStatus.PAUSED.value]),
+        )
+    )
+    if active_task:
+        raise HTTPException(409, "Wait for the current processing task to finish before changing OCR status")
+    metadata = dict(page.metadata_json or {})
+    if exempt:
+        metadata["ocr_exempt"] = True
+    else:
+        metadata.pop("ocr_exempt", None)
+    page.metadata_json = metadata
+    db.commit()
+    db.refresh(page)
+    return image_read(page)
+
+
 @router.patch("/images/{image_id}/order", response_model=ImageRead)
 def reorder_image(image_id: str, order_index: int, db: Session = Depends(get_db)) -> ImageRead:
     page = require_page(db, image_id)
@@ -94,30 +117,6 @@ def reorder_image(image_id: str, order_index: int, db: Session = Depends(get_db)
     db.commit()
     db.refresh(page)
     return image_read(page)
-
-
-def enqueue_page_task(
-    db: Session,
-    page: ImagePage,
-    stage: str,
-    payload: ProcessRequest,
-    region_id: str | None = None,
-    start_stage: str | None = None,
-) -> ProcessingTask:
-    task = ProcessingTask(
-        project_id=page.project_id,
-        image_id=page.id,
-        region_id=region_id,
-        task_type=stage,
-        status=TaskStatus.QUEUED.value,
-        payload={**payload.model_dump(mode="json"), "start_stage": start_stage or stage, "end_stage": stage},
-        message="Queued",
-    )
-    db.add(task)
-    db.commit()
-    db.refresh(task)
-    task_manager.dispatch(task.id)
-    return task
 
 
 @router.post("/images/{image_id}/process", response_model=TaskRead, status_code=202)

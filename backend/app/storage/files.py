@@ -53,33 +53,6 @@ class StorageManager:
             raise StorageError("The uploaded file is not a valid image") from exc
         return self.relative(destination), width, height
 
-    def save_project_cover(self, project_id: str, filename: str, stream: BinaryIO) -> str:
-        safe_name = SAFE_FILENAME.sub("_", Path(filename).name).strip("._") or "cover.png"
-        extension = Path(safe_name).suffix.lower()
-        if extension not in {".jpg", ".jpeg", ".png", ".webp"}:
-            raise StorageError("Only JPG, JPEG, PNG and WebP images are supported")
-        cover_dir = self.project_dir(project_id) / "cover"
-        cover_dir.mkdir(parents=True, exist_ok=True)
-        temporary = cover_dir / f".upload{extension}"
-        with temporary.open("wb") as output:
-            shutil.copyfileobj(stream, output)
-        try:
-            with Image.open(temporary) as image:
-                image.verify()
-            with Image.open(temporary) as image:
-                if image.format not in SUPPORTED_IMAGE_FORMATS:
-                    raise StorageError("Unsupported or invalid image")
-        except Exception as exc:
-            temporary.unlink(missing_ok=True)
-            if isinstance(exc, StorageError):
-                raise
-            raise StorageError("The uploaded file is not a valid image") from exc
-        destination = cover_dir / f"cover{extension}"
-        for existing in cover_dir.glob("cover.*"):
-            existing.unlink(missing_ok=True)
-        temporary.replace(destination)
-        return self.relative(destination)
-
     def absolute(self, relative_path: str) -> Path:
         return self._inside(self.root / relative_path)
 

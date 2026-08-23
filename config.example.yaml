@@ -1,0 +1,62 @@
+schema_version: 1
+apply: fill-missing
+preload: true
+
+stages:
+  detection:
+    name: 推荐文字检测（PaddleOCR）
+    provider: paddleocr
+    device: recommended
+    config:
+      language: japan
+      ocr_version: PP-OCRv5
+      box_threshold: 0.45
+      unclip_ratio: 1.8
+      group_text_lines: false
+
+  inpainting:
+    name: 推荐复杂修复（LaMa）
+    provider: lama
+    device: recommended
+    config: {}
+
+  ocr:
+    name: 推荐漫画识别（MangaOCR）
+    provider: manga-ocr
+    device: recommended
+    config:
+      model: kha-white/manga-ocr-base
+
+  rendering:
+    name: 默认排版渲染（Pillow）
+    provider: pillow
+    config:
+      min_font_size: 10
+
+  translation:
+    name: 自定义云端翻译（示例）
+    provider: openai-compatible
+    api_key_env: MANGAFLOW_TRANSLATION_API_KEY
+    config:
+      api_protocol: auto
+      base_url: https://api.example.com/v1
+      model: example-model
+      timeout: 90
+      retries: 2
+      temperature: 0.2
+      prompt: |-
+        You are a professional manga localization translator. Translate every supplied region from the declared source language into the declared target language.
+
+        Requirements:
+        1. Preserve each character's personality, emotion, speaking style, politeness level, relationships, recurring terminology, names, honorifics, catchphrases, and continuity with the project context.
+        2. Produce natural dialogue that reads like an officially localized manga, not a literal machine translation. Keep wording concise enough to fit the original speech balloon while preserving meaning and emotional impact.
+        3. Handle narration, signs, captions, sound effects, and onomatopoeia appropriately for their function. Preserve meaningful Japanese honorifics when the target-language context benefits from them.
+        4. Use the glossary and project context consistently. Do not add explanations, translator notes, censorship, or information absent from the source.
+        5. Treat every Region ID as immutable. Never merge, split, rename, omit, reorder, or invent IDs, even when adjacent regions form one sentence.
+        6. Return only one valid JSON object whose keys exactly match all supplied Region IDs and whose values are translated strings. Do not use Markdown, code fences, comments, or any text outside the JSON object.
+
+  font:
+    name: Noto Sans CJK
+    provider: builtin-noto-cjk
+    config:
+      package: fonts-noto-cjk

@@ -3,9 +3,11 @@ set -euo pipefail
 
 repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-if [[ ! -x "$repo_dir/.venv/bin/python" ]]; then
-  python3 -m venv "$repo_dir/.venv"
-  "$repo_dir/.venv/bin/pip" install -r "$repo_dir/backend/requirements/dev.txt"
+if [[ ! -x "$repo_dir/.venv/bin/python" || ! -d "$repo_dir/frontend/node_modules" ]]; then
+  "$repo_dir/scripts/bootstrap.sh"
+else
+  [[ -f "$repo_dir/.env" ]] || cp "$repo_dir/.env.example" "$repo_dir/.env"
+  [[ -f "$repo_dir/config.yaml" ]] || cp "$repo_dir/config.example.yaml" "$repo_dir/config.yaml"
 fi
 
 cleanup() {
@@ -15,7 +17,6 @@ trap cleanup EXIT INT TERM
 
 (cd "$repo_dir/backend" && "$repo_dir/.venv/bin/uvicorn" app.main:app --reload --port 8000) &
 backend_pid=$!
-(cd "$repo_dir/frontend" && npm install && npm run dev) &
+(cd "$repo_dir/frontend" && npm run dev) &
 frontend_pid=$!
 wait
-

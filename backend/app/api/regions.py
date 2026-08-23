@@ -6,7 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.helpers import region_read, require_page, require_region
-from app.api.images import enqueue_page_task
+from app.application import enqueue_page_task
 from app.core.database import get_db
 from app.models import RegionRevision, TextRegion
 from app.schemas.domain import MaskOperation, ProcessRequest, RegionCreate, RegionRead, RegionUpdate, TaskRead
@@ -23,6 +23,26 @@ from app.services.regions import (
 from app.storage import get_storage
 
 router = APIRouter(tags=["regions"])
+
+RENDER_AFFECTING_FIELDS = {
+    "translated_polygon",
+    "translated_bbox",
+    "translated_text",
+    "orientation",
+    "font_size",
+    "font_family",
+    "font_weight",
+    "text_color",
+    "stroke_color",
+    "stroke_width",
+    "alignment",
+    "line_spacing",
+    "character_spacing",
+    "rotation",
+    "perspective_warp",
+    "opacity",
+    "visible",
+}
 
 
 @router.get("/images/{image_id}/regions", response_model=list[RegionRead])
@@ -50,11 +70,11 @@ def add_region(image_id: str, payload: RegionCreate, db: Session = Depends(get_d
 def patch_region(region_id: str, payload: RegionUpdate, db: Session = Depends(get_db)) -> RegionRead:
     region = require_region(db, region_id)
     try:
-        visibility_changed = payload.visible is not None and payload.visible != region.visible
+        rendered_output_changed = bool(payload.model_fields_set & RENDER_AFFECTING_FIELDS)
         update_region(db, region, payload)
-        if visibility_changed:
+        if rendered_output_changed:
             # Never allow export to reuse a cached translated image whose
-            # visibility no longer matches the current region settings.
+            # geometry, content or style no longer matches the region.
             page = require_page(db, region.image_id)
             page.rendered_path = None
             page.text_layer_path = None
@@ -150,13 +170,14 @@ def merge_region_list(region_ids: list[str], db: Session = Depends(get_db)):
             get_storage().absolute(mask_path).unlink(missing_ok=True)
         if not needs_rebuild:
             return {"region": region_read(merged), "rebuild_task": None}
-        # The merged region needs a new mask, while inpainting and rendering
-        # remain page-level composites that include every surviving region.
+        # Merging removes the source masks, so this structural operation must
+        # rebuild the complete clean page rather than use selected-region
+        # incremental repair semantics for the new merged region.
         task = enqueue_page_task(
             db,
             page,
             "rendering",
-            ProcessRequest(force=True),
+            ProcessRequest(force=True, options={"rebuild_clean": True}),
             region_id=merged.id,
             start_stage="mask",
         )

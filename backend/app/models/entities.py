@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, true
+from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, false, true
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
@@ -30,7 +30,6 @@ class Project(TimestampMixin, Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid4_str)
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     description: Mapped[str] = mapped_column(Text, default="")
-    cover_path: Mapped[str | None] = mapped_column(Text)
     source_language: Mapped[str] = mapped_column(String(32), default="ja")
     target_language: Mapped[str] = mapped_column(String(32), default="zh-CN")
     translation_context: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
@@ -96,6 +95,7 @@ class TextRegion(TimestampMixin, Base):
     line_spacing: Mapped[float] = mapped_column(Float, default=1.15)
     character_spacing: Mapped[float] = mapped_column(Float, default=0.0)
     rotation: Mapped[float] = mapped_column(Float, default=0.0)
+    perspective_warp: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false(), nullable=False)
     opacity: Mapped[float] = mapped_column(Float, default=1.0)
     locked: Mapped[bool] = mapped_column(Boolean, default=False)
     visible: Mapped[bool] = mapped_column(Boolean, default=True, server_default=true(), nullable=False)
