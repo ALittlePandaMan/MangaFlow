@@ -1,0 +1,49 @@
+@import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Noto+Sans+SC:wght@400;500;600;700&display=swap');
+@import "tailwindcss" source("../");
+
+@theme {
+  --font-sans: 'Noto Sans SC', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono: 'DM Mono', 'SFMono-Regular', Consolas, monospace;
+  --color-canvas: #0d0f0e;
+  --color-app: #111310;
+  --color-panel: #171916;
+  --color-surface: #1d201c;
+  --color-raised: #252923;
+  --color-hover: #2d322b;
+  --color-line-subtle: #292d28;
+  --color-line: #383e37;
+  --color-line-strong: #4b5349;
+  --color-ink: #f0f2ed;
+  --color-secondary: #b0b5ad;
+  --color-muted: #7e857b;
+  --color-disabled: #5c625a;
+  --color-accent: #10d3a3;
+  --color-accent-hover: #27e5b7;
+  --color-accent-strong: #078568;
+  --color-warning: #f3c44e;
+  --color-danger: #ff6b63;
+  --color-success: #39d9aa;
+  --shadow-soft: 0 6px 18px rgb(0 0 0 / 22%);
+  --shadow-panel: 0 16px 42px rgb(0 0 0 / 38%);
+  --shadow-dialog: 0 28px 80px rgb(0 0 0 / 56%);
+}
+
+@keyframes control-popover-in {
+  from { opacity: 0; transform: translateY(-4px) scale(.985); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes dialog-backdrop-in {
+  from { opacity: 0; }
+}
+
+@keyframes dialog-card-in {
+  from { opacity: 0; transform: translateY(8px) scale(.975); }
+  to { opacity: 1; transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [class*="control-popover-in"],
+  [class*="dialog-backdrop-in"],
+  [class*="dialog-card-in"] { animation: none; }
+}

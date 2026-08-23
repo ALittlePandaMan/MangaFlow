@@ -1,0 +1,36 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: docker/backend.Dockerfile
+    environment:
+      MANGAFLOW_DATA_DIR: /data
+      MANGAFLOW_MODEL_DIR: /models
+      MANGAFLOW_AUTO_PROVISION_MODELS: "true"
+      MANGAFLOW_CORS_ORIGINS: '["http://localhost:5173","http://localhost:8080"]'
+      MANGAFLOW_TASK_CONCURRENCY: 1
+      HF_HOME: /models/huggingface
+      PADDLE_PDX_CACHE_HOME: /models/paddlex
+      TORCH_HOME: /models/torch
+      NVIDIA_VISIBLE_DEVICES: ${MANGAFLOW_GPU_DEVICE:-all}
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      - ./data:/data
+      - ./models:/models
+    ports:
+      - "8000:8000"
+    gpus: all
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: .
+      dockerfile: docker/frontend.Dockerfile
+    depends_on:
+      - backend
+    ports:
+      - "8080:80"
+    restart: unless-stopped
