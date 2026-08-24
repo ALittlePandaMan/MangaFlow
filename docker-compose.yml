@@ -1,0 +1,47 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: docker/backend.Dockerfile
+    environment:
+      MANGAFLOW_DATA_DIR: /data
+      MANGAFLOW_MODEL_DIR: /models
+      MANGAFLOW_MODEL_MANIFEST_PATH: /config/config.yaml
+      MANGAFLOW_ENVIRONMENT_FILE_PATH: /config/.env
+      MANGAFLOW_AUTO_PROVISION_MODELS: "true"
+      MANGAFLOW_CORS_ORIGINS: '["http://localhost:5173","http://localhost:8080"]'
+      MANGAFLOW_TASK_CONCURRENCY: 1
+      HF_HOME: /models/huggingface
+      PADDLE_PDX_CACHE_HOME: /models/paddlex
+      TORCH_HOME: /models/torch
+      NVIDIA_VISIBLE_DEVICES: ${MANGAFLOW_GPU_DEVICE:-all}
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      - ./data:/data
+      - ./models:/models
+      - ./config.yaml:/config/config.yaml
+      - ./.env:/config/.env
+    ports:
+      - "8000:8000"
+    gpus: all
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 30m
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: .
+      dockerfile: docker/frontend.Dockerfile
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "8080:80"
+    restart: unless-stopped

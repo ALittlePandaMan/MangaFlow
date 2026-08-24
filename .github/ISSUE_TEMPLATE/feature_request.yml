@@ -1,0 +1,30 @@
+name: 功能建议
+description: 提议一个可复用的新能力或工作流改进
+title: '[Feature] '
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: 使用场景
+      description: 目前什么工作无法顺利完成？
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 建议方案
+      description: 描述预期交互、输入输出与异常情况。
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 已考虑的替代方案
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: 范围确认
+      options:
+        - label: 这个建议适用于 MangaFlow 的漫画翻译与嵌字工作流。
+          required: true
