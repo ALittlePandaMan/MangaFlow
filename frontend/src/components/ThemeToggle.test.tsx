@@ -42,14 +42,16 @@ describe('ThemeToggle', () => {
   afterEach(() => vi.unstubAllGlobals())
 
   it('follows system theme changes until the user chooses an explicit theme', async () => {
-    render(<ThemeToggle/>)
+    const {container} = render(<ThemeToggle/>)
 
     await waitFor(() => expect(document.documentElement).toHaveAttribute('data-theme', 'dark'))
     expect(screen.getByRole('button', {name:/跟随系统（当前深色）/})).toBeInTheDocument()
+    expect(container.querySelector('.lucide-moon')).toBeInTheDocument()
 
     changeSystemTheme(false)
     await waitFor(() => expect(document.documentElement).toHaveAttribute('data-theme', 'light'))
     expect(screen.getByRole('button', {name:/跟随系统（当前浅色）/})).toBeInTheDocument()
+    expect(container.querySelector('.lucide-sun')).toBeInTheDocument()
   })
 
   it('cycles through explicit and system modes and persists the choice', async () => {

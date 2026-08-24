@@ -7,13 +7,14 @@ import { useAppHeaderSlots } from '../components/AppShell'
 import { useGlobalDialog } from '../components/GlobalDialog'
 import { BlockingLoader, ButtonLoading, CircularProgress, EditorSkeleton, InlineLoading, useDelayedMinimumLoadingTime, useMinimumLoadingTime } from '../components/LoadingUI'
 import { DEFAULT_FONT_FAMILIES } from '../constants/fonts'
-import { EditorToolbar } from '../features/editor/components/EditorToolbar'
+import { CanvasZoomControls, EditorToolbar } from '../features/editor/components/EditorToolbar'
 import { MangaCanvas } from '../features/editor/components/MangaCanvas'
 import { RegionProperties } from '../features/editor/components/RegionProperties'
 import {preloadImage, versionedImageSource} from '../features/editor/hooks/useImage'
 import { useEditorStore } from '../features/editor/store'
+import {formatShortcut, shortcutForEvent, shortcutToAria, type ShortcutId, useShortcutStore} from '../features/shortcuts/store'
 import { ApiError, api } from '../services/api'
-import type { FontResource, ImagePage, ProcessingTask, Project, TextRegion, Tool, ViewMode } from '../types'
+import type { FontResource, ImagePage, ProcessingTask, Project, TextRegion } from '../types'
 import {buttonClass, cn, dangerButtonClass, eyebrowClass, iconButtonClass, primaryButtonClass, scrollbarClass, textareaClass} from '../ui'
 
 type HistoryEntry = {id: string, before: TextRegion, after: TextRegion}
@@ -99,7 +100,6 @@ export function EditorPage() {
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [runningRegionAction, setRunningRegionAction] = useState<string | null>(null)
-  const [maskRevision, setMaskRevision] = useState(0)
   const [showContext, setShowContext] = useState(false)
   const [contextText, setContextText] = useState('{}')
   const [schedulingProcess, setSchedulingProcess] = useState(false)
@@ -131,11 +131,19 @@ export function EditorPage() {
   const taskMonitorGeneration = useRef(0)
   const recoveredTaskId = useRef<string | null>(null)
   const taskSyncVersion = useRef('')
+  const shortcutHandlerRef = useRef<(event: KeyboardEvent) => void>(() => undefined)
   const {selectedIds, select, setTool, setView, tool, view} = useEditorStore()
+  const shortcuts = useShortcutStore(state => state.shortcuts)
   const {confirm: confirmDialog, isOpen: dialogOpen} = useGlobalDialog()
   const {editorTarget} = useAppHeaderSlots()
   const blockingBusy = schedulingProcess || schedulingBatch || resettingPage || uploadingPages || !!deletingPageId || !!updatingPageRecognitionId || reorderingPages || exporting || !!runningRegionAction
   const editorBusy = blockingBusy || switchingPage
+
+  useEffect(() => {
+    const handleShortcut = (event: KeyboardEvent) => shortcutHandlerRef.current(event)
+    window.addEventListener('keydown', handleShortcut)
+    return () => window.removeEventListener('keydown', handleShortcut)
+  }, [])
 
   const setRegionState = useCallback((next: TextRegion[]) => {
     regionStateRevision.current += 1
@@ -383,57 +391,6 @@ export function EditorPage() {
     }
   }, [undoStack, redoStack, editorBusy])
 
-  useEffect(() => {
-    const handleShortcut = (event: KeyboardEvent) => {
-      if (event.defaultPrevented || event.isComposing || event.altKey) return
-      if (dialogOpen || showContext || editorBusy || isEditableTarget(event.target)) return
-
-      const commandKey = event.ctrlKey || event.metaKey
-      const key = event.key.toLowerCase()
-      if (commandKey) {
-        if (key === 'a' && !event.shiftKey) {
-          event.preventDefault()
-          useEditorStore.getState().selectMany(regionsRef.current.map(region => region.id))
-        } else if (key === 'z') {
-          const direction = event.shiftKey ? 'redo' : 'undo'
-          if (direction === 'undo' ? !undoStack.length : !redoStack.length) return
-          event.preventDefault()
-          void applyHistory(direction)
-        } else if (key === 'y' && !event.shiftKey && redoStack.length) {
-          event.preventDefault()
-          void applyHistory('redo')
-        }
-        return
-      }
-
-      const tool = TOOL_SHORTCUTS[event.code]
-      if (tool && !event.shiftKey) {
-        event.preventDefault()
-        useEditorStore.getState().setTool(tool)
-        return
-      }
-      const view = VIEW_SHORTCUTS[event.code]
-      if (view && !event.shiftKey) {
-        event.preventDefault()
-        useEditorStore.getState().setView(view)
-        return
-      }
-      const store = useEditorStore.getState()
-      if (event.code === 'Minus' || event.code === 'NumpadSubtract') {
-        event.preventDefault()
-        store.setZoom(store.zoom / 1.15)
-      } else if (event.code === 'Equal' || event.code === 'NumpadAdd') {
-        event.preventDefault()
-        store.setZoom(store.zoom * 1.15)
-      } else if ((event.code === 'Digit0' || event.code === 'Numpad0') && !event.shiftKey) {
-        event.preventDefault()
-        store.setZoom(1)
-      }
-    }
-    window.addEventListener('keydown', handleShortcut)
-    return () => window.removeEventListener('keydown', handleShortcut)
-  }, [applyHistory, dialogOpen, editorBusy, redoStack.length, showContext, undoStack.length])
-
   const createRegion = async (polygon: number[][], bbox: number[]): Promise<boolean> => {
     if (!page || editorBusy) return false
     const requestedPageId = page.id
@@ -453,24 +410,10 @@ export function EditorPage() {
       setRunningRegionAction(null)
     }
   }
-  const saveMask = async (id: string, blob: Blob) => {
-    if (editorBusy) return
-    setRunningRegionAction('mask-save'); setError('')
-    try {
-      const updated = await api.regions.mask(id, blob)
-      setRegionState(regionsRef.current.map(region => region.id === id ? updated : region)); setMaskRevision(value => value + 1)
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason))
-      throw reason
-    } finally {
-      setRunningRegionAction(null)
-    }
-  }
   const reloadCurrent = useCallback(async (preserveGeometry = true) => {
     if (!page) return
     const selectedId = useEditorStore.getState().selectedIds[0] || null
     const [nextRegions] = await Promise.all([loadPage(page.id, selectedId, preserveGeometry), refreshPages()])
-    setMaskRevision(value => value + 1)
     return nextRegions.find(region => region.id === selectedId)
   }, [page?.id, loadPage, refreshPages])
 
@@ -622,56 +565,6 @@ export function EditorPage() {
     }
   }, [confirmDialog, editorBusy, refreshAfterTask, selectedIds, select, syncTaskProgress])
 
-  useEffect(() => {
-    const handleDelete = (event: KeyboardEvent) => {
-      if (event.defaultPrevented || event.isComposing || event.repeat || event.key !== 'Delete') return
-      if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey || showContext || dialogOpen) return
-      if (isEditableTarget(event.target) || !selectedIds.length) return
-      event.preventDefault()
-      void deleteSelectedRegion()
-    }
-    window.addEventListener('keydown', handleDelete)
-    return () => window.removeEventListener('keydown', handleDelete)
-  }, [deleteSelectedRegion, dialogOpen, selectedIds.length, showContext])
-
-  useEffect(() => {
-    const handleNudge = (event: KeyboardEvent) => {
-      const directions: Record<string, [number, number]> = {
-        ArrowLeft: [-1, 0],
-        ArrowRight: [1, 0],
-        ArrowUp: [0, -1],
-        ArrowDown: [0, 1],
-      }
-      const direction = directions[event.key]
-      if (!direction || event.defaultPrevented || event.isComposing) return
-      if (event.ctrlKey || event.metaKey || event.altKey || showContext || dialogOpen || editorBusy) return
-      if (tool !== 'select' || view === 'comparison' || isEditableTarget(event.target) || !selectedIds.length) return
-      event.preventDefault()
-      const distance = event.shiftKey ? 10 : 1
-      const dx = direction[0] * distance
-      const dy = direction[1] * distance
-      const selected = new Set(selectedIds)
-      for (const region of regionsRef.current) {
-        if (!selected.has(region.id) || region.locked) continue
-        if (view === 'translated') {
-          const bbox = region.translated_bbox?.length === 4 ? region.translated_bbox : region.bbox
-          const polygon = region.translated_polygon?.length >= 3 ? region.translated_polygon : region.polygon
-          void updateRegion(region.id, {
-            translated_bbox: [bbox[0] + dx, bbox[1] + dy, bbox[2], bbox[3]],
-            translated_polygon: polygon.map(point => [point[0] + dx, point[1] + dy]),
-          })
-        } else {
-          void updateRegion(region.id, {
-            bbox: [region.bbox[0] + dx, region.bbox[1] + dy, region.bbox[2], region.bbox[3]],
-            polygon: region.polygon.map(point => [point[0] + dx, point[1] + dy]),
-          })
-        }
-      }
-    }
-    window.addEventListener('keydown', handleNudge)
-    return () => window.removeEventListener('keydown', handleNudge)
-  }, [dialogOpen, editorBusy, selectedIds, showContext, tool, view])
-
   const action = async (name: string, options: Record<string, unknown> = {}, targetRegionId?: string) => {
     if (editorBusy) return
     const selected = regionsRef.current.find(region => region.id === (targetRegionId || selectedIds[0]))
@@ -801,16 +694,6 @@ export function EditorPage() {
           }
         } finally {
           regionActionBusy.current = false
-          setRunningRegionAction(null)
-        }
-      }
-      else if (['dilate','erode','clear-mask'].includes(name)) {
-        const operation = name === 'clear-mask' ? 'clear' : name
-        setRunningRegionAction(name)
-        try {
-          const updated = await api.regions.maskOperation(selectedId, operation, 3)
-          setRegionState(regionsRef.current.map(region => region.id === selectedId ? updated : region)); setMaskRevision(value => value + 1)
-        } finally {
           setRunningRegionAction(null)
         }
       }
@@ -1207,7 +1090,7 @@ export function EditorPage() {
       ? '正在批量检测并识别…'
       : schedulingProcess
         ? pageTaskBusyLabel(runningPageTask, runningWorkflowStage)
-        : ({ocr: `正在重新 OCR ${selectedScope}…`, translate: `正在重新翻译${selectedScope}…`, inpaint: `正在重新修复${selectedScope}…`, render: `正在重新排版${selectedScope}…`, merge: '正在合并所选区域…', delete: '正在删除所选区域…', visibility: '正在更新区域显示…', create: '正在创建文字区域…', 'mask-save': '正在保存文字 Mask…', dilate: '正在膨胀文字 Mask…', erode: '正在收缩文字 Mask…', 'clear-mask': '正在清空文字 Mask…'} as Record<string, string>)[runningRegionAction || ''] || '正在处理…'
+        : ({ocr: `正在重新 OCR ${selectedScope}…`, translate: `正在重新翻译${selectedScope}…`, inpaint: `正在重新修复${selectedScope}…`, render: `正在重新排版${selectedScope}…`, merge: '正在合并所选区域…', delete: '正在删除所选区域…', visibility: '正在更新区域显示…', create: '正在创建文字区域…'} as Record<string, string>)[runningRegionAction || ''] || '正在处理…'
   const activePageTask = runningPageTask && ['QUEUED', 'RUNNING'].includes(runningPageTask.status.toUpperCase())
     ? runningPageTask
     : null
@@ -1219,8 +1102,7 @@ export function EditorPage() {
         ? activePageTask.progress
         : null
 
-  if (showingInitialLoading) return <EditorSkeleton/>
-  const headerButtonClass = `${buttonClass} !h-8 !min-h-8 px-3 py-0 text-[11px]`
+  const headerButtonClass = `${buttonClass} !h-9 !min-h-9 px-3 py-0 text-[11px]`
   const workflowRank = page ? pageWorkflowRank(page, regions) : 0
   const nextWorkflowStage: PageWorkflowStage | null = workflowRank < 1
     ? 'ocr'
@@ -1231,22 +1113,100 @@ export function EditorPage() {
         : workflowRank < 4
           ? 'rendering'
           : null
-  const workflowButtons: Array<{stage: PageWorkflowStage, label: string, requiredRank: number, title: string, icon: typeof ScanText}> = [
-    {stage: 'ocr', label: '重新 OCR', requiredRank: 0, title: regions.length ? '重新识别当前页已有文字区域' : '当前页没有文字区域，将先自动检测再执行 OCR', icon: ScanText},
-    {stage: 'translation', label: '重新翻译', requiredRank: 1, title: workflowRank >= 1 ? '使用最新 OCR 原文重新翻译' : '请先完成重新 OCR', icon: Languages},
-    {stage: 'inpainting', label: '重新修复', requiredRank: 2, title: workflowRank >= 2 ? '重新生成文字 Mask 并修复背景' : '请先依次完成重新 OCR 和重新翻译', icon: Eraser},
-    {stage: 'rendering', label: '重新排版', requiredRank: 3, title: workflowRank >= 3 ? '使用当前译文和样式重新排版' : '请先依次完成 OCR、翻译和修复', icon: TextCursorInput},
+  const workflowButtons: Array<{stage: PageWorkflowStage, shortcutId: ShortcutId, label: string, requiredRank: number, title: string, icon: typeof ScanText}> = [
+    {stage: 'ocr', shortcutId:'page.workflowOcr', label: '重新 OCR', requiredRank: 0, title: regions.length ? '重新识别当前页已有文字区域' : '当前页没有文字区域，将先自动检测再执行 OCR', icon: ScanText},
+    {stage: 'translation', shortcutId:'page.workflowTranslate', label: '重新翻译', requiredRank: 1, title: workflowRank >= 1 ? '使用最新 OCR 原文重新翻译' : '请先完成重新 OCR', icon: Languages},
+    {stage: 'inpainting', shortcutId:'page.workflowInpaint', label: '重新修复', requiredRank: 2, title: workflowRank >= 2 ? '重新生成文字 Mask 并修复背景' : '请先依次完成重新 OCR 和重新翻译', icon: Eraser},
+    {stage: 'rendering', shortcutId:'page.workflowRender', label: '重新排版', requiredRank: 3, title: workflowRank >= 3 ? '使用当前译文和样式重新排版' : '请先依次完成 OCR、翻译和修复', icon: TextCursorInput},
   ]
+
+  shortcutHandlerRef.current = event => {
+    if (event.defaultPrevented || event.isComposing || dialogOpen || showContext || isEditableTarget(event.target)) return
+    const shortcutId = shortcutForEvent(event, shortcuts)
+    if (!shortcutId) return
+    event.preventDefault()
+    const repeatable = shortcutId.startsWith('region.nudge') || shortcutId.startsWith('zoom.')
+    if ((event.repeat && !repeatable) || editorBusy) return
+
+    const store = useEditorStore.getState()
+    if (shortcutId === 'tool.select') store.setTool('select')
+    else if (shortcutId === 'tool.rectangle') store.setTool('rectangle')
+    else if (shortcutId === 'tool.polygon') store.setTool('polygon')
+    else if (shortcutId === 'tool.lasso') store.setTool('lasso')
+    else if (shortcutId === 'view.original') store.setView('original')
+    else if (shortcutId === 'view.clean') store.setView('clean')
+    else if (shortcutId === 'view.translated') store.setView('translated')
+    else if (shortcutId === 'view.comparison') store.setView('comparison')
+    else if (shortcutId === 'edit.undo') {
+      if (undoStack.length) void applyHistory('undo')
+    } else if (shortcutId === 'edit.redo') {
+      if (redoStack.length) void applyHistory('redo')
+    } else if (shortcutId === 'edit.selectAll') {
+      store.selectMany(regionsRef.current.map(region => region.id))
+    } else if (shortcutId === 'zoom.out') store.setZoom(store.zoom / 1.15)
+    else if (shortcutId === 'zoom.in') store.setZoom(store.zoom * 1.15)
+    else if (shortcutId === 'zoom.reset') store.setZoom(1)
+    else if (shortcutId === 'region.delete') {
+      if (selectedIds.length) void deleteSelectedRegion()
+    } else if (shortcutId === 'region.cancelSelection') store.select(null)
+    else if (shortcutId === 'region.merge') {
+      if (selectedIds.length > 1) void action('merge')
+    } else if (shortcutId === 'region.ocr' || shortcutId === 'region.translate' || shortcutId === 'region.inpaint' || shortcutId === 'region.render') {
+      if (selectedIds.length) void action(({['region.ocr']:'ocr', ['region.translate']:'translate', ['region.inpaint']:'inpaint', ['region.render']:'render'} as Record<string, string>)[shortcutId])
+    } else if (shortcutId.startsWith('region.nudge')) {
+      if (tool !== 'select' || view === 'comparison' || !selectedIds.length) return
+      const direction = ({
+        'region.nudgeLeft':[-1, 0],
+        'region.nudgeRight':[1, 0],
+        'region.nudgeUp':[0, -1],
+        'region.nudgeDown':[0, 1],
+      } as Record<string, [number, number]>)[shortcutId]
+      if (!direction) return
+      const distance = event.shiftKey ? 10 : 1
+      const dx = direction[0] * distance
+      const dy = direction[1] * distance
+      const selected = new Set(selectedIds)
+      regionsRef.current.forEach(region => {
+        if (!selected.has(region.id) || region.locked) return
+        if (view === 'translated') {
+          const bbox = region.translated_bbox?.length === 4 ? region.translated_bbox : region.bbox
+          const polygon = region.translated_polygon?.length >= 3 ? region.translated_polygon : region.polygon
+          void updateRegion(region.id, {
+            translated_bbox:[bbox[0] + dx, bbox[1] + dy, bbox[2], bbox[3]],
+            translated_polygon:polygon.map(point => [point[0] + dx, point[1] + dy]),
+          })
+        } else {
+          void updateRegion(region.id, {
+            bbox:[region.bbox[0] + dx, region.bbox[1] + dy, region.bbox[2], region.bbox[3]],
+            polygon:region.polygon.map(point => [point[0] + dx, point[1] + dy]),
+          })
+        }
+      })
+    } else if (shortcutId === 'page.workflowOcr') {
+      if (page) void processPageStage('ocr')
+    } else if (shortcutId === 'page.workflowTranslate') {
+      if (page && workflowRank >= 1) void processPageStage('translation')
+    } else if (shortcutId === 'page.workflowInpaint') {
+      if (page && workflowRank >= 2) void processPageStage('inpainting')
+    } else if (shortcutId === 'page.workflowRender') {
+      if (page && workflowRank >= 3) void processPageStage('rendering')
+    } else if (shortcutId === 'page.import') openImagePicker()
+    else if (shortcutId === 'page.context') setShowContext(true)
+    else if (shortcutId === 'page.export') {
+      if (pages.length) setExportMenuOpen(open => !open)
+    } else if (shortcutId === 'page.batchOcr') void batchRecognize()
+    else if (shortcutId === 'page.reset') void resetCurrentPage()
+  }
+
   const contextPage = pageContextMenu ? pages.find(item => item.id === pageContextMenu.pageId) : undefined
   const selectedPageId = imageId || page?.id
-  if (!project) return <div className="grid h-full place-content-center text-center"><h2>无法打开项目</h2><p className="text-muted">{error}</p><Link className="text-accent" to="/projects">返回项目</Link></div>
+  if (!project && !showingInitialLoading) return <div className="grid h-full place-content-center text-center"><h2>无法打开项目</h2><p className="text-muted">{error}</p><Link className="text-accent" to="/projects">返回项目</Link></div>
   return <>
     {editorTarget && createPortal(<>
       <div className="ml-auto flex items-center gap-2">
-        <button className={headerButtonClass} onClick={() => setShowContext(true)} disabled={editorBusy}><BookOpenText size={16}/>翻译上下文</button>
-        <button className={`${dangerButtonClass} !h-8 !min-h-8 px-3 py-0 text-[11px]`} onClick={() => void resetCurrentPage()} disabled={!page || editorBusy || (page.status === 'UPLOADED' && !regions.length && !page.clean_url && !page.rendered_url)}>{resettingPage ? <ButtonLoading label="恢复中…"/> : <><RotateCcw size={16}/>重置当前页</>}</button>
+        <button className={headerButtonClass} onClick={() => setShowContext(true)} disabled={editorBusy || showingInitialLoading} title={`翻译上下文 (${formatShortcut(shortcuts['page.context'])})`} aria-keyshortcuts={shortcutToAria(shortcuts['page.context'])}><BookOpenText size={16}/>翻译上下文</button>
         <div className="relative" ref={exportMenuRef}>
-          <button className={headerButtonClass} disabled={editorBusy || exporting} aria-haspopup="menu" aria-expanded={exportMenuOpen} onClick={() => setExportMenuOpen(open => !open)}>{exporting ? <ButtonLoading label="导出中…"/> : <><Download size={16}/>导出<ChevronDown className={cn('transition-transform', exportMenuOpen && 'rotate-180')} size={13}/></>}</button>
+          <button className={headerButtonClass} disabled={editorBusy || showingInitialLoading || exporting} title={`导出 (${formatShortcut(shortcuts['page.export'])})`} aria-keyshortcuts={shortcutToAria(shortcuts['page.export'])} aria-haspopup="menu" aria-expanded={exportMenuOpen} onClick={() => setExportMenuOpen(open => !open)}>{exporting ? <ButtonLoading label="导出中…"/> : <><Download size={16}/>导出<ChevronDown className={cn('transition-transform', exportMenuOpen && 'rotate-180')} size={13}/></>}</button>
           {exportMenuOpen && <div className="absolute right-0 top-[calc(100%+8px)] z-[90] w-[292px] overflow-hidden rounded-xl border border-line-strong bg-popover p-1.5 text-secondary shadow-dialog backdrop-blur-xl" role="menu" aria-label="选择导出内容">
             {EXPORT_OPTIONS.map(option => {
               const unavailable = !pages.length
@@ -1258,7 +1218,7 @@ export function EditorPage() {
             })}
           </div>}
         </div>
-        <button className={headerButtonClass} onClick={() => void batchRecognize()} disabled={editorBusy} title="只识别当前页之外尚未完成 OCR 的图片">{schedulingBatch ? <ButtonLoading label="批量识别中…"/> : <><Layers3 size={16}/>批量识别</>}</button>
+        <button className={headerButtonClass} onClick={() => void batchRecognize()} disabled={editorBusy || showingInitialLoading} title={`只识别当前页之外尚未完成 OCR 的图片 (${formatShortcut(shortcuts['page.batchOcr'])})`} aria-keyshortcuts={shortcutToAria(shortcuts['page.batchOcr'])}>{schedulingBatch ? <ButtonLoading label="批量识别中…"/> : <><Layers3 size={16}/>批量识别</>}</button>
       </div>
     </>, editorTarget)}
     <div className="editor-content-enter grid h-full grid-rows-[44px_minmax(0,1fr)] bg-canvas">
@@ -1268,19 +1228,27 @@ export function EditorPage() {
       canUndo={!!undoStack.length}
       canRedo={!!redoStack.length}
       disabled={editorBusy}
-      rightActions={<div className="flex items-center gap-1 rounded-lg bg-panel p-1" aria-label="当前页处理流程">
-        {workflowButtons.map(({stage, label, requiredRank, title, icon: Icon}) => <button
+      rightActions={<div className="flex items-center gap-1" aria-label="当前页处理流程">
+        {workflowButtons.map(({stage, shortcutId, label, requiredRank, title, icon: Icon}) => <button
           key={stage}
           className={cn(nextWorkflowStage === stage ? primaryButtonClass : buttonClass, '!h-7 !min-h-7 px-2 py-0 text-[10px]')}
           onClick={() => void processPageStage(stage)}
           disabled={!page || editorBusy || workflowRank < requiredRank}
-          title={title}
+          title={`${title} (${formatShortcut(shortcuts[shortcutId])})`}
+          aria-keyshortcuts={shortcutToAria(shortcuts[shortcutId])}
         >{schedulingProcess && runningWorkflowStage === stage ? <ButtonLoading label={`${label.replace('重新 ', '')} 中…`}/> : <><Icon size={14}/>{label}</>}</button>)}
+        <button
+          className={`${dangerButtonClass} !h-7 !min-h-7 px-2 py-0 text-[10px]`}
+          onClick={() => void resetCurrentPage()}
+          disabled={!page || editorBusy || (page.status === 'UPLOADED' && !regions.length && !page.clean_url && !page.rendered_url)}
+          title={`重置当前页 (${formatShortcut(shortcuts['page.reset'])})`}
+          aria-keyshortcuts={shortcutToAria(shortcuts['page.reset'])}
+        >{resettingPage ? <ButtonLoading label="恢复中…"/> : <><RotateCcw size={14}/>重置当前页</>}</button>
       </div>}
     />
-    <div className="grid min-h-0 grid-cols-[192px_minmax(0,1fr)_320px] max-[1200px]:grid-cols-[176px_minmax(0,1fr)_300px]">
+    {showingInitialLoading ? <EditorSkeleton canvasControls={<CanvasZoomControls/>}/> : <div className="grid min-h-0 grid-cols-[192px_minmax(0,1fr)_320px] max-[1200px]:grid-cols-[176px_minmax(0,1fr)_300px]">
       <aside className="flex min-h-0 flex-col border-r border-line-subtle bg-panel">
-        <div className="flex h-[38px] shrink-0 items-center justify-between border-b border-line-subtle px-3 font-mono text-[10px] uppercase text-muted"><span>页面</span><button className={cn(iconButtonClass, 'border-0 bg-transparent')} disabled={editorBusy} title="导入图片" aria-label="导入图片" onClick={openImagePicker}>{uploadingPages ? <ButtonLoading compact label="正在导入图片"/> : <ImagePlus size={16}/>}</button></div>
+        <div className="flex h-[38px] shrink-0 items-center justify-between border-b border-line-subtle px-3 font-mono text-[12px] uppercase text-muted"><span>页面</span><button className={cn(iconButtonClass, 'border-0 bg-transparent')} disabled={editorBusy} title={`导入图片 (${formatShortcut(shortcuts['page.import'])})`} aria-label="导入图片" aria-keyshortcuts={shortcutToAria(shortcuts['page.import'])} onClick={openImagePicker}>{uploadingPages ? <ButtonLoading compact label="正在导入图片"/> : <ImagePlus size={16}/>}</button></div>
         <div ref={pageListRef} className={cn('min-h-0 flex-1 overflow-auto p-2', scrollbarClass)} onContextMenu={openImagePickerFromBlank}>{pages.map((item, index) => <button
           key={item.id}
           data-page-id={item.id}
@@ -1303,15 +1271,15 @@ export function EditorPage() {
             if (!editorBusy) navigate(`/projects/${projectId}/editor/${item.id}`)
           }}
         >
-          <div className={cn('relative flex aspect-[3/4] w-full justify-center overflow-hidden bg-[#0a0a09] transition-shadow', selectedPageId === item.id && 'ring-1 ring-inset ring-canvas/50')}><img className="pointer-events-none size-full select-none object-contain" draggable={false} src={item.rendered_url || item.original_url} alt={item.filename}/><span className={cn('absolute bottom-1 left-1 bg-canvas px-1 py-0.5 font-mono text-[9px]', selectedPageId === item.id && 'text-accent')}>{String(index + 1).padStart(2,'0')}</span>{activePageTask?.image_id === item.id && <span className="absolute right-1 top-1 grid rounded-full bg-canvas/90 p-1 shadow-panel"><CircularProgress value={activePageTask.progress} size={34} label={`${item.filename} 处理进度`}/></span>}</div>
-          <small className={cn('mt-2 block truncate text-[10px]', selectedPageId === item.id ? 'font-semibold text-accent-ink' : 'text-secondary')} title={item.filename}>{item.filename}</small><i className={cn('mt-1 block truncate font-mono text-[8px] not-italic', selectedPageId === item.id ? 'text-accent-ink/75' : pageState(item).className)}>{pageState(item).label}</i>
+          <div className={cn('relative flex aspect-[3/4] w-full justify-center overflow-hidden bg-[#0a0a09] transition-shadow', selectedPageId === item.id && 'ring-1 ring-inset ring-canvas/50')}><img className="pointer-events-none size-full select-none object-contain" draggable={false} src={item.rendered_url || item.original_url} alt={item.filename}/><span className={cn('absolute bottom-1 left-1 bg-canvas px-1 py-0.5 font-mono text-[12px]', selectedPageId === item.id && 'text-accent')}>{String(index + 1).padStart(2,'0')}</span>{activePageTask?.image_id === item.id && <span className="absolute right-1 top-1 grid rounded-full bg-canvas/90 p-1 shadow-panel"><CircularProgress value={activePageTask.progress} size={34} label={`${item.filename} 处理进度`}/></span>}</div>
+          <small className={cn('mt-2 block truncate text-[12px]', selectedPageId === item.id ? 'font-semibold text-accent-ink' : 'text-secondary')} title={item.filename}>{item.filename}</small><i className={cn('mt-1 block truncate font-mono text-[12px] not-italic', selectedPageId === item.id ? 'text-accent-ink/75' : pageState(item).className)}>{pageState(item).label}</i>
         </button>)}
-        {!pages.length && <div className="flex min-h-full items-center justify-center"><button className={`${buttonClass} min-h-[140px] w-full flex-col border-dashed bg-transparent text-muted`} disabled={editorBusy} onClick={openImagePicker}><Upload size={22}/>导入漫画图片</button></div>}
+        {!pages.length && <div className="flex min-h-full items-center justify-center"><button className={`${buttonClass} min-h-[140px] w-full flex-col border-dashed bg-transparent text-[12px] text-muted`} disabled={editorBusy} onClick={openImagePicker}><Upload size={22}/>导入漫画图片</button></div>}
         </div>
       </aside>
-      <main className="relative min-h-0 min-w-0 bg-canvas bg-[linear-gradient(45deg,var(--color-panel)_25%,transparent_25%),linear-gradient(-45deg,var(--color-panel)_25%,transparent_25%),linear-gradient(45deg,transparent_75%,var(--color-panel)_75%),linear-gradient(-45deg,transparent_75%,var(--color-panel)_75%)] [background-position:0_0,0_10px,10px_-10px,-10px_0] [background-size:20px_20px]">{page ? <MangaCanvas page={page} regions={regions} onCreate={createRegion} onUpdate={updateRegion} onSaveMask={saveMask} onRegionAction={(id, name, options) => {void action(name, options, id)}} runningAction={runningRegionAction} maskRevision={maskRevision}/> : <div className="flex h-full flex-col items-center justify-center text-muted"><ImagePlus size={36}/><h3 className="mb-1 mt-3 text-base text-secondary">导入漫画页面</h3><p className="mb-4 mt-0 text-xs">支持 JPG、PNG 和 WebP，可一次选择多张。</p><button className={`${primaryButtonClass} !min-h-[34px]`} disabled={editorBusy} onClick={openImagePicker}>选择图片</button></div>}{showingPageSwitch && <div className="absolute inset-0 z-[65] cursor-wait" aria-busy="true" aria-live="polite"><span className="absolute left-1/2 top-3 -translate-x-1/2 rounded-lg bg-surface/95 px-3 py-2 shadow-panel"><InlineLoading label="正在切换图片"/></span></div>}</main>
+      <main className="relative min-h-0 min-w-0 bg-canvas bg-[linear-gradient(45deg,var(--color-panel)_25%,transparent_25%),linear-gradient(-45deg,var(--color-panel)_25%,transparent_25%),linear-gradient(45deg,transparent_75%,var(--color-panel)_75%),linear-gradient(-45deg,transparent_75%,var(--color-panel)_75%)] [background-position:0_0,0_10px,10px_-10px,-10px_0] [background-size:20px_20px]">{page ? <MangaCanvas page={page} regions={regions} onCreate={createRegion} onUpdate={updateRegion} onRegionAction={(id, name, options) => {void action(name, options, id)}} runningAction={runningRegionAction}/> : <div className="flex h-full flex-col items-center justify-center text-muted"><ImagePlus size={36}/><h3 className="mb-1 mt-3 text-base text-secondary">导入漫画页面</h3><p className="mb-4 mt-0 text-xs">支持 JPG、PNG 和 WebP，可一次选择多张。</p><button className={`${primaryButtonClass} !min-h-[34px]`} disabled={editorBusy} onClick={openImagePicker}>选择图片</button></div>}<CanvasZoomControls disabled={editorBusy}/>{showingPageSwitch && <div className="absolute inset-0 z-[65] cursor-wait" aria-busy="true" aria-live="polite"><span className="absolute left-1/2 top-3 -translate-x-1/2 rounded-lg bg-surface/95 px-3 py-2 shadow-panel"><InlineLoading label="正在切换图片"/></span></div>}</main>
       <RegionProperties region={selectedIds.length === 1 ? regions.find(region => region.id === selectedIds[0]) : undefined} selectedRegions={regions.filter(region => selectedIds.includes(region.id))} selectedCount={selectedIds.length} fontOptions={[...DEFAULT_FONT_FAMILIES.map(font => font.name), ...fontResources.map(font => font.name)]} busyAction={runningRegionAction} onUpdate={updateRegion} onAction={action}/>
-    </div>
+    </div>}
     {pageContextMenu && createPortal(<div ref={pageContextMenuRef} className="fixed z-[110] w-[182px] overflow-hidden rounded-xl border border-line-strong bg-popover p-1 text-secondary shadow-dialog backdrop-blur-xl" style={{left: pageContextMenu.x, top: pageContextMenu.y}} role="menu" aria-label="图片操作">
       <div className="flex h-9 items-center border-b border-line-subtle px-2"><span className="min-w-0 truncate text-[10px] text-muted" title={pages.find(item => item.id === pageContextMenu.pageId)?.filename}>{pages.find(item => item.id === pageContextMenu.pageId)?.filename}</span></div>
       <button className="mt-1 flex h-9 w-full cursor-pointer items-center gap-2 rounded-lg border-0 bg-transparent px-3 text-left text-[11px] text-secondary outline-none transition-colors hover:bg-hover hover:text-ink disabled:cursor-default disabled:opacity-60" type="button" role="menuitem" disabled={!!contextPage && !contextPage.ocr_exempt && !pageNeedsOcr(contextPage)} onClick={() => void togglePageOcrExempt(pageContextMenu.pageId)}><CheckCircle2 size={15} className="text-accent"/>{contextPage?.ocr_exempt ? '取消已翻译' : '已翻译'}</button>
@@ -1328,26 +1296,6 @@ export function EditorPage() {
 function editable(region: TextRegion): Partial<TextRegion> {
   const keys: (keyof TextRegion)[] = ['polygon','bbox','translated_polygon','translated_bbox','source_text','translated_text','confidence','orientation','reading_order','panel_id','bubble_id','region_type','font_size','font_family','font_weight','text_color','stroke_color','stroke_width','alignment','line_spacing','character_spacing','rotation','perspective_warp','opacity','locked','visible']
   return Object.fromEntries(keys.map(key => [key, region[key]])) as Partial<TextRegion>
-}
-
-const TOOL_SHORTCUTS: Record<string, Tool> = {
-  KeyV: 'select',
-  KeyR: 'rectangle',
-  KeyP: 'polygon',
-  KeyL: 'lasso',
-  KeyB: 'mask-brush',
-  KeyE: 'mask-eraser',
-}
-
-const VIEW_SHORTCUTS: Record<string, ViewMode> = {
-  Digit1: 'original',
-  Numpad1: 'original',
-  Digit2: 'clean',
-  Numpad2: 'clean',
-  Digit3: 'translated',
-  Numpad3: 'translated',
-  Digit4: 'comparison',
-  Numpad4: 'comparison',
 }
 
 function isEditableTarget(target: EventTarget | null): boolean {

@@ -288,3 +288,21 @@ def test_persist_model_settings_writes_yaml_and_keeps_secret_only_in_env(
     environment_text = environment_path.read_text(encoding="utf-8")
     assert 'MANGAFLOW_TRANSLATION_API_KEY="portable-secret"' in environment_text
     assert "MANGAFLOW_DEBUG=false" in environment_text
+
+
+def test_persist_shortcut_preferences_preserves_model_stages(tmp_path) -> None:
+    manifest_path = tmp_path / "config.yaml"
+    original = manifest_payload(lightweight=True)
+    manifest_path.write_text(yaml.safe_dump(original, allow_unicode=True, sort_keys=False), encoding="utf-8")
+
+    saved = manifests.persist_shortcut_preferences(
+        manifest_path,
+        {"tool.select": "KeyS", "edit.undo": "Mod+KeyZ", "region.cancelSelection": ""},
+    )
+
+    assert saved.shortcuts["tool.select"] == "KeyS"
+    reloaded = manifests.load_model_manifest(manifest_path)
+    assert reloaded.preferences is not None
+    assert reloaded.preferences.shortcuts["region.cancelSelection"] == ""
+    assert reloaded.stages["detection"].provider == original["stages"]["detection"]["provider"]
+    assert reloaded.stages["translation"].config == original["stages"]["translation"]["config"]

@@ -4,7 +4,6 @@ import type { Tool, ViewMode } from '../../types'
 export interface LayerVisibility {
   original: boolean
   detection: boolean
-  masks: boolean
   clean: boolean
   translated: boolean
 }
@@ -15,22 +14,19 @@ interface EditorState {
   zoom: number
   selectedIds: string[]
   layers: LayerVisibility
-  brushSize: number
-  brushHardness: number
   setView: (view: ViewMode) => void
   setTool: (tool: Tool) => void
   setZoom: (zoom: number) => void
   select: (id: string | null, additive?: boolean) => void
   selectMany: (ids: string[]) => void
   toggleLayer: (name: keyof LayerVisibility) => void
-  setBrush: (size: number, hardness: number) => void
 }
 
 const viewLayers: Record<ViewMode, LayerVisibility> = {
-  original: { original: true, detection: true, masks: false, clean: false, translated: false },
-  clean: { original: false, detection: true, masks: false, clean: true, translated: false },
-  translated: { original: false, detection: true, masks: false, clean: true, translated: true },
-  comparison: { original: false, detection: false, masks: false, clean: false, translated: false },
+  original: { original: true, detection: true, clean: false, translated: false },
+  clean: { original: false, detection: true, clean: true, translated: false },
+  translated: { original: false, detection: true, clean: true, translated: true },
+  comparison: { original: false, detection: false, clean: false, translated: false },
 }
 
 export const useEditorStore = create<EditorState>((set) => ({
@@ -39,8 +35,6 @@ export const useEditorStore = create<EditorState>((set) => ({
   zoom: 1,
   selectedIds: [],
   layers: viewLayers.translated,
-  brushSize: 28,
-  brushHardness: 0.8,
   setView: view => set({ view, layers: { ...viewLayers[view] } }),
   setTool: tool => set(state => {
     const createsRegion = tool === 'rectangle' || tool === 'polygon' || tool === 'lasso'
@@ -62,5 +56,4 @@ export const useEditorStore = create<EditorState>((set) => ({
   }),
   selectMany: ids => set({ selectedIds: [...new Set(ids)] }),
   toggleLayer: name => set(state => ({ layers: { ...state.layers, [name]: !state.layers[name] } })),
-  setBrush: (brushSize, brushHardness) => set({ brushSize, brushHardness }),
 }))

@@ -60,3 +60,41 @@ stages:
     provider: builtin-noto-cjk
     config:
       package: fonts-noto-cjk
+
+# 可选：工作台快捷键。Web 设置页保存后会自动维护这部分。
+preferences:
+  shortcuts:
+    tool.select: KeyV
+    tool.rectangle: KeyR
+    tool.polygon: KeyP
+    tool.lasso: KeyL
+    view.original: Digit1
+    view.clean: Digit2
+    view.translated: Digit3
+    view.comparison: Digit4
+    edit.undo: Mod+KeyZ
+    edit.redo: Mod+KeyY
+    edit.selectAll: Mod+KeyA
+    zoom.out: Minus
+    zoom.reset: Digit0
+    zoom.in: Equal
+    region.delete: Delete
+    region.cancelSelection: ''
+    region.merge: Mod+KeyM
+    region.nudgeLeft: ArrowLeft
+    region.nudgeRight: ArrowRight
+    region.nudgeUp: ArrowUp
+    region.nudgeDown: ArrowDown
+    region.ocr: Alt+Digit1
+    region.translate: Alt+Digit2
+    region.inpaint: Alt+Digit3
+    region.render: Alt+Digit4
+    page.workflowOcr: Mod+Shift+Digit1
+    page.workflowTranslate: Mod+Shift+Digit2
+    page.workflowInpaint: Mod+Shift+Digit3
+    page.workflowRender: Mod+Shift+Digit4
+    page.import: Mod+KeyO
+    page.context: Mod+Shift+KeyC
+    page.export: Mod+Shift+KeyE
+    page.batchOcr: Mod+Shift+KeyB
+    page.reset: Mod+Shift+Backspace

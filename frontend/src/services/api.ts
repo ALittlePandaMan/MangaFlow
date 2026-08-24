@@ -134,4 +134,8 @@ export const api = {
     },
     remove: (filename: string) => request<void>(`/fonts/${encodeURIComponent(filename)}`, {method: 'DELETE'}),
   },
+  preferences: {
+    get: () => request<{shortcuts: Record<string, string>}>('/preferences'),
+    update: (shortcuts: Record<string, string>) => request<{shortcuts: Record<string, string>}>('/preferences', {method:'PUT', body:json({shortcuts})}),
+  },
 }

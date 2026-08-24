@@ -3,24 +3,21 @@ import { ChevronDown, Eraser, Languages, Layers3, ScanText, TextCursorInput } fr
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Circle, Group, Image as KonvaImage, Layer, Line, Rect, Stage, Text } from 'react-konva'
 import type { ImagePage, TextRegion } from '../../../types'
-import {buttonClass, cn, primaryButtonClass} from '../../../ui'
+import {cn} from '../../../ui'
 import {ButtonLoading, InlineLoading} from '../../../components/LoadingUI'
+import {formatShortcut, shortcutToAria, useShortcutStore} from '../../shortcuts/store'
 import { useEditorStore } from '../store'
 import { RegionPolygonEditor } from './RegionPolygonEditor'
 import { useImage, versionedImageSource } from '../hooks/useImage'
 import {isPerspectiveQuad, perspectiveQuadSize, warpCanvasToQuad, type WarpedCanvas} from '../lib/perspectiveText'
-
-export interface MaskStroke { points: number[], size: number, hardness: number, erase: boolean }
 
 interface Props {
   page: ImagePage
   regions: TextRegion[]
   onCreate: (polygon: number[][], bbox: number[]) => Promise<boolean>
   onUpdate: (id: string, patch: Partial<TextRegion>) => Promise<void>
-  onSaveMask: (id: string, blob: Blob) => Promise<void>
   onRegionAction: (id: string, action: string, options?: Record<string, unknown>) => void
   runningAction: string | null
-  maskRevision: number
 }
 
 type RenderStyle = {textColor: string, strokeColor: string, strokeWidth: number}
@@ -94,11 +91,6 @@ const polygonContainsPoint = (polygon: number[][], point: MarqueePoint, edgeTole
   }
   return inside
 }
-function MaskImage({ source, width, height }: {source: string, width: number, height: number}) {
-  const {image} = useImage(source)
-  return <KonvaImage image={image ?? undefined} width={width} height={height} opacity={0.32} globalCompositeOperation="source-over" filters={[Konva.Filters.RGBA]} red={255} green={50} blue={45} alpha={0.9} listening={false} />
-}
-
 function ComparisonLabel({x, scale, text}: {x: number, scale: number, text: string}) {
   return <Group x={x} y={12 * scale} scaleX={scale} scaleY={scale} listening={false}>
     <Rect width={48} height={24} cornerRadius={6} fill="rgba(8,11,9,.82)" stroke="rgba(255,255,255,.18)" strokeWidth={1}/>
@@ -106,7 +98,7 @@ function ComparisonLabel({x, scale, text}: {x: number, scale: number, text: stri
   </Group>
 }
 
-export function MangaCanvas({ page, regions, onCreate, onUpdate, onSaveMask, onRegionAction, runningAction, maskRevision }: Props) {
+export function MangaCanvas({ page, regions, onCreate, onUpdate, onRegionAction, runningAction }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const contextMenuRef = useRef<HTMLDivElement>(null)
   const [viewport, setViewport] = useState({width: 800, height: 700})
@@ -118,8 +110,6 @@ export function MangaCanvas({ page, regions, onCreate, onUpdate, onSaveMask, onR
   const [layersCollapsed, setLayersCollapsed] = useState(false)
   const [contextMenu, setContextMenu] = useState<{x: number, y: number, regionId: string, regionKey: string} | null>(null)
   const [marquee, setMarquee] = useState<MarqueeSelection | null>(null)
-  const [strokes, setStrokes] = useState<MaskStroke[]>([])
-  const [strokeRedo, setStrokeRedo] = useState<MaskStroke[]>([])
   const [showImageLoading, setShowImageLoading] = useState(false)
   const [translatedGeometryPreview, setTranslatedGeometryPreview] = useState<TranslatedGeometryPreview | null>(null)
   const middlePanning = useRef(false)
@@ -132,7 +122,8 @@ export function MangaCanvas({ page, regions, onCreate, onUpdate, onSaveMask, onR
   const cleanState = useImage(cleanSource)
   const original = originalState.image
   const clean = cleanState.image
-  const { view, tool, zoom, setZoom, selectedIds, select, selectMany, layers, toggleLayer, brushSize, brushHardness } = useEditorStore()
+  const { view, tool, zoom, setZoom, selectedIds, select, selectMany, layers, toggleLayer } = useEditorStore()
+  const shortcuts = useShortcutStore(state => state.shortcuts)
   const currentView = useRef<ViewTransform>({zoom, pan})
   const targetView = useRef<ViewTransform>({zoom, pan})
   const wheelFrame = useRef<number | null>(null)
@@ -174,8 +165,6 @@ export function MangaCanvas({ page, regions, onCreate, onUpdate, onSaveMask, onR
     setMiddlePanningActive(false)
     setContextMenu(null)
     setMarquee(null)
-    setStrokes([])
-    setStrokeRedo([])
     setShowImageLoading(false)
     setTranslatedGeometryPreview(null)
   }, [page.id])
@@ -312,8 +301,6 @@ export function MangaCanvas({ page, regions, onCreate, onUpdate, onSaveMask, onR
     }
   }, [])
 
-  useEffect(() => { setStrokes([]); setStrokeRedo([]) }, [page.id, selected?.id, maskRevision])
-
   useEffect(() => {
     if (!contextMenu) return
     const dismiss = (event: PointerEvent) => {
@@ -416,11 +403,6 @@ export function MangaCanvas({ page, regions, onCreate, onUpdate, onSaveMask, onR
     const point = pointer(event)
     if (!point) return
     if (tool === 'rectangle' || tool === 'lasso') { setDraft([point]); setDrawing(true); select(null) }
-    if ((tool === 'mask-brush' || tool === 'mask-eraser') && selected) {
-      setStrokes(value => [...value, {points: point, size: brushSize, hardness: brushHardness, erase: tool === 'mask-eraser'}])
-      setStrokeRedo([])
-      setDrawing(true)
-    }
     const clickedBlankCanvas = event.target === event.target.getStage() || event.target.name() === 'canvas-background'
     if (clickedBlankCanvas && tool === 'select') {
       setContextMenu(null)
@@ -451,9 +433,6 @@ export function MangaCanvas({ page, regions, onCreate, onUpdate, onSaveMask, onR
     if (!drawing) return
     if (tool === 'rectangle') setDraft(value => [value[0], point])
     if (tool === 'lasso') setDraft(value => [...value, point])
-    if ((tool === 'mask-brush' || tool === 'mask-eraser') && selected) {
-      setStrokes(value => value.map((stroke, index) => index === value.length - 1 ? {...stroke, points: [...stroke.points, ...point]} : stroke))
-    }
   }
 
   const handleUp = async () => {
@@ -541,41 +520,6 @@ export function MangaCanvas({ page, regions, onCreate, onUpdate, onSaveMask, onR
     setPolygonPreview(point)
   }
 
-  const saveMask = async () => {
-    if (!selected) return
-    const canvas = document.createElement('canvas')
-    canvas.width = page.width; canvas.height = page.height
-    const context = canvas.getContext('2d')!
-    context.fillStyle = 'black'; context.fillRect(0, 0, page.width, page.height)
-    if (selected.mask_url) {
-      const image = await loadImage(`${selected.mask_url}?v=${maskRevision}`)
-      context.drawImage(image, 0, 0, page.width, page.height)
-    }
-    for (const stroke of strokes) {
-      context.save()
-      context.globalCompositeOperation = stroke.erase ? 'destination-out' : 'source-over'
-      context.strokeStyle = `rgba(255,255,255,${Math.max(.15, stroke.hardness)})`
-      context.lineWidth = stroke.size
-      context.lineCap = 'round'; context.lineJoin = 'round'
-      context.shadowColor = stroke.erase ? 'transparent' : 'white'
-      context.shadowBlur = (1 - stroke.hardness) * stroke.size * .55
-      context.beginPath()
-      for (let index = 0; index < stroke.points.length; index += 2) {
-        if (index === 0) context.moveTo(stroke.points[index], stroke.points[index + 1])
-        else context.lineTo(stroke.points[index], stroke.points[index + 1])
-      }
-      if (stroke.points.length === 2) context.lineTo(stroke.points[0] + .01, stroke.points[1] + .01)
-      context.stroke(); context.restore()
-    }
-    const blob = await new Promise<Blob>((resolve, reject) => canvas.toBlob(item => item ? resolve(item) : reject(new Error('Mask encoding failed')), 'image/png'))
-    try {
-      await onSaveMask(selected.id, blob)
-      setStrokes([]); setStrokeRedo([])
-    } catch {
-      // The editor owns the global error notice; preserve strokes for retry.
-    }
-  }
-
   const draftRect = tool === 'rectangle' && draft.length === 2
     ? [Math.min(draft[0][0], draft[1][0]), Math.min(draft[0][1], draft[1][1]), Math.abs(draft[1][0] - draft[0][0]), Math.abs(draft[1][1] - draft[0][1])]
     : null
@@ -616,7 +560,6 @@ export function MangaCanvas({ page, regions, onCreate, onUpdate, onSaveMask, onR
           </>}
           {layers.original && <KonvaImage image={original ?? undefined} width={page.width} height={page.height} listening={false} />}
           {layers.clean && <KonvaImage image={clean ?? undefined} width={page.width} height={page.height} listening={false} />}
-          {layers.masks && regions.filter(region => region.mask_url).map(region => <MaskImage key={`${region.id}-${maskRevision}`} source={`${region.mask_url}?v=${maskRevision}`} width={page.width} height={page.height} />)}
           {layers.translated && <TranslatedRegions regions={translatedRenderRegions} displayScale={scale}/>}
           {layers.detection && regions.map(region => {
             const selectedNow = selectedIds.includes(region.id)
@@ -705,40 +648,36 @@ export function MangaCanvas({ page, regions, onCreate, onUpdate, onSaveMask, onR
               }}
             />)}
           </>}
-          {view !== 'comparison' && strokes.map((stroke, index) => <Line key={index} points={stroke.points} stroke={stroke.erase ? '#1d1d1b' : '#ff4940'} opacity={stroke.erase ? .7 : .55 + stroke.hardness * .3} strokeWidth={stroke.size} lineCap="round" lineJoin="round" />)}
         </Group>
       </Layer>
     </Stage>
     {contextMenu && <div ref={contextMenuRef} className="absolute z-[80] w-[178px] rounded-xl border border-line-strong bg-popover p-1 text-secondary shadow-panel backdrop-blur-xl" style={{left: contextMenu.x, top: contextMenu.y}} role="menu" aria-label={`${contextMenu.regionKey} 区域操作`}>
       <div className="mb-1 flex h-[38px] items-center gap-2 border-b border-line-subtle px-2"><span className="font-mono text-[11px] font-semibold text-accent">{contextMenu.regionKey}</span><small className="text-[9px] text-muted">区域操作</small></div>
-      <button className={cn(contextButtonClass, runningAction === 'ocr' && 'bg-accent/10 text-ink')} role="menuitem" disabled={!!runningAction} onClick={() => runRegionContextAction('ocr')}>{runningAction === 'ocr' ? <ButtonLoading label="OCR 处理中…"/> : <><ScanText size={15}/>重新 OCR</>}</button>
-      <button className={cn(contextButtonClass, runningAction === 'translate' && 'bg-accent/10 text-ink')} role="menuitem" disabled={!!runningAction} onClick={() => runRegionContextAction('translate')}>{runningAction === 'translate' ? <ButtonLoading label="翻译处理中…"/> : <><Languages size={15}/>重新翻译</>}</button>
-      <button className={cn(contextButtonClass, runningAction === 'inpaint' && 'bg-accent/10 text-ink')} role="menuitem" disabled={!!runningAction} onClick={() => runRegionContextAction('inpaint')}>{runningAction === 'inpaint' ? <ButtonLoading label="背景修复中…"/> : <><Eraser size={15}/>重新修复</>}</button>
-      <button className={cn(contextButtonClass, runningAction === 'render' && 'bg-accent/10 text-ink')} role="menuitem" disabled={!!runningAction} onClick={() => runRegionContextAction('render')}>{runningAction === 'render' ? <ButtonLoading label="排版处理中…"/> : <><TextCursorInput size={15}/>重新排版</>}</button>
+      <button className={cn(contextButtonClass, runningAction === 'ocr' && 'bg-accent/10 text-ink')} role="menuitem" disabled={!!runningAction} title={`重新 OCR (${formatShortcut(shortcuts['region.ocr'])})`} aria-keyshortcuts={shortcutToAria(shortcuts['region.ocr'])} onClick={() => runRegionContextAction('ocr')}>{runningAction === 'ocr' ? <ButtonLoading label="OCR 处理中…"/> : <><ScanText size={15}/>重新 OCR</>}</button>
+      <button className={cn(contextButtonClass, runningAction === 'translate' && 'bg-accent/10 text-ink')} role="menuitem" disabled={!!runningAction} title={`重新翻译 (${formatShortcut(shortcuts['region.translate'])})`} aria-keyshortcuts={shortcutToAria(shortcuts['region.translate'])} onClick={() => runRegionContextAction('translate')}>{runningAction === 'translate' ? <ButtonLoading label="翻译处理中…"/> : <><Languages size={15}/>重新翻译</>}</button>
+      <button className={cn(contextButtonClass, runningAction === 'inpaint' && 'bg-accent/10 text-ink')} role="menuitem" disabled={!!runningAction} title={`重新修复 (${formatShortcut(shortcuts['region.inpaint'])})`} aria-keyshortcuts={shortcutToAria(shortcuts['region.inpaint'])} onClick={() => runRegionContextAction('inpaint')}>{runningAction === 'inpaint' ? <ButtonLoading label="背景修复中…"/> : <><Eraser size={15}/>重新修复</>}</button>
+      <button className={cn(contextButtonClass, runningAction === 'render' && 'bg-accent/10 text-ink')} role="menuitem" disabled={!!runningAction} title={`重新排版 (${formatShortcut(shortcuts['region.render'])})`} aria-keyshortcuts={shortcutToAria(shortcuts['region.render'])} onClick={() => runRegionContextAction('render')}>{runningAction === 'render' ? <ButtonLoading label="排版处理中…"/> : <><TextCursorInput size={15}/>重新排版</>}</button>
     </div>}
-    {view !== 'comparison' && <div className="absolute right-3.5 top-3.5 z-10 w-44 select-none overflow-hidden rounded-xl border border-line-strong bg-popover text-secondary shadow-panel backdrop-blur-xl" aria-label="画布图层">
-      <button className={cn('flex h-[34px] min-h-[34px] w-full cursor-pointer items-center justify-start gap-2 border-0 bg-transparent px-3 font-mono text-[10px] font-medium uppercase leading-none tracking-[1px] text-secondary outline-none transition-colors hover:bg-hover hover:text-ink [&>svg:first-child]:text-accent', !layersCollapsed && 'border-b border-line')} type="button" aria-expanded={!layersCollapsed} onClick={() => setLayersCollapsed(value => !value)}>
-        <Layers3 className="shrink-0" size={14}/><span className="flex h-full items-center leading-none">图层</span><ChevronDown className={cn('ml-auto text-muted transition-transform duration-200', layersCollapsed && '-rotate-90')} size={14}/>
+    {view !== 'comparison' && <div className="absolute right-3.5 top-3.5 z-10 w-44 select-none text-secondary" aria-label="画布图层">
+      <button
+        className={cn('relative z-10 flex h-[36px] min-h-[36px] w-full cursor-pointer items-center justify-start gap-2 border border-line-strong bg-popover px-3 font-mono text-xs font-medium uppercase leading-none tracking-[1px] text-secondary shadow-panel outline-none transition-colors hover:bg-hover hover:text-ink [&>svg:first-child]:text-accent', layersCollapsed ? 'rounded-xl' : 'rounded-t-xl rounded-b-none')}
+        style={{borderBottomColor: layersCollapsed ? 'var(--color-line-strong)' : 'var(--color-line)'}}
+        type="button" aria-expanded={!layersCollapsed} onClick={() => setLayersCollapsed(value => !value)}
+      >
+        <Layers3 className="shrink-0" size={15}/><span className="flex h-full items-center leading-none">图层</span><ChevronDown className={cn('ml-auto text-muted transition-transform duration-200 motion-reduce:transition-none', layersCollapsed && '-rotate-90')} size={15}/>
       </button>
-      <div className={cn('flex max-h-[194px] flex-col gap-1 overflow-hidden p-1 transition-all duration-200', layersCollapsed && 'pointer-events-none max-h-0 py-0 opacity-0')}>{Object.entries(layers).map(([name, visible]) => <label className="relative flex h-[34px] shrink-0 cursor-pointer items-center gap-2 rounded-lg px-2 text-[11px] leading-none text-secondary transition-colors hover:bg-hover hover:text-ink" key={name}>
-        <input className="sr-only" type="checkbox" checked={visible} onChange={() => toggleLayer(name as keyof typeof layers)} />
-        <span className={cn('size-3 shrink-0 rounded-full border border-accent/50 transition', visible && 'border-accent bg-accent shadow-[0_0_8px_rgb(16_211_163/.25)]')} />
-        <span className="flex h-full items-center leading-none">{({original:'原始图像',detection:'检测区域',masks:'文字 Mask',clean:'修复背景',translated:'翻译文字'} as Record<string,string>)[name]}</span>
-      </label>)}</div>
+      <div
+        className={cn('absolute right-0 top-full w-full overflow-hidden rounded-b-xl border-x border-b border-line-strong bg-popover shadow-panel transition-[clip-path] duration-200 ease-out motion-reduce:transition-none', layersCollapsed && 'pointer-events-none')}
+        style={{clipPath: layersCollapsed ? 'inset(0 0 100% 0)' : 'inset(0 0 0 0)'}}
+        aria-hidden={layersCollapsed}
+      ><div className="flex flex-col gap-1 p-1">{Object.entries(layers).map(([name, visible]) => <label className="relative flex h-[34px] shrink-0 cursor-pointer items-center gap-2 rounded-lg px-2 text-[11px] leading-none text-secondary transition-colors hover:bg-hover hover:text-ink" key={name}>
+          <input className="sr-only" type="checkbox" checked={visible} tabIndex={layersCollapsed ? -1 : 0} onChange={() => toggleLayer(name as keyof typeof layers)} />
+          <span className={cn('size-3 shrink-0 rounded-full border border-accent/50 transition', visible && 'border-accent bg-accent shadow-[0_0_8px_rgb(16_211_163/.25)]')} />
+          <span className="flex h-full items-center leading-none">{({original:'原始图像',detection:'检测区域',clean:'修复背景',translated:'翻译文字'} as Record<string,string>)[name]}</span>
+        </label>)}</div></div>
     </div>}
-    {view !== 'comparison' && (tool === 'mask-brush' || tool === 'mask-eraser') && <div className="absolute bottom-4 left-1/2 flex -translate-x-1/2 gap-1 rounded-xl border border-line-strong bg-popover p-2 shadow-panel backdrop-blur-xl">
-      <button className={`${buttonClass} !min-h-[34px] px-3 text-[11px]`} disabled={!strokes.length} onClick={() => { const last = strokes.at(-1); if (last) {setStrokes(value => value.slice(0, -1)); setStrokeRedo(value => [...value, last])} }}>撤销笔画</button>
-      <button className={`${buttonClass} !min-h-[34px] px-3 text-[11px]`} disabled={!strokeRedo.length} onClick={() => { const last = strokeRedo.at(-1); if (last) {setStrokeRedo(value => value.slice(0, -1)); setStrokes(value => [...value, last])} }}>重做</button>
-      <button className={`${primaryButtonClass} !min-h-[34px] px-3 text-[11px]`} disabled={!selected || !strokes.length || !!runningAction} onClick={saveMask}>{runningAction === 'mask-save' ? <ButtonLoading label="保存中…"/> : '保存 Mask'}</button>
-    </div>}
-    <div className="pointer-events-none absolute bottom-2.5 right-3 rounded-md border border-line bg-canvas/80 px-2 py-1 font-mono text-[8px] text-secondary">{Math.round(zoom * 100)}%</div>
+    <div className="pointer-events-none absolute bottom-3 right-3 min-w-12 rounded-lg border border-line-strong bg-canvas/90 px-2.5 py-1.5 text-center font-mono text-[11px] font-semibold text-ink shadow-panel backdrop-blur-md">{Math.round(zoom * 100)}%</div>
   </div>
-}
-
-function loadImage(source: string): Promise<HTMLImageElement> {
-  return new Promise((resolve, reject) => {
-    const image = new Image(); image.crossOrigin = 'anonymous'; image.onload = () => resolve(image); image.onerror = reject; image.src = source
-  })
 }
 
 function TranslatedRegions({regions, displayScale}: {regions: TextRegion[], displayScale: number}) {

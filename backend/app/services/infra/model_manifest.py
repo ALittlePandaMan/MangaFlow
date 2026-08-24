@@ -60,6 +60,25 @@ class ManifestStage(BaseModel):
         return normalized
 
 
+class ManifestPreferences(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    shortcuts: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("shortcuts")
+    @classmethod
+    def validate_shortcuts(cls, value: dict[str, str]) -> dict[str, str]:
+        if len(value) > 100:
+            raise ValueError("preferences.shortcuts supports at most 100 entries")
+        normalized: dict[str, str] = {}
+        for key, binding in value.items():
+            shortcut_id = key.strip()
+            if not shortcut_id or len(shortcut_id) > 80 or len(binding) > 80:
+                raise ValueError("shortcut names must contain 1-80 characters and bindings at most 80 characters")
+            normalized[shortcut_id] = binding.strip()
+        return normalized
+
+
 class ModelManifest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -67,6 +86,7 @@ class ModelManifest(BaseModel):
     apply: Literal["fill-missing"] = "fill-missing"
     preload: bool = True
     stages: dict[str, ManifestStage]
+    preferences: ManifestPreferences | None = None
 
     @model_validator(mode="after")
     def validate_stages(self) -> ModelManifest:
@@ -177,6 +197,7 @@ def persist_model_settings(
         apply="fill-missing",
         preload=existing.preload if existing is not None else True,
         stages=stages,
+        preferences=existing.preferences.model_copy(deep=True) if existing is not None and existing.preferences else None,
     )
     _resolved_manifest_configs(manifest)
     _atomic_write(
@@ -204,6 +225,30 @@ def persist_model_settings(
             secret or "",
         )
     return manifest
+
+
+def persist_shortcut_preferences(path: str | Path | None, shortcuts: dict[str, str]) -> ManifestPreferences:
+    """Persist portable editor shortcuts without changing active model stages."""
+
+    if path is None:
+        raise ModelManifestError("Cannot persist shortcuts without a config.yaml path")
+    manifest_path = Path(path)
+    manifest = load_model_manifest(manifest_path)
+    preferences = ManifestPreferences(shortcuts=shortcuts)
+    manifest.preferences = preferences
+    _resolved_manifest_configs(manifest)
+    _atomic_write(
+        manifest_path,
+        yaml.safe_dump(
+            manifest.model_dump(mode="python", exclude_none=True),
+            allow_unicode=True,
+            sort_keys=False,
+            default_flow_style=False,
+            width=120,
+        ),
+        mode=0o644,
+    )
+    return preferences
 
 
 def apply_model_manifest(db: Session, manifest: ModelManifest | dict[str, Any]) -> list[dict[str, Any]]:
@@ -487,11 +532,13 @@ def _preload_report(kind: str, provider: str, status: str, error: str | None) ->
 __all__ = [
     "MANIFEST_STAGES",
     "MODEL_STAGES",
+    "ManifestPreferences",
     "ManifestStage",
     "ModelManifest",
     "ModelManifestError",
     "apply_model_manifest",
     "load_model_manifest",
     "persist_model_settings",
+    "persist_shortcut_preferences",
     "preload_manifest_models",
 ]

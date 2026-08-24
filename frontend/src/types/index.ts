@@ -1,5 +1,5 @@
 export type ViewMode = 'original' | 'clean' | 'translated' | 'comparison'
-export type Tool = 'select' | 'rectangle' | 'polygon' | 'lasso' | 'mask-brush' | 'mask-eraser'
+export type Tool = 'select' | 'rectangle' | 'polygon' | 'lasso'
 
 export interface Project {
   id: string

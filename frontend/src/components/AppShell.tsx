@@ -5,6 +5,7 @@ import { useGlobalDialog } from './GlobalDialog'
 import { PageLoader } from './LoadingUI'
 import {ThemeToggle} from './ThemeToggle'
 import { RecommendedConfigurationWizard } from '../pages/SettingsPage'
+import {useShortcutStore} from '../features/shortcuts/store'
 import { api } from '../services/api'
 import type { FontResource, ModelConfiguration, ModelDescriptor, SetupStatus } from '../types'
 import {buttonClass, cn, scrollbarClass} from '../ui'
@@ -32,8 +33,14 @@ export function AppShell() {
   const loadSetup = async () => {
     setSetupLoading(true); setSetupError('')
     try {
-      const [status, models, fontItems] = await Promise.all([api.models.setupStatus(), api.models.list(), api.fonts.list()])
+      const [status, models, fontItems, preferences] = await Promise.all([
+        api.models.setupStatus(),
+        api.models.list(),
+        api.fonts.list(),
+        api.preferences.get().catch(() => ({shortcuts:{}})),
+      ])
       setSetup(status); setAvailable(models.available); setConfigured(models.configured); setFonts(fontItems)
+      if (Object.keys(preferences.shortcuts).length) useShortcutStore.getState().setShortcuts(preferences.shortcuts)
     } catch (reason) {
       setSetupError(reason instanceof Error ? reason.message : String(reason))
     } finally {

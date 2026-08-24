@@ -1,9 +1,11 @@
-import { Check, ChevronRight, CircleAlert, Cpu, Download, KeyRound, Pencil, RefreshCw, Server, Sparkles, Trash2, Type, Upload } from 'lucide-react'
+import { Check, ChevronRight, CircleAlert, Cpu, Download, Keyboard, KeyRound, Pencil, RefreshCw, Server, Sparkles, Trash2, Type, Upload } from 'lucide-react'
 import { FormEvent, useEffect, useRef, useState } from 'react'
 import {NumberControl, SelectControl} from '../components/FormControls'
 import { useGlobalDialog } from '../components/GlobalDialog'
 import {ButtonLoading, IndeterminateProgress, SettingsSkeleton, useMinimumLoadingTime} from '../components/LoadingUI'
+import {ShortcutSettings} from '../components/ShortcutSettings'
 import { DEFAULT_FONT_FAMILIES } from '../constants/fonts'
+import {SHORTCUT_DEFINITIONS} from '../features/shortcuts/store'
 import { api } from '../services/api'
 import type { DeviceProfile, FontResource, ModelBootstrapEntry, ModelConfiguration, ModelDescriptor } from '../types'
 import {buttonClass, cn, dangerButtonClass, eyebrowClass, iconButtonClass, inputClass, pageClass, primaryButtonClass, textareaClass} from '../ui'
@@ -43,6 +45,19 @@ export function SettingsPage() {
         await refreshFonts()
         setNotice(message)
         setError('')
+      }}/>,
+    })
+  }
+  const showShortcutDialog = () => {
+    openDialog({
+      title:'快捷键设置',
+      description:'统一调整工作台工具、视图、编辑、区域与页面操作的键盘快捷键。',
+      size:'xlarge',
+      content:({close}) => <ShortcutSettings onCancel={close} onSaved={async shortcuts => {
+        await api.preferences.update(shortcuts)
+        setNotice('快捷键设置已保存，并已在工作台生效。')
+        setError('')
+        close()
       }}/>,
     })
   }
@@ -112,6 +127,7 @@ export function SettingsPage() {
       {activeConfigurations.map(({kind, label, item}) => <article className={configCard} key={kind}><div className={configIcon}>{kind === 'translation' ? <Server/> : <Cpu/>}</div><div className={configBody}><span className="font-mono text-[9px] uppercase leading-[normal] text-muted">流水线配置</span><h3 className="my-1 text-sm leading-[1.35]">{label}</h3><p className="m-0 font-mono text-[10px] leading-[normal] text-muted">{item ? providerLabel(kind, item.provider) : '尚未配置，点击编辑进行设置'}</p><div className="mt-3 flex flex-wrap gap-1">{item ? <><i className={tag}><Check size={12}/>当前配置</i>{configurationDeviceTag(item, available) && <i className={tag}>{configurationDeviceTag(item, available)}</i>}{item.has_api_key && <i className={tag}><KeyRound size={12}/>密钥已保存</i>}{kind === 'translation' && !item.has_api_key && <i className={cn(tag, 'border-warning/40 text-warning')}>待填写密钥</i>}</> : <i className={cn(tag, 'border-warning/40 text-warning')}>待配置</i>}</div></div><div className="col-start-2 row-start-2 flex justify-end"><button className={iconButtonClass} title={`编辑${label}配置`} aria-label={`编辑${label}配置`} onClick={() => showModelDialog(kind, item)}><Pencil size={15}/></button></div></article>)}
       <article className={configCard}><div className={configIcon}><Type/></div><div className={configBody}><span className="font-mono text-[9px] uppercase leading-[normal] text-muted">排版资源</span><h3 className="my-1 text-sm leading-[1.35]">字体</h3><p className="m-0 font-mono text-[10px] leading-[normal] text-muted">{DEFAULT_FONT_FAMILIES.length + fonts.length} 种字体可用</p><div className="mt-3 flex flex-wrap gap-1"><i className={tag}><Check size={12}/>{DEFAULT_FONT_FAMILIES.length} 种内置</i>{fonts.length > 0 && <i className={tag}>{fonts.length} 种自定义</i>}</div></div><div className="col-start-2 row-start-2 flex justify-end"><button className={iconButtonClass} title="编辑字体配置" aria-label="编辑字体配置" onClick={showFontDialog}><Pencil size={15}/></button></div></article>
     </div></div>
+    <div className="mt-8"><h2 className="mb-3 mt-0 text-base">操作偏好</h2><article className="grid min-h-[118px] grid-cols-[42px_minmax(0,1fr)_auto] items-center gap-3 rounded-xl border border-line bg-panel p-4 transition hover:border-line-strong hover:bg-surface hover:shadow-soft"><div className={configIcon}><Keyboard/></div><div className="min-w-0"><span className="font-mono text-[9px] uppercase leading-[normal] text-muted">编辑器控制</span><h3 className="my-1 text-sm leading-[1.35]">快捷键</h3><p className="m-0 text-[10px] leading-relaxed text-muted">{SHORTCUT_DEFINITIONS.length} 项操作可自定义，包含工具、视图、区域、页面流程与导入导出。</p></div><button className={buttonClass} onClick={showShortcutDialog}><Keyboard size={15}/>编辑快捷键</button></article></div>
   </section>
 }
 

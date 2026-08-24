@@ -1,4 +1,4 @@
-import {MonitorCog, Moon, Sun} from 'lucide-react'
+import {Moon, Sun} from 'lucide-react'
 import {useEffect, useState} from 'react'
 
 import {applyTheme, nextThemeMode, readStoredThemeMode, resolveTheme, SYSTEM_DARK_QUERY} from '../theme'
@@ -14,7 +14,7 @@ export function ThemeToggle() {
   const nextMode = nextThemeMode(mode, systemDark)
   const modeLabel = mode === 'system' ? `跟随系统（当前${resolved === 'dark' ? '深色' : '浅色'}）` : mode === 'dark' ? '深色主题' : '浅色主题'
   const nextLabel = nextMode === 'system' ? '跟随系统' : nextMode === 'dark' ? '深色主题' : '浅色主题'
-  const Icon = mode === 'system' ? MonitorCog : mode === 'dark' ? Moon : Sun
+  const Icon = resolved === 'dark' ? Moon : Sun
 
   useEffect(() => {
     const media = window.matchMedia?.(SYSTEM_DARK_QUERY)
@@ -28,7 +28,7 @@ export function ThemeToggle() {
 
   return <button
     type="button"
-    className="ml-auto grid size-9 shrink-0 cursor-pointer place-items-center rounded-lg border border-line-subtle bg-raised text-secondary outline-none transition-colors hover:border-line hover:bg-hover hover:text-ink focus-visible:ring-3 focus-visible:ring-accent/20"
+    className="ml-2 grid size-9 shrink-0 cursor-pointer place-items-center rounded-lg border border-line-subtle bg-raised text-secondary outline-none transition-colors hover:border-line hover:bg-hover hover:text-ink focus-visible:ring-3 focus-visible:ring-accent/20"
     title={`${modeLabel}，点击切换为${nextLabel}`}
     aria-label={`主题：${modeLabel}，点击切换为${nextLabel}`}
     onClick={() => setMode(nextMode)}
