@@ -5,7 +5,7 @@ import { createPortal } from 'react-dom'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { useAppHeaderSlots } from '../components/AppShell'
 import { useGlobalDialog } from '../components/GlobalDialog'
-import { BlockingLoader, ButtonLoading, CircularProgress, EditorSkeleton, InlineLoading, useDelayedMinimumLoadingTime, useMinimumLoadingTime } from '../components/LoadingUI'
+import { BlockingLoader, ButtonLoading, CircularProgress, EditorSkeleton, useMinimumLoadingTime } from '../components/LoadingUI'
 import { DEFAULT_FONT_FAMILIES } from '../constants/fonts'
 import { CanvasZoomControls, EditorToolbar } from '../features/editor/components/EditorToolbar'
 import { MangaCanvas } from '../features/editor/components/MangaCanvas'
@@ -96,7 +96,6 @@ export function EditorPage() {
   const [loading, setLoading] = useState(true)
   const [switchingPage, setSwitchingPage] = useState(false)
   const showingInitialLoading = useMinimumLoadingTime(loading, 420)
-  const showingPageSwitch = useDelayedMinimumLoadingTime(switchingPage, 180, 240)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [runningRegionAction, setRunningRegionAction] = useState<string | null>(null)
@@ -1102,7 +1101,7 @@ export function EditorPage() {
         ? activePageTask.progress
         : null
 
-  const headerButtonClass = `${buttonClass} !h-9 !min-h-9 px-3 py-0 text-[11px]`
+  const headerButtonClass = `${buttonClass} !h-10 !min-h-10 px-3.5 py-0 text-[12px]`
   const workflowRank = page ? pageWorkflowRank(page, regions) : 0
   const nextWorkflowStage: PageWorkflowStage | null = workflowRank < 1
     ? 'ocr'
@@ -1221,7 +1220,7 @@ export function EditorPage() {
         <button className={headerButtonClass} onClick={() => void batchRecognize()} disabled={editorBusy || showingInitialLoading} title={`只识别当前页之外尚未完成 OCR 的图片 (${formatShortcut(shortcuts['page.batchOcr'])})`} aria-keyshortcuts={shortcutToAria(shortcuts['page.batchOcr'])}>{schedulingBatch ? <ButtonLoading label="批量识别中…"/> : <><Layers3 size={16}/>批量识别</>}</button>
       </div>
     </>, editorTarget)}
-    <div className="editor-content-enter grid h-full grid-rows-[44px_minmax(0,1fr)] bg-canvas">
+    <div className="editor-content-enter grid h-full grid-rows-[48px_minmax(0,1fr)] bg-canvas">
     <EditorToolbar
       onUndo={() => applyHistory('undo')}
       onRedo={() => applyHistory('redo')}
@@ -1231,14 +1230,14 @@ export function EditorPage() {
       rightActions={<div className="flex items-center gap-1" aria-label="当前页处理流程">
         {workflowButtons.map(({stage, shortcutId, label, requiredRank, title, icon: Icon}) => <button
           key={stage}
-          className={cn(nextWorkflowStage === stage ? primaryButtonClass : buttonClass, '!h-7 !min-h-7 px-2 py-0 text-[10px]')}
+          className={cn(nextWorkflowStage === stage ? primaryButtonClass : buttonClass, '!h-8 !min-h-8 px-2.5 py-0 text-[11px]')}
           onClick={() => void processPageStage(stage)}
           disabled={!page || editorBusy || workflowRank < requiredRank}
           title={`${title} (${formatShortcut(shortcuts[shortcutId])})`}
           aria-keyshortcuts={shortcutToAria(shortcuts[shortcutId])}
         >{schedulingProcess && runningWorkflowStage === stage ? <ButtonLoading label={`${label.replace('重新 ', '')} 中…`}/> : <><Icon size={14}/>{label}</>}</button>)}
         <button
-          className={`${dangerButtonClass} !h-7 !min-h-7 px-2 py-0 text-[10px]`}
+          className={`${dangerButtonClass} !h-8 !min-h-8 px-2.5 py-0 text-[11px]`}
           onClick={() => void resetCurrentPage()}
           disabled={!page || editorBusy || (page.status === 'UPLOADED' && !regions.length && !page.clean_url && !page.rendered_url)}
           title={`重置当前页 (${formatShortcut(shortcuts['page.reset'])})`}
@@ -1246,18 +1245,18 @@ export function EditorPage() {
         >{resettingPage ? <ButtonLoading label="恢复中…"/> : <><RotateCcw size={14}/>重置当前页</>}</button>
       </div>}
     />
-    {showingInitialLoading ? <EditorSkeleton canvasControls={<CanvasZoomControls/>}/> : <div className="grid min-h-0 grid-cols-[192px_minmax(0,1fr)_320px] max-[1200px]:grid-cols-[176px_minmax(0,1fr)_300px]">
+    {showingInitialLoading ? <EditorSkeleton canvasControls={<CanvasZoomControls/>}/> : <div className="grid min-h-0 grid-cols-[208px_minmax(0,1fr)_336px] max-[1200px]:grid-cols-[184px_minmax(0,1fr)_312px]">
       <aside className="flex min-h-0 flex-col border-r border-line-subtle bg-panel">
-        <div className="flex h-[38px] shrink-0 items-center justify-between border-b border-line-subtle px-3 font-mono text-[12px] uppercase text-muted"><span>页面</span><button className={cn(iconButtonClass, 'border-0 bg-transparent')} disabled={editorBusy} title={`导入图片 (${formatShortcut(shortcuts['page.import'])})`} aria-label="导入图片" aria-keyshortcuts={shortcutToAria(shortcuts['page.import'])} onClick={openImagePicker}>{uploadingPages ? <ButtonLoading compact label="正在导入图片"/> : <ImagePlus size={16}/>}</button></div>
-        <div ref={pageListRef} className={cn('min-h-0 flex-1 overflow-auto p-2', scrollbarClass)} onContextMenu={openImagePickerFromBlank}>{pages.map((item, index) => <button
+        <div className="flex h-10 shrink-0 items-center justify-between border-b border-line-subtle px-3.5 font-mono text-[12px] font-semibold uppercase tracking-[.8px] text-muted"><span>页面</span><button className={cn(buttonClass, '!size-8 !min-h-8 !p-0 border-0 bg-transparent')} disabled={editorBusy} title={`导入图片 (${formatShortcut(shortcuts['page.import'])})`} aria-label="导入图片" aria-keyshortcuts={shortcutToAria(shortcuts['page.import'])} onClick={openImagePicker}>{uploadingPages ? <ButtonLoading compact label="正在导入图片"/> : <ImagePlus aria-hidden="true" size={16}/>}</button></div>
+        <div ref={pageListRef} className={cn('min-h-0 flex-1 overflow-auto p-2.5', scrollbarClass)} onContextMenu={openImagePickerFromBlank}>{pages.map((item, index) => <button
           key={item.id}
           data-page-id={item.id}
           data-page-index={index}
           aria-current={selectedPageId === item.id ? 'page' : undefined}
           className={cn(
-            'relative mb-2 block w-full cursor-grab touch-pan-y rounded-lg border p-2 text-left outline-none transition-[background-color,border-color,opacity,transform,box-shadow,filter] focus-visible:border-accent/70 focus-visible:ring-2 focus-visible:ring-accent/25 active:cursor-grabbing',
+            'relative mb-2.5 block w-full cursor-grab touch-pan-y rounded-xl border p-2.5 text-left outline-none transition-[background-color,border-color,opacity,transform,box-shadow,filter] focus-visible:border-accent/70 focus-visible:ring-2 focus-visible:ring-accent/25 active:cursor-grabbing',
             selectedPageId === item.id
-              ? 'border-accent !bg-accent !text-accent-ink shadow-[0_8px_24px_rgb(0_0_0/.3)] hover:brightness-105'
+              ? 'border-accent !bg-accent !text-accent-ink [box-shadow:var(--shadow-card-hover)] hover:brightness-105'
               : 'border-transparent bg-transparent hover:bg-raised',
             pageDrag?.pageId === item.id && 'z-10 scale-[1.015] cursor-grabbing bg-raised opacity-70 shadow-panel',
             pageDrag && pageDrag.overIndex === index && pageDrag.fromIndex !== index && (pageDrag.overIndex > pageDrag.fromIndex
@@ -1277,17 +1276,17 @@ export function EditorPage() {
         {!pages.length && <div className="flex min-h-full items-center justify-center"><button className={`${buttonClass} min-h-[140px] w-full flex-col border-dashed bg-transparent text-[12px] text-muted`} disabled={editorBusy} onClick={openImagePicker}><Upload size={22}/>导入漫画图片</button></div>}
         </div>
       </aside>
-      <main className="relative min-h-0 min-w-0 bg-canvas bg-[linear-gradient(45deg,var(--color-panel)_25%,transparent_25%),linear-gradient(-45deg,var(--color-panel)_25%,transparent_25%),linear-gradient(45deg,transparent_75%,var(--color-panel)_75%),linear-gradient(-45deg,transparent_75%,var(--color-panel)_75%)] [background-position:0_0,0_10px,10px_-10px,-10px_0] [background-size:20px_20px]">{page ? <MangaCanvas page={page} regions={regions} onCreate={createRegion} onUpdate={updateRegion} onRegionAction={(id, name, options) => {void action(name, options, id)}} runningAction={runningRegionAction}/> : <div className="flex h-full flex-col items-center justify-center text-muted"><ImagePlus size={36}/><h3 className="mb-1 mt-3 text-base text-secondary">导入漫画页面</h3><p className="mb-4 mt-0 text-xs">支持 JPG、PNG 和 WebP，可一次选择多张。</p><button className={`${primaryButtonClass} !min-h-[34px]`} disabled={editorBusy} onClick={openImagePicker}>选择图片</button></div>}<CanvasZoomControls disabled={editorBusy}/>{showingPageSwitch && <div className="absolute inset-0 z-[65] cursor-wait" aria-busy="true" aria-live="polite"><span className="absolute left-1/2 top-3 -translate-x-1/2 rounded-lg bg-surface/95 px-3 py-2 shadow-panel"><InlineLoading label="正在切换图片"/></span></div>}</main>
+      <main className="relative min-h-0 min-w-0 bg-canvas bg-[linear-gradient(45deg,var(--color-panel)_25%,transparent_25%),linear-gradient(-45deg,var(--color-panel)_25%,transparent_25%),linear-gradient(45deg,transparent_75%,var(--color-panel)_75%),linear-gradient(-45deg,transparent_75%,var(--color-panel)_75%)] [background-position:0_0,0_10px,10px_-10px,-10px_0] [background-size:20px_20px]">{page ? <MangaCanvas page={page} regions={regions} onCreate={createRegion} onUpdate={updateRegion} onRegionAction={(id, name, options) => {void action(name, options, id)}} runningAction={runningRegionAction}/> : <div className="flex h-full flex-col items-center justify-center text-muted"><ImagePlus size={36}/><h3 className="mb-1 mt-3 text-base text-secondary">导入漫画页面</h3><p className="mb-4 mt-0 text-xs">支持 JPG、PNG 和 WebP，可一次选择多张。</p><button className={`${primaryButtonClass} !min-h-[34px]`} disabled={editorBusy} onClick={openImagePicker}>选择图片</button></div>}<CanvasZoomControls disabled={editorBusy}/></main>
       <RegionProperties region={selectedIds.length === 1 ? regions.find(region => region.id === selectedIds[0]) : undefined} selectedRegions={regions.filter(region => selectedIds.includes(region.id))} selectedCount={selectedIds.length} fontOptions={[...DEFAULT_FONT_FAMILIES.map(font => font.name), ...fontResources.map(font => font.name)]} busyAction={runningRegionAction} onUpdate={updateRegion} onAction={action}/>
     </div>}
     {pageContextMenu && createPortal(<div ref={pageContextMenuRef} className="fixed z-[110] w-[182px] overflow-hidden rounded-xl border border-line-strong bg-popover p-1 text-secondary shadow-dialog backdrop-blur-xl" style={{left: pageContextMenu.x, top: pageContextMenu.y}} role="menu" aria-label="图片操作">
       <div className="flex h-9 items-center border-b border-line-subtle px-2"><span className="min-w-0 truncate text-[10px] text-muted" title={pages.find(item => item.id === pageContextMenu.pageId)?.filename}>{pages.find(item => item.id === pageContextMenu.pageId)?.filename}</span></div>
       <button className="mt-1 flex h-9 w-full cursor-pointer items-center gap-2 rounded-lg border-0 bg-transparent px-3 text-left text-[11px] text-secondary outline-none transition-colors hover:bg-hover hover:text-ink disabled:cursor-default disabled:opacity-60" type="button" role="menuitem" disabled={!!contextPage && !contextPage.ocr_exempt && !pageNeedsOcr(contextPage)} onClick={() => void togglePageOcrExempt(pageContextMenu.pageId)}><CheckCircle2 size={15} className="text-accent"/>{contextPage?.ocr_exempt ? '取消已翻译' : '已翻译'}</button>
-      <button className="mt-1 flex h-9 w-full cursor-pointer items-center gap-2 rounded-lg border-0 bg-transparent px-3 text-left text-[11px] text-danger-soft-ink outline-none transition-colors hover:bg-danger/20 hover:text-white" type="button" role="menuitem" onClick={() => void deletePage(pageContextMenu.pageId)}><Trash2 size={15}/>删除图片</button>
+      <button className="mt-1 flex h-9 w-full cursor-pointer items-center gap-2 rounded-lg border-0 bg-transparent px-3 text-left text-[11px] text-danger-soft-ink outline-none transition-colors hover:bg-danger/15 hover:text-danger-soft-ink" type="button" role="menuitem" onClick={() => void deletePage(pageContextMenu.pageId)}><Trash2 size={15}/>删除图片</button>
     </div>, document.body)}
-    {showContext && <div className="fixed inset-0 z-[90] grid place-items-center bg-black/60 backdrop-blur-sm"><div className="w-[min(650px,70vw)] overflow-hidden rounded-xl border border-line-strong bg-surface shadow-dialog"><header className="flex items-center justify-between border-b border-line-subtle px-5 py-4"><div><span className={eyebrowClass}>PROJECT CONTEXT</span><h2 className="mb-0 mt-1 text-xl">翻译上下文</h2></div><button className={cn(iconButtonClass, 'border-0 bg-transparent text-xl')} disabled={savingContext} onClick={() => setShowContext(false)}>×</button></header><p className="px-5 text-xs text-muted">以 JSON 保存人物名、术语、口癖、称谓和章节背景；整页翻译时会随 Region ID 一起发送。</p><textarea className={cn(textareaClass, 'mx-5 mb-5 min-h-[310px] w-[calc(100%-40px)] font-mono text-[11px] leading-relaxed')} disabled={savingContext} value={contextText} onChange={event => setContextText(event.target.value)} spellCheck={false}/><footer className="flex justify-end gap-2 border-t border-line-subtle px-5 py-4"><button className={`${buttonClass} !min-h-[34px]`} disabled={savingContext} onClick={() => setShowContext(false)}>取消</button><button className={`${primaryButtonClass} !min-h-[34px]`} disabled={savingContext} onClick={() => void saveTranslationContext()}>{savingContext ? <ButtonLoading label="保存中…"/> : '保存上下文'}</button></footer></div></div>}
+    {showContext && <div className="fixed inset-0 z-[90] grid place-items-center bg-overlay backdrop-blur-sm" role="dialog" aria-modal="true" aria-labelledby="translation-context-title"><div className="w-[min(680px,72vw)] overflow-hidden rounded-2xl border border-line-strong bg-surface shadow-dialog"><header className="flex items-center justify-between border-b border-line-subtle px-6 py-5"><div><span className={eyebrowClass}>PROJECT CONTEXT</span><h2 className="mb-0 mt-1.5 text-xl" id="translation-context-title">翻译上下文</h2></div><button className={cn(iconButtonClass, 'border-0 bg-transparent text-xl')} disabled={savingContext} aria-label="关闭翻译上下文" onClick={() => setShowContext(false)}>×</button></header><p className="px-6 text-[13px] leading-6 text-muted">以 JSON 保存人物名、术语、口癖、称谓和章节背景；整页翻译时会随 Region ID 一起发送。</p><textarea className={cn(textareaClass, 'mx-6 mb-6 min-h-[320px] w-[calc(100%-48px)] font-mono text-[12px] leading-relaxed')} disabled={savingContext} value={contextText} onChange={event => setContextText(event.target.value)} spellCheck={false}/><footer className="flex justify-end gap-2.5 border-t border-line-subtle px-6 py-4"><button className={buttonClass} disabled={savingContext} onClick={() => setShowContext(false)}>取消</button><button className={primaryButtonClass} disabled={savingContext} onClick={() => void saveTranslationContext()}>{savingContext ? <ButtonLoading label="保存中…"/> : '保存上下文'}</button></footer></div></div>}
     {blockingBusy && <BlockingLoader label={busyLabel} progress={busyProgress}/>}
-    {!blockingBusy && (error ? <div className="pointer-events-none fixed left-1/2 top-[72px] z-[120] flex w-max max-w-[min(600px,calc(100vw-36px))] -translate-x-1/2 items-center gap-3 rounded-lg bg-danger/25 py-3 pl-4 pr-2 text-danger-soft-ink shadow-panel" role="alert"><span className="min-w-0 text-[11px] leading-relaxed">{error}</span><button className="pointer-events-auto grid size-7 cursor-pointer place-items-center rounded-md border-0 bg-transparent p-0 text-lg text-current opacity-70 hover:bg-white/10 hover:opacity-100" type="button" aria-label="关闭提示" onClick={() => {setError(''); setNotice('')}}>×</button></div> : notice && <div className="pointer-events-none fixed left-1/2 top-[72px] z-[120] flex w-max max-w-[min(600px,calc(100vw-36px))] -translate-x-1/2 items-center gap-3 rounded-lg bg-success/20 py-3 pl-4 pr-2 text-success-soft-ink shadow-panel" role="status"><span className="min-w-0 text-[11px] leading-relaxed">{notice}</span><button className="pointer-events-auto grid size-7 cursor-pointer place-items-center rounded-md border-0 bg-transparent p-0 text-lg text-current opacity-70 hover:bg-white/10 hover:opacity-100" type="button" aria-label="关闭提示" onClick={() => {setNotice(''); setError('')}}>×</button></div>)}
+    {!blockingBusy && (error ? <div className="pointer-events-none fixed left-1/2 top-20 z-[120] flex w-max max-w-[min(600px,calc(100vw-36px))] -translate-x-1/2 items-center gap-3 rounded-[10px] border border-danger/20 bg-danger/20 py-3 pl-4 pr-2 text-danger-soft-ink shadow-panel backdrop-blur-xl" role="alert"><span className="min-w-0 text-[12px] leading-relaxed">{error}</span><button className="pointer-events-auto grid size-7 cursor-pointer place-items-center rounded-md border-0 bg-transparent p-0 text-lg text-current opacity-70 hover:bg-ink/10 hover:opacity-100" type="button" aria-label="关闭提示" onClick={() => {setError(''); setNotice('')}}>×</button></div> : notice && <div className="pointer-events-none fixed left-1/2 top-20 z-[120] flex w-max max-w-[min(600px,calc(100vw-36px))] -translate-x-1/2 items-center gap-3 rounded-[10px] border border-success/20 bg-success/15 py-3 pl-4 pr-2 text-success-soft-ink shadow-panel backdrop-blur-xl" role="status"><span className="min-w-0 text-[12px] leading-relaxed">{notice}</span><button className="pointer-events-auto grid size-7 cursor-pointer place-items-center rounded-md border-0 bg-transparent p-0 text-lg text-current opacity-70 hover:bg-ink/10 hover:opacity-100" type="button" aria-label="关闭提示" onClick={() => {setNotice(''); setError('')}}>×</button></div>)}
     <input ref={fileRef} disabled={editorBusy} hidden type="file" accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp" multiple onChange={event => void upload(event.currentTarget.files)}/>
   </div>
   </>

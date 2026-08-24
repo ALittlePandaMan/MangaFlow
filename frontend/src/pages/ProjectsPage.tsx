@@ -89,21 +89,21 @@ export function ProjectsPage() {
 
   if (showingInitialLoading) return <ProjectsSkeleton/>
   return <section className={`${pageClass} page-content-enter`}>
-    <div className="mb-8 flex items-end justify-between gap-6">
-      <div><span className={eyebrowClass}>WORKSPACES</span><h1 className="mb-2 mt-2 text-[34px] leading-tight tracking-[-1.5px] text-ink">漫画翻译项目</h1><p className="m-0 text-sm text-muted">从原稿到修复、排版与交付，所有页面都保留可编辑工程数据。</p></div>
-      <div className="flex items-center gap-2"><button className={`${buttonClass} min-h-[42px] px-4`} onClick={openImportProjectDialog}><ArchiveRestore size={18}/>导入源项目</button><button className={`${primaryButtonClass} min-h-[42px] px-4`} onClick={openCreateProjectDialog}><FolderPlus size={18}/>新建项目</button></div>
+    <div className="mb-10 flex items-end justify-between gap-8">
+      <div><span className={eyebrowClass}>WORKSPACES</span><h1 className="mb-2 mt-2 text-[36px] font-semibold leading-tight tracking-[-1.6px] text-ink text-balance">漫画翻译项目</h1><p className="m-0 text-[14px] leading-6 text-muted">从原稿到修复、排版与交付，所有页面都保留可编辑工程数据。</p></div>
+      <div className="flex items-center gap-2.5"><button className={`${buttonClass} min-h-[42px] px-4`} onClick={openImportProjectDialog}><ArchiveRestore aria-hidden="true" size={18}/>导入源项目</button><button className={`${primaryButtonClass} min-h-[42px] px-4`} onClick={openCreateProjectDialog}><FolderPlus aria-hidden="true" size={18}/>新建项目</button></div>
     </div>
-    {error && <div className="my-3 rounded-lg bg-danger/15 px-4 py-3 text-xs text-danger-soft-ink">{error}</div>}
+    {error && <div className="my-3 rounded-[10px] border border-danger/20 bg-danger/10 px-4 py-3 text-[13px] text-danger-soft-ink" role="alert">{error}</div>}
     {!projects.length ? <EmptyState title="还没有漫画项目" detail="创建第一个项目，然后批量导入 JPG、PNG 或 WebP 原稿。" action={<button className={primaryButtonClass} onClick={openCreateProjectDialog}>开始创建</button>} /> :
-      <div className="grid grid-cols-[repeat(auto-fill,minmax(310px,1fr))] gap-5">{projects.map(project => <article className="overflow-hidden rounded-xl border border-line-subtle bg-panel transition duration-200 hover:-translate-y-0.5 hover:border-line-strong hover:shadow-soft" key={project.id}>
+      <div className="grid grid-cols-[repeat(auto-fill,minmax(320px,1fr))] gap-6">{projects.map(project => <article className="overflow-hidden rounded-2xl border border-line bg-panel [box-shadow:var(--shadow-card)] transition-[transform,border-color,box-shadow] duration-200 hover:-translate-y-0.5 hover:border-line-strong hover:[box-shadow:var(--shadow-card-hover)]" key={project.id}>
         <div className="relative grid h-[150px] place-items-center overflow-hidden bg-[repeating-linear-gradient(-35deg,var(--color-raised)_0,var(--color-raised)_8px,color-mix(in_srgb,var(--color-raised)_82%,var(--color-accent))_8px,color-mix(in_srgb,var(--color-raised)_82%,var(--color-accent))_9px)] text-secondary before:absolute before:size-40 before:rotate-[19deg] before:rounded-full before:border-[16px] before:border-double before:border-accent before:opacity-10">{project.cover_url ? <img className="absolute inset-0 size-full object-cover" src={project.cover_url} alt={`${project.name} 封面`}/> : <span className="-rotate-[5deg] text-[68px] font-extrabold text-ink [text-shadow:5px_5px_0_var(--color-accent-strong)]">漫</span>}<i className="absolute bottom-2.5 right-3 rounded bg-canvas px-2 py-1 font-mono text-[10px] not-italic text-accent">{project.page_count || '—'} PAGES</i></div>
-        <div className="p-5">
+        <div className="p-5.5">
           <div className="flex items-center gap-2 font-mono text-[10px] text-meta"><Languages size={14}/> 日本語 <ArrowRight size={12}/> 简体中文</div>
-          <h2 className="mb-1 mt-3 text-xl">{project.name}</h2><p className="m-0 h-[35px] text-xs text-muted">{project.description || '尚未填写项目说明'}</p>
-          <div className="mt-4 flex gap-2">
+          <h2 className="mb-1 mt-3 text-[21px] font-semibold tracking-[-.3px]">{project.name}</h2><p className="m-0 min-h-[40px] text-[13px] leading-5 text-muted line-clamp-2">{project.description || '尚未填写项目说明'}</p>
+          <div className="mt-5 flex gap-2.5">
             <button className={`${primaryButtonClass} mr-auto`} onClick={() => navigate(`/projects/${project.id}/editor`)}>打开工作台 <ArrowRight size={15}/></button>
             <button className={buttonClass} title="编辑项目" aria-label={`编辑项目 ${project.name}`} onClick={() => openEditProjectDialog(project)}><Pencil size={16}/></button>
-            <button className={dangerButtonClass} disabled={Boolean(deletingProjectId)} title="删除项目" onClick={() => removeProject(project)}>{deletingProjectId === project.id ? <ButtonLoading compact label="正在删除项目"/> : <Trash2 size={16}/>}</button>
+            <button className={dangerButtonClass} disabled={Boolean(deletingProjectId)} title="删除项目" aria-label={`删除项目 ${project.name}`} onClick={() => removeProject(project)}>{deletingProjectId === project.id ? <ButtonLoading compact label="正在删除项目"/> : <Trash2 size={16}/>}</button>
           </div>
         </div>
       </article>)}</div>}

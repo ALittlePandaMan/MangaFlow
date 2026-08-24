@@ -1,7 +1,7 @@
 import { Eraser, Eye, EyeOff, Languages, Layers3, Lock, LockOpen, Merge, Scan, ScanLine, ScanText, TextCursorInput, Trash2, X } from 'lucide-react'
 import { useLayoutEffect, useRef } from 'react'
 import type { TextRegion } from '../../../types'
-import {buttonClass, cn, dangerButtonClass, iconButtonClass, inputClass, primaryButtonClass, textareaClass} from '../../../ui'
+import {buttonClass, cn, dangerButtonClass, iconButtonClass, inputClass, primaryButtonClass, scrollbarClass, textareaClass} from '../../../ui'
 import {ColorControl, NumberControl, SelectControl} from '../../../components/FormControls'
 import {ButtonLoading} from '../../../components/LoadingUI'
 import {formatShortcut, shortcutToAria, useShortcutStore} from '../../shortcuts/store'
@@ -21,9 +21,9 @@ interface Props {
 export function RegionProperties({region, selectedRegions, selectedCount, fontOptions, busyAction, onUpdate, onAction}: Props) {
   const {select, view} = useEditorStore()
   const shortcuts = useShortcutStore(state => state.shortcuts)
-  const sectionClass = 'border-b border-line-subtle p-3'
-  const headingClass = 'mb-3 flex items-center gap-2 font-mono text-[10px] font-medium uppercase leading-none tracking-[1.4px] text-muted before:h-[11px] before:w-0.5 before:rounded before:bg-accent/70'
-  const fieldClass = 'mt-2 block min-w-0 text-[10px] text-secondary [&>*:last-child]:mt-1'
+  const sectionClass = 'border-b border-line-subtle p-4'
+  const headingClass = 'mb-3.5 flex items-center gap-2 font-mono text-[11px] font-semibold uppercase leading-none tracking-[1.3px] text-muted before:h-3 before:w-0.5 before:rounded before:bg-accent/70'
+  const fieldClass = 'mt-2.5 block min-w-0 text-[11px] font-medium text-secondary [&>*:last-child]:mt-1.5'
   const setCoordinate = (axis: 'x' | 'y', value: number) => {
     if (!region || !Number.isFinite(value)) return
     const translated = view === 'translated'
@@ -38,6 +38,18 @@ export function RegionProperties({region, selectedRegions, selectedCount, fontOp
       : {bbox: nextBbox, polygon: nextPolygon})
   }
   const coordinateBox = region && view === 'translated' && region.translated_bbox?.length === 4 ? region.translated_bbox : region?.bbox
+  const coordinatePolygon = region && view === 'translated' && region.translated_polygon?.length >= 3 ? region.translated_polygon : region?.polygon
+  const coordinateRotation = coordinatePolygon?.length ? coordinateValue(polygonRotation(coordinatePolygon)) : 0
+  const setCoordinateRotation = (value: number) => {
+    if (!region || !coordinatePolygon?.length || !Number.isFinite(value)) return
+    const delta = normalizedAngle(value - polygonRotation(coordinatePolygon))
+    if (Math.abs(delta) < .001) return
+    const nextPolygon = rotatePolygon(coordinatePolygon, delta)
+    const nextBbox = polygonBbox(nextPolygon)
+    onUpdate(region.id, view === 'translated'
+      ? {translated_polygon: nextPolygon, translated_bbox: nextBbox, rotation: normalizedAngle(region.rotation + delta)}
+      : {polygon: nextPolygon, bbox: nextBbox})
+  }
   const canWarpPerspective = Boolean(region && isPerspectiveQuad(region.translated_polygon))
   const commonFontSize = selectedRegions.length && selectedRegions.every(item => item.font_size === selectedRegions[0].font_size)
     ? selectedRegions[0].font_size
@@ -49,7 +61,7 @@ export function RegionProperties({region, selectedRegions, selectedCount, fontOp
   const stepSelectedFontSize = (direction: 1 | -1) => {
     selectedRegions.forEach(item => onUpdate(item.id, {font_size: Math.max(1, Math.min(300, item.font_size + direction))}))
   }
-  return <aside className="flex min-h-0 flex-col overflow-y-auto border-l border-line-subtle bg-panel [scrollbar-color:#44443e_transparent] [scrollbar-width:thin] [&>*]:shrink-0">
+  return <aside className={cn('flex min-h-0 flex-col overflow-y-auto border-l border-line-subtle bg-panel [&>*]:shrink-0', scrollbarClass)}>
     {selectedCount > 1 ? <div className="flex flex-1 flex-col justify-center gap-6 p-6">
       <div className="flex items-center gap-3 text-accent"><Layers3 size={28}/><span className="flex min-w-0 flex-col gap-1"><strong className="text-sm text-ink">已选择 {selectedCount} 个区域</strong><small className="text-[10px] leading-relaxed text-muted">继续点击可增减选择，方向键可微调位置</small></span></div>
       <div className="grid gap-2">
@@ -74,7 +86,7 @@ export function RegionProperties({region, selectedRegions, selectedCount, fontOp
         <button className={`${dangerButtonClass} !min-h-[34px]`} disabled={!!busyAction} title={`删除所选 (${formatShortcut(shortcuts['region.delete'])})`} aria-keyshortcuts={shortcutToAria(shortcuts['region.delete'])} onClick={() => onAction('delete')}>{busyAction === 'delete' ? <ButtonLoading label="删除中…"/> : <><Trash2 size={16}/>删除所选</>}</button>
         <button className={`${buttonClass} !min-h-[34px]`} disabled={!!busyAction} title={`取消选择 (${formatShortcut(shortcuts['region.cancelSelection'])})`} aria-keyshortcuts={shortcutToAria(shortcuts['region.cancelSelection'])} onClick={() => select(null)}><X size={16}/>取消选择</button>
       </div>
-    </div> : !region ? <div className="flex min-h-[260px] flex-1 flex-col items-center justify-center p-6 text-center text-muted"><Scan size={28}/><p className="text-[11px] leading-relaxed">选择一个文字区域以编辑属性</p></div> : <>
+    </div> : !region ? <div className="flex min-h-[260px] flex-1 flex-col items-center justify-center p-8 text-center text-muted"><Scan size={30}/><p className="mt-3 text-[12px] leading-relaxed">选择一个文字区域以编辑属性</p></div> : <>
       <section className="flex h-[52px] shrink-0 items-center justify-between border-b border-line-subtle bg-surface px-3"><div className="flex items-center gap-2"><span className="font-mono text-xs font-semibold">{region.region_key}</span><i className="rounded border border-accent/25 bg-accent/10 px-2 py-1 font-mono text-[8px] font-medium not-italic text-accent">{Math.round(region.confidence * 100)}%</i></div><div className="flex gap-1"><button className={iconButtonClass} title={region.visible ? '关闭：预览和导出时不显示译文' : '打开：预览和导出时显示译文'} aria-label={region.visible ? '关闭区域显示' : '打开区域显示'} onClick={() => onAction('visibility')}>{region.visible ? <Eye size={16}/> : <EyeOff size={16}/>}</button><button className={iconButtonClass} title={region.locked ? '解除锁定' : '锁定区域'} aria-label={region.locked ? '解除锁定' : '锁定区域'} onClick={() => onUpdate(region.id, {locked: !region.locked})}>{region.locked ? <Lock size={16}/> : <LockOpen size={16}/>}</button></div></section>
       <section className={sectionClass}><h3 className={headingClass}>文本内容</h3>
         <label className={fieldClass}>原文<AutoResizeTextarea value={region.source_text} onChange={value => onUpdate(region.id, {source_text: value})} placeholder="OCR 原文" /></label>
@@ -82,9 +94,10 @@ export function RegionProperties({region, selectedRegions, selectedCount, fontOp
         <div className="grid min-w-0 grid-cols-2 gap-2"><label className={fieldClass}>方向<SelectControl compact ariaLabel="文字方向" value={region.orientation} options={[{value:'vertical', label:'竖排'}, {value:'horizontal', label:'横排'}, {value:'rotated', label:'旋转'}]} onChange={value => onUpdate(region.id, {orientation:value as TextRegion['orientation']})}/></label><label className={fieldClass}>修复方式<input className={cn(inputClass, '!h-[34px] px-2 text-[11px]')} value="复杂（LaMa）" readOnly /></label></div>
       </section>
       <section className={sectionClass}><h3 className={headingClass}>{view === 'translated' ? '译文框坐标' : '原文框坐标'}</h3>
-        <div className="grid min-w-0 grid-cols-2 gap-2">
+        <div className="grid min-w-0 grid-cols-3 gap-1.5">
           <label className={fieldClass}>X 坐标<NumberControl compact ariaLabel="X 坐标" step={1} disabled={region.locked} value={coordinateValue(coordinateBox![0])} onChange={value => setCoordinate('x', value)}/></label>
           <label className={fieldClass}>Y 坐标<NumberControl compact ariaLabel="Y 坐标" step={1} disabled={region.locked} value={coordinateValue(coordinateBox![1])} onChange={value => setCoordinate('y', value)}/></label>
+          <label className={fieldClass}>旋转角度<NumberControl compact ariaLabel={`${view === 'translated' ? '译文框' : '原文框'}旋转角度（度）`} min={-180} max={180} step={1} disabled={region.locked} value={coordinateRotation} onChange={setCoordinateRotation}/></label>
         </div>
         <small className="mt-2 block font-mono text-[8px] text-muted">画布像素 · {coordinateValue(coordinateBox![2])} × {coordinateValue(coordinateBox![3])} px{region.locked ? ' · 已锁定' : ' · 方向键微调'}</small>
       </section>
@@ -112,6 +125,45 @@ export function RegionProperties({region, selectedRegions, selectedCount, fontOp
 
 function coordinateValue(value: number): number {
   return Number(value.toFixed(2))
+}
+
+function normalizedAngle(degrees: number): number {
+  let angle = degrees % 360
+  if (angle > 180) angle -= 360
+  if (angle < -180) angle += 360
+  return Math.abs(angle) < .001 ? 0 : angle
+}
+
+function polygonRotation(polygon: number[][]): number {
+  for (let index = 0; index < polygon.length; index += 1) {
+    const current = polygon[index]
+    const next = polygon[(index + 1) % polygon.length]
+    const dx = next[0] - current[0]
+    const dy = next[1] - current[1]
+    if (Math.hypot(dx, dy) > .001) return normalizedAngle(Math.atan2(dy, dx) * 180 / Math.PI)
+  }
+  return 0
+}
+
+function rotatePolygon(polygon: number[][], degrees: number): number[][] {
+  const center = polygon.reduce((sum, point) => [sum[0] + point[0], sum[1] + point[1]], [0, 0])
+    .map(total => total / polygon.length)
+  const radians = degrees * Math.PI / 180
+  const cosine = Math.cos(radians)
+  const sine = Math.sin(radians)
+  return polygon.map(point => {
+    const x = point[0] - center[0]
+    const y = point[1] - center[1]
+    return [center[0] + x * cosine - y * sine, center[1] + x * sine + y * cosine]
+  })
+}
+
+function polygonBbox(polygon: number[][]): number[] {
+  const xs = polygon.map(point => point[0])
+  const ys = polygon.map(point => point[1])
+  const minX = Math.min(...xs)
+  const minY = Math.min(...ys)
+  return [minX, minY, Math.max(...xs) - minX, Math.max(...ys) - minY]
 }
 
 function AutoResizeTextarea({value, onChange, placeholder, className = ''}: {value: string, onChange: (value: string) => void, placeholder: string, className?: string}) {

@@ -52,20 +52,20 @@ export function AppShell() {
   if (setupError || !setup) return <SetupFailureScreen message={setupError || '无法读取首次启动状态'} onRetry={() => void loadSetup()}/>
   if (!setup.ready) return <RequiredSetupGate status={setup} available={available} configured={configured} fonts={fonts} onReady={setSetup}/>
   return <AppHeaderContext.Provider value={headerSlots}>
-    <div className={cn('h-full pt-14', scrollbarClass)}>
-      <header className="fixed inset-x-0 top-0 z-50 flex h-14 items-center border-b border-line-subtle bg-canvas px-5">
-        <NavLink to="/projects" className="flex w-[260px] items-center gap-3 text-inherit no-underline" aria-label="MangaFlow 首页">
-          <span className="grid size-8 place-items-center rounded-md bg-accent text-[17px] font-bold text-accent-ink">漫</span>
-          <span className="flex flex-col leading-none"><strong className="text-[16px] font-bold leading-tight tracking-[.2px]">MangaFlow</strong><small className="mt-1 flex items-center gap-1.5 font-mono text-[9px] font-medium leading-[1.4] tracking-[1.4px] text-muted"><span>AI LETTERING STUDIO</span><span className="tracking-normal text-accent/80">v{packageMetadata.version}</span></small></span>
+    <div className={cn('h-full bg-app pt-16', scrollbarClass)}>
+      <header className="fixed inset-x-0 top-0 z-50 flex h-16 items-center border-b border-line bg-canvas/95 px-6 shadow-[0_1px_0_rgb(255_255_255/.025)] backdrop-blur-xl">
+        <NavLink to="/projects" className="flex w-[280px] items-center gap-3.5 text-inherit no-underline outline-none focus-visible:ring-3 focus-visible:ring-accent/20" aria-label="MangaFlow 首页">
+          <span className="grid size-9 place-items-center rounded-lg bg-accent text-lg font-bold text-accent-ink shadow-soft">漫</span>
+          <span className="flex flex-col leading-none"><strong className="text-[17px] font-bold leading-tight tracking-[.2px]">MangaFlow</strong><small className="mt-1 flex items-center gap-1.5 font-mono text-[9px] font-medium leading-[1.4] tracking-[1.3px] text-muted"><span>AI LETTERING STUDIO</span><span className="tracking-normal text-accent/90">v{packageMetadata.version}</span></small></span>
         </NavLink>
         <nav className="absolute left-1/2 top-0 flex h-full -translate-x-1/2 items-center gap-1">
-          <NavLink to="/projects" className={({isActive}) => cn('flex h-[38px] items-center gap-2 rounded-lg px-4 text-xs font-semibold text-secondary no-underline transition-colors hover:bg-raised hover:text-ink', isActive && 'bg-raised text-ink')}><Boxes size={17} />项目</NavLink>
-          <NavLink to="/settings" className={({isActive}) => cn('flex h-[38px] items-center gap-2 rounded-lg px-4 text-xs font-semibold text-secondary no-underline transition-colors hover:bg-raised hover:text-ink', isActive && 'bg-raised text-ink')}><Settings size={17} />设置</NavLink>
+          <NavLink to="/projects" className={({isActive}) => cn('flex h-10 items-center gap-2 rounded-[10px] border border-transparent px-4 text-[13px] font-semibold text-secondary no-underline outline-none transition-[background-color,border-color,color] hover:border-accent/20 hover:bg-accent/[.07] hover:text-accent focus-visible:ring-3 focus-visible:ring-accent/20', isActive && '!border-accent/25 !bg-accent/15 !text-accent hover:!border-accent/35 hover:!bg-accent/20')}><Boxes aria-hidden="true" size={17} />项目</NavLink>
+          <NavLink to="/settings" className={({isActive}) => cn('flex h-10 items-center gap-2 rounded-[10px] border border-transparent px-4 text-[13px] font-semibold text-secondary no-underline outline-none transition-[background-color,border-color,color] hover:border-accent/20 hover:bg-accent/[.07] hover:text-accent focus-visible:ring-3 focus-visible:ring-accent/20', isActive && '!border-accent/25 !bg-accent/15 !text-accent hover:!border-accent/35 hover:!bg-accent/20')}><Settings aria-hidden="true" size={17} />设置</NavLink>
         </nav>
         <div className="ml-3 flex h-full min-w-0 flex-1 items-center gap-3" ref={setEditorTarget}/>
         <ThemeToggle/>
       </header>
-      <main className="h-full"><Outlet /></main>
+      <main className="h-full bg-app"><Outlet /></main>
     </div>
   </AppHeaderContext.Provider>
 }
@@ -113,7 +113,7 @@ function RequiredSetupGate({status, available, configured, fonts, onReady}: {
     })
   }, [available, configured, fonts, onReady, openDialog, status.first_run])
   return <div className="relative grid h-full min-h-[620px] place-items-center overflow-hidden bg-app p-8">
-    <div className="absolute inset-0 opacity-30 [background-image:radial-gradient(circle_at_50%_20%,rgb(11_210_166/.18),transparent_38%),linear-gradient(rgb(255_255_255/.025)_1px,transparent_1px),linear-gradient(90deg,rgb(255_255_255/.025)_1px,transparent_1px)] [background-size:auto,42px_42px,42px_42px]"/>
+    <div className="absolute inset-0 opacity-50 [background-image:radial-gradient(circle_at_50%_20%,rgb(11_210_166/.16),transparent_38%),linear-gradient(var(--workspace-grid-line)_1px,transparent_1px),linear-gradient(90deg,var(--workspace-grid-line)_1px,transparent_1px)] [background-size:auto,42px_42px,42px_42px]"/>
     <div className="relative w-[min(720px,100%)] rounded-2xl bg-surface p-8 shadow-dialog"><div className="flex items-start gap-4"><span className="grid size-12 shrink-0 place-items-center rounded-xl bg-accent/15 text-accent"><LockKeyhole size={23}/></span><div><span className="font-mono text-[9px] tracking-[2px] text-accent">MANGAFLOW · FIRST RUN</span><h1 className="mb-2 mt-2 text-2xl">工作台正在等待初始化</h1><p className="m-0 text-xs leading-relaxed text-muted">完成硬件检测、模型安装和六项配置自检后，项目与编辑工作台会自动解锁。</p></div></div><div className="mt-6 grid grid-cols-3 gap-2">{status.stages.map(item => <div key={item.kind} className="flex min-h-[58px] items-center gap-2.5 rounded-lg bg-panel px-3 py-2"><span className={cn('grid size-6 shrink-0 place-items-center rounded-md', item.status === 'ready' ? 'bg-success/10 text-success' : 'bg-warning/10 text-warning')}>{item.status === 'ready' ? <Check size={13}/> : <CircleAlert size={13}/>}</span><span className="min-w-0"><strong className="block text-[9px]">{setupStageLabel(item.kind)}</strong><small className="mt-1 block truncate text-[8px] text-muted">{item.status === 'ready' ? '已就绪' : item.message || '等待配置'}</small></span></div>)}</div><div className="mt-5 flex items-center gap-2 text-[9px] text-muted"><Sparkles size={13} className="text-accent"/>推荐配置窗口已自动打开，安装期间请不要关闭页面。</div></div>
   </div>
 }
@@ -131,7 +131,7 @@ function setupStageLabel(kind: string): string {
 }
 
 export function EmptyState({ title, detail, action }: {title: string, detail: string, action?: React.ReactNode}) {
-  return <div className="flex min-h-[350px] flex-col items-center justify-center rounded-xl border border-dashed border-line bg-panel text-center text-muted"><BookOpen size={35} /><h3 className="mb-0 mt-4 text-sm text-ink">{title}</h3><p className="mb-5 mt-2 max-w-[460px] text-xs leading-5">{detail}</p>{action}</div>
+  return <div className="flex min-h-[350px] flex-col items-center justify-center rounded-2xl border border-dashed border-line bg-panel p-8 text-center text-muted shadow-soft"><BookOpen size={36} /><h3 className="mb-0 mt-4 text-base text-ink">{title}</h3><p className="mb-6 mt-2 max-w-[460px] text-[13px] leading-6">{detail}</p>{action}</div>
 }
 
 export function Loading({ label = '正在加载…' }: {label?: string}) {

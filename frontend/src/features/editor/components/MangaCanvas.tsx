@@ -547,10 +547,10 @@ export function MangaCanvas({ page, regions, onCreate, onUpdate, onRegionAction,
     >
       <Layer>
         <Group x={origin.x} y={origin.y} scaleX={scale} scaleY={scale}>
-          <Rect name="canvas-background" width={page.width} height={page.height} fill="#f4f0e8" shadowColor="black" shadowOpacity={.38} shadowBlur={28 / scale} />
+          <Rect name="canvas-background" width={page.width} height={page.height} fill="#f4f0e8" shadowColor="#172019" shadowOpacity={.16} shadowBlur={18 / scale} shadowOffsetY={4 / scale} />
           {view === 'comparison' && <>
             <KonvaImage image={original ?? undefined} width={page.width} height={page.height} listening={false}/>
-            <Rect x={page.width + COMPARISON_GAP} width={page.width} height={page.height} fill="#f4f0e8" shadowColor="black" shadowOpacity={.38} shadowBlur={28 / scale} listening={false}/>
+            <Rect x={page.width + COMPARISON_GAP} width={page.width} height={page.height} fill="#f4f0e8" shadowColor="#172019" shadowOpacity={.16} shadowBlur={18 / scale} shadowOffsetY={4 / scale} listening={false}/>
             <Group x={page.width + COMPARISON_GAP} clipX={0} clipY={0} clipWidth={page.width} clipHeight={page.height} listening={false}>
               <KonvaImage image={clean ?? undefined} width={page.width} height={page.height}/>
               <TranslatedRegions regions={translatedRenderRegions} displayScale={scale}/>
@@ -660,14 +660,14 @@ export function MangaCanvas({ page, regions, onCreate, onUpdate, onRegionAction,
     </div>}
     {view !== 'comparison' && <div className="absolute right-3.5 top-3.5 z-10 w-44 select-none text-secondary" aria-label="画布图层">
       <button
-        className={cn('relative z-10 flex h-[36px] min-h-[36px] w-full cursor-pointer items-center justify-start gap-2 border border-line-strong bg-popover px-3 font-mono text-xs font-medium uppercase leading-none tracking-[1px] text-secondary shadow-panel outline-none transition-colors hover:bg-hover hover:text-ink [&>svg:first-child]:text-accent', layersCollapsed ? 'rounded-xl' : 'rounded-t-xl rounded-b-none')}
+        className={cn('relative z-10 flex h-[36px] min-h-[36px] w-full cursor-pointer items-center justify-start gap-2 border border-line-strong bg-popover px-3 font-mono text-xs font-medium uppercase leading-none tracking-[1px] text-secondary outline-none transition-colors hover:bg-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-accent/30 [&>svg:first-child]:text-accent', layersCollapsed ? 'rounded-xl shadow-soft' : 'rounded-t-xl rounded-b-none')}
         style={{borderBottomColor: layersCollapsed ? 'var(--color-line-strong)' : 'var(--color-line)'}}
         type="button" aria-expanded={!layersCollapsed} onClick={() => setLayersCollapsed(value => !value)}
       >
         <Layers3 className="shrink-0" size={15}/><span className="flex h-full items-center leading-none">图层</span><ChevronDown className={cn('ml-auto text-muted transition-transform duration-200 motion-reduce:transition-none', layersCollapsed && '-rotate-90')} size={15}/>
       </button>
       <div
-        className={cn('absolute right-0 top-full w-full overflow-hidden rounded-b-xl border-x border-b border-line-strong bg-popover shadow-panel transition-[clip-path] duration-200 ease-out motion-reduce:transition-none', layersCollapsed && 'pointer-events-none')}
+        className={cn('absolute right-0 top-full w-full overflow-hidden rounded-b-xl border-x border-b border-line-strong bg-popover shadow-soft transition-[clip-path] duration-200 ease-out motion-reduce:transition-none', layersCollapsed && 'pointer-events-none')}
         style={{clipPath: layersCollapsed ? 'inset(0 0 100% 0)' : 'inset(0 0 0 0)'}}
         aria-hidden={layersCollapsed}
       ><div className="flex flex-col gap-1 p-1">{Object.entries(layers).map(([name, visible]) => <label className="relative flex h-[34px] shrink-0 cursor-pointer items-center gap-2 rounded-lg px-2 text-[11px] leading-none text-secondary transition-colors hover:bg-hover hover:text-ink" key={name}>
@@ -676,7 +676,7 @@ export function MangaCanvas({ page, regions, onCreate, onUpdate, onRegionAction,
           <span className="flex h-full items-center leading-none">{({original:'原始图像',detection:'检测区域',clean:'修复背景',translated:'翻译文字'} as Record<string,string>)[name]}</span>
         </label>)}</div></div>
     </div>}
-    <div className="pointer-events-none absolute bottom-3 right-3 min-w-12 rounded-lg border border-line-strong bg-canvas/90 px-2.5 py-1.5 text-center font-mono text-[11px] font-semibold text-ink shadow-panel backdrop-blur-md">{Math.round(zoom * 100)}%</div>
+    <div className="pointer-events-none absolute bottom-3 right-3 min-w-12 rounded-lg border border-line-strong bg-canvas/90 px-2.5 py-1.5 text-center font-mono text-[11px] font-semibold text-ink shadow-soft backdrop-blur-md">{Math.round(zoom * 100)}%</div>
   </div>
 }
 

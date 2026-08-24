@@ -27,7 +27,7 @@ export function applyTheme(mode: ThemeMode, systemDark: boolean): void {
   const resolved = resolveTheme(mode, systemDark)
   document.documentElement.dataset.theme = resolved
   document.documentElement.dataset.themeMode = mode
-  document.querySelector<HTMLMetaElement>('meta[name="theme-color"]')?.setAttribute('content', resolved === 'dark' ? '#111310' : '#ecefe9')
+  document.querySelector<HTMLMetaElement>('meta[name="theme-color"]')?.setAttribute('content', resolved === 'dark' ? '#131916' : '#eff3f0')
   try {
     window.localStorage.setItem(THEME_STORAGE_KEY, mode)
   } catch {

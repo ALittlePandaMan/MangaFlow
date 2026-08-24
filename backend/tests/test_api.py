@@ -227,7 +227,7 @@ def test_processing_does_not_block_api_event_loop(client, monkeypatch) -> None:
         health = client.get("/health")
         health_duration = time.perf_counter() - health_started_at
         assert health.status_code == 200
-        assert health.json()["version"] == "0.1.0"
+        assert health.json()["version"] == "0.1.1"
         assert health_duration < 1.0
     finally:
         release.set()

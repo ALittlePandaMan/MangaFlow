@@ -4,82 +4,117 @@
 @theme {
   --font-sans: 'Noto Sans SC', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   --font-mono: 'DM Mono', 'SFMono-Regular', Consolas, monospace;
-  --color-canvas: #0d0f0e;
-  --color-app: #111310;
-  --color-panel: #171916;
-  --color-surface: #1d201c;
-  --color-raised: #252923;
-  --color-hover: #2d322b;
-  --color-line-subtle: #292d28;
-  --color-line: #383e37;
-  --color-line-strong: #4b5349;
-  --color-ink: #f0f2ed;
-  --color-secondary: #b0b5ad;
-  --color-muted: #7e857b;
-  --color-disabled: #5c625a;
-  --color-popover: rgb(24 27 23 / 98%);
-  --color-overlay: rgb(7 9 8 / 76%);
-  --color-accent: #10d3a3;
-  --color-accent-hover: #27e5b7;
-  --color-accent-strong: #078568;
-  --color-accent-ink: #06241c;
-  --color-accent-soft-ink: #dffbf3;
-  --color-warning: #f3c44e;
-  --color-danger: #ff6b63;
+  --color-canvas: #0d1210;
+  --color-app: #131916;
+  --color-panel: #1a211d;
+  --color-surface: #222a25;
+  --color-raised: #2a342e;
+  --color-hover: #344039;
+  --color-line-subtle: #29332d;
+  --color-line: #3b4940;
+  --color-line-strong: #526357;
+  --color-ink: #f2f5f1;
+  --color-secondary: #c2cac3;
+  --color-muted: #99a59b;
+  --color-disabled: #6f7a72;
+  --color-popover: rgb(30 38 33 / 98%);
+  --color-overlay: rgb(5 9 7 / 72%);
+  --color-accent: #2dd4a5;
+  --color-accent-hover: #47e0b4;
+  --color-accent-strong: #149a76;
+  --color-accent-ink: #061d16;
+  --color-accent-soft-ink: #d9fbf1;
+  --color-warning: #f3c96b;
+  --color-danger: #ff817a;
   --color-danger-soft-ink: #ffb0a9;
-  --color-success: #39d9aa;
+  --color-success: #43d8ad;
   --color-success-soft-ink: #c7f7e9;
-  --color-meta: #7e9b91;
-  --shadow-soft: 0 6px 18px rgb(0 0 0 / 22%);
-  --shadow-panel: 0 16px 42px rgb(0 0 0 / 38%);
-  --shadow-dialog: 0 28px 80px rgb(0 0 0 / 56%);
+  --color-meta: #8eafa3;
+  --shadow-soft: 0 8px 24px rgb(0 0 0 / 20%);
+  --shadow-panel: 0 18px 48px rgb(0 0 0 / 34%);
+  --shadow-dialog: 0 30px 90px rgb(0 0 0 / 52%);
 }
 
 :root {
   color-scheme: dark;
-  --scrollbar-thumb: #44443e;
-  --scrollbar-thumb-hover: #5d5d54;
+  --shadow-card: 0 3px 12px rgb(0 0 0 / 14%);
+  --shadow-card-hover: 0 5px 18px rgb(0 0 0 / 20%);
+  --scrollbar-thumb: #4a574f;
+  --scrollbar-thumb-hover: #65746a;
+  --workspace-grid-line: rgb(255 255 255 / 4%);
+  --loading-shimmer-soft: rgb(255 255 255 / 7%);
+  --loading-shimmer-strong: rgb(255 255 255 / 13%);
 }
 
 :root[data-theme='light'] {
   color-scheme: light;
-  --color-canvas: #f4f6f2;
-  --color-app: #ecefe9;
-  --color-panel: #f8faf6;
-  --color-surface: #ffffff;
-  --color-raised: #e7ebe3;
-  --color-hover: #dce3d9;
-  --color-line-subtle: #e0e5dc;
-  --color-line: #c8d0c4;
-  --color-line-strong: #aab6a6;
-  --color-ink: #17201b;
-  --color-secondary: #4d5a52;
-  --color-muted: #748079;
-  --color-disabled: #a1aaa4;
+  --color-canvas: #e6ece8;
+  --color-app: #eff3f0;
+  --color-panel: #ffffff;
+  --color-surface: #f8faf8;
+  --color-raised: #e4eae5;
+  --color-hover: #d8e2da;
+  --color-line-subtle: #e0e6e1;
+  --color-line: #c7d2ca;
+  --color-line-strong: #a8b7ac;
+  --color-ink: #18211b;
+  --color-secondary: #425148;
+  --color-muted: #5f6f65;
+  --color-disabled: #87938b;
   --color-popover: rgb(255 255 255 / 98%);
-  --color-overlay: rgb(23 32 27 / 38%);
-  --color-accent: #0caf83;
-  --color-accent-hover: #0fc493;
-  --color-accent-strong: #08775e;
-  --color-accent-ink: #05271e;
-  --color-accent-soft-ink: #075e4a;
-  --color-warning: #a66c05;
-  --color-danger: #d84d47;
-  --color-danger-soft-ink: #982f2a;
-  --color-success: #148664;
-  --color-success-soft-ink: #0d6d52;
-  --color-meta: #527066;
-  --shadow-soft: 0 6px 18px rgb(22 35 27 / 10%);
-  --shadow-panel: 0 16px 42px rgb(22 35 27 / 14%);
-  --shadow-dialog: 0 28px 80px rgb(22 35 27 / 22%);
-  --scrollbar-thumb: #b3bcb5;
-  --scrollbar-thumb-hover: #929e96;
+  --color-overlay: rgb(20 31 25 / 42%);
+  --color-accent: #08795b;
+  --color-accent-hover: #096d54;
+  --color-accent-strong: #075843;
+  --color-accent-ink: #ffffff;
+  --color-accent-soft-ink: #075f49;
+  --color-warning: #9a6200;
+  --color-danger: #c63f3a;
+  --color-danger-soft-ink: #a52e2a;
+  --color-success: #08795b;
+  --color-success-soft-ink: #076047;
+  --color-meta: #486d5f;
+  --shadow-soft: 0 8px 24px rgb(25 45 33 / 9%);
+  --shadow-panel: 0 18px 48px rgb(25 45 33 / 13%);
+  --shadow-dialog: 0 30px 90px rgb(25 45 33 / 20%);
+  --shadow-card: 0 3px 12px rgb(25 45 33 / 5%);
+  --shadow-card-hover: 0 5px 18px rgb(25 45 33 / 7%);
+  --scrollbar-thumb: #a6b3aa;
+  --scrollbar-thumb-hover: #84958a;
+  --workspace-grid-line: rgb(24 43 32 / 5%);
+  --loading-shimmer-soft: rgb(24 43 32 / 5%);
+  --loading-shimmer-strong: rgb(24 43 32 / 9%);
+}
+
+/* Tailwind resolves named shadow tokens while generating utilities. Keep the
+   final shadow value theme-aware while preserving its ring composition. */
+.shadow-soft {
+  --tw-shadow: var(--shadow-soft);
+  box-shadow: var(--tw-inset-shadow), var(--tw-inset-ring-shadow), var(--tw-ring-offset-shadow), var(--tw-ring-shadow), var(--tw-shadow);
+}
+
+.shadow-panel {
+  --tw-shadow: var(--shadow-panel);
+  box-shadow: var(--tw-inset-shadow), var(--tw-inset-ring-shadow), var(--tw-ring-offset-shadow), var(--tw-ring-shadow), var(--tw-shadow);
+}
+
+.shadow-dialog {
+  --tw-shadow: var(--shadow-dialog);
+  box-shadow: var(--tw-inset-shadow), var(--tw-inset-ring-shadow), var(--tw-ring-offset-shadow), var(--tw-ring-shadow), var(--tw-shadow);
 }
 
 .app-scrollbars,
 .app-scrollbars * {
   scrollbar-color: var(--scrollbar-thumb) transparent;
   scrollbar-width: thin;
+}
+
+@layer utilities {
+  .text-\[7px\],
+  .text-\[8px\] { font-size: 10px; line-height: 1.4; }
+  .text-\[9px\] { font-size: 11px; line-height: 1.4; }
+  .text-\[10px\],
+  .text-\[11px\] { font-size: 12px; line-height: 1.45; }
 }
 
 .app-scrollbars::-webkit-scrollbar,
@@ -163,7 +198,7 @@
   content: '';
   position: absolute;
   inset: 0;
-  background: linear-gradient(100deg, transparent 18%, rgb(255 255 255 / 7%) 42%, rgb(255 255 255 / 12%) 50%, transparent 76%);
+  background: linear-gradient(100deg, transparent 18%, var(--loading-shimmer-soft) 42%, var(--loading-shimmer-strong) 50%, transparent 76%);
   animation: loading-shimmer 1.55s ease-in-out infinite;
 }
 .loading-progress-indeterminate { animation: loading-indeterminate 1.25s cubic-bezier(.4,0,.2,1) infinite; }
