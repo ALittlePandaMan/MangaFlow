@@ -180,6 +180,70 @@ def create_text_mask(
     }
 
 
+def create_text_mask_union(
+    image_path: Path,
+    polygons: list[list[list[float]]],
+    output_path: Path,
+    *,
+    expand: int = 2,
+    color_threshold: float = 18.0,
+    source_image: np.ndarray | None = None,
+    source_lab: np.ndarray | None = None,
+) -> dict[str, Any]:
+    """Create and union per-line masks without filling their enclosing box."""
+
+    if not polygons:
+        raise ValueError("Text mask union needs at least one polygon")
+    if len(polygons) == 1:
+        return create_text_mask(
+            image_path,
+            polygons[0],
+            output_path,
+            expand=expand,
+            color_threshold=color_threshold,
+            source_image=source_image,
+            source_lab=source_lab,
+        )
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    combined: np.ndarray | None = None
+    component_metadata: list[dict[str, Any]] = []
+    temporary_paths: list[Path] = []
+    try:
+        for index, polygon in enumerate(polygons):
+            temporary = output_path.with_name(f".{output_path.stem}.source-{index}{output_path.suffix}")
+            temporary_paths.append(temporary)
+            component_metadata.append(
+                create_text_mask(
+                    image_path,
+                    polygon,
+                    temporary,
+                    expand=expand,
+                    color_threshold=color_threshold,
+                    source_image=source_image,
+                    source_lab=source_lab,
+                )
+            )
+            component = cv2.imread(str(temporary), cv2.IMREAD_GRAYSCALE)
+            if component is None:
+                raise ValueError(f"Cannot read component mask: {temporary}")
+            if combined is not None and component.shape != combined.shape:
+                raise ValueError("Text mask components must have matching dimensions")
+            combined = component if combined is None else cv2.bitwise_or(combined, component)
+        if combined is None or not cv2.imwrite(str(output_path), combined):
+            raise ValueError(f"Cannot write mask: {output_path}")
+    finally:
+        for temporary in temporary_paths:
+            temporary.unlink(missing_ok=True)
+
+    return {
+        "method": "source_polygon_union",
+        "source_count": len(polygons),
+        "components": component_metadata,
+        "suggested_region_type": "background_complex",
+    }
+
+
 def _dominant_colors(samples: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     compact = samples.reshape(-1, 3).astype(np.float32)
     cluster_count = max(1, min(4, len(compact) // 80))

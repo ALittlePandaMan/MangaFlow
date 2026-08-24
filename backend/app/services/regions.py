@@ -53,6 +53,15 @@ def save_revision(db: Session, region: TextRegion, action: str) -> None:
     db.add(RegionRevision(region_id=region.id, action=action, snapshot=region_snapshot(region)))
 
 
+def _without_automatic_grouping(layout_data: dict[str, Any] | None) -> dict[str, Any]:
+    output = deepcopy(layout_data or {})
+    detection = output.get("detection")
+    if isinstance(detection, dict):
+        detection.pop("balloon_assignment", None)
+        detection.pop("line_grouping", None)
+    return output
+
+
 def next_region_key(db: Session, image_id: str) -> str:
     count = db.scalar(select(func.count(TextRegion.id)).where(TextRegion.image_id == image_id)) or 0
     used = set(db.scalars(select(TextRegion.region_key).where(TextRegion.image_id == image_id)).all())
@@ -102,6 +111,11 @@ def update_region(db: Session, region: TextRegion, data: RegionUpdate, action: s
         region.bbox = polygon_to_bbox(region.polygon)
     elif "bbox" in changes and "polygon" not in changes and region.bbox:
         region.polygon = bbox_to_polygon(region.bbox)
+    if {"polygon", "bbox"} & changes.keys():
+        # Once source geometry is edited, its original model assignment and
+        # per-line polygons are stale and must not drive later mask creation.
+        region.bubble_id = None
+        region.layout_data = _without_automatic_grouping(region.layout_data)
     if "translated_polygon" in changes and "translated_bbox" not in changes and region.translated_polygon:
         region.translated_bbox = polygon_to_bbox(region.translated_polygon)
     elif "translated_bbox" in changes and "translated_polygon" not in changes and region.translated_bbox:
@@ -121,7 +135,8 @@ def copy_region(db: Session, region: TextRegion, offset: float = 12) -> TextRegi
     values["translated_bbox"] = [translated_bbox[0] + offset, translated_bbox[1] + offset, translated_bbox[2], translated_bbox[3]]
     values["translated_polygon"] = [[point[0] + offset, point[1] + offset] for point in translated_polygon]
     values["locked"] = False
-    values["layout_data"] = {**(values.get("layout_data") or {}), "manual": True}
+    values["bubble_id"] = None
+    values["layout_data"] = {**_without_automatic_grouping(values.get("layout_data")), "manual": True}
     duplicate = TextRegion(image_id=region.image_id, region_key=next_region_key(db, region.image_id), **values)
     db.add(duplicate)
     db.flush()
@@ -160,8 +175,9 @@ def merge_regions(db: Session, regions: list[TextRegion]) -> TextRegion:
     target.translated_text = joiner.join(region.translated_text for region in ordered if region.translated_text)
     target.confidence = min((region.confidence for region in ordered), default=0.0)
     target.visible = any(region.visible for region in ordered)
+    target.bubble_id = None
     target.pixel_mask_path = None
-    target.layout_data = {**(target.layout_data or {}), "manual": True}
+    target.layout_data = {**_without_automatic_grouping(target.layout_data), "manual": True}
     for region in ordered[1:]:
         db.delete(region)
     db.flush()
@@ -183,8 +199,9 @@ def split_region(db: Session, region: TextRegion, axis: str = "auto") -> list[Te
     region.perspective_warp = False
     region.source_text = source_parts[0]
     region.translated_text = translated_parts[0]
+    region.bubble_id = None
     region.pixel_mask_path = None
-    region.layout_data = {**(region.layout_data or {}), "manual": True}
+    region.layout_data = {**_without_automatic_grouping(region.layout_data), "manual": True}
     values = region_snapshot(region)
     values["bbox"] = boxes[1]
     values["polygon"] = bbox_to_polygon(boxes[1])

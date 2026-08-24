@@ -19,7 +19,7 @@ from app.models import ImagePage, ModelConfig, ProcessingTask, TextRegion, Trans
 from app.models.enums import PageStatus, PipelineStage, TaskStatus
 from app.services.infra.model_manifest import persist_model_settings
 from app.services.infra.model_provisioning import ensure_recommended_config
-from app.services.inpainting import create_text_mask, load_text_mask_source
+from app.services.inpainting import create_text_mask, create_text_mask_union, load_text_mask_source
 from app.services.quality import evaluate_page
 from app.services.regions import save_revision
 from app.services.registry import registry
@@ -230,6 +230,7 @@ class PipelineProcessor:
                     confidence=result.confidence,
                     orientation=result.orientation,
                     reading_order=rank.get(index, index + 1),
+                    bubble_id=result.bubble_id,
                     # Keep detector boxes independent and use complex repair
                     # for every region instead of classifying flat bubbles.
                     region_type="background_complex",
@@ -435,15 +436,49 @@ class PipelineProcessor:
         for region in regions:
             self._check_interruption()
             output = page_directory / "masks" / f"{region.id}.png"
-            metadata = create_text_mask(
-                source,
-                region.polygon,
-                output,
-                expand=int(options.get("expand", 2)),
-                color_threshold=float(options.get("color_threshold", 18.0)),
-                source_image=source_image,
-                source_lab=source_lab,
+            detection = (region.layout_data or {}).get("detection", {})
+            line_grouping = detection.get("line_grouping", {}) if isinstance(detection, dict) else {}
+            source_polygons = (
+                line_grouping.get("source_polygons", [])
+                if isinstance(line_grouping, dict)
+                and line_grouping.get("method") == "balloon_instance"
+                else []
             )
+            valid_source_polygons = [
+                polygon
+                for polygon in source_polygons
+                if isinstance(polygon, list)
+                and len(polygon) >= 3
+                and all(
+                    isinstance(point, list)
+                    and len(point) >= 2
+                    and all(
+                        isinstance(coordinate, (int, float)) and np.isfinite(coordinate)
+                        for coordinate in point[:2]
+                    )
+                    for point in polygon
+                )
+            ]
+            mask_arguments = {
+                "expand": int(options.get("expand", 2)),
+                "color_threshold": float(options.get("color_threshold", 18.0)),
+                "source_image": source_image,
+                "source_lab": source_lab,
+            }
+            if valid_source_polygons:
+                metadata = create_text_mask_union(
+                    source,
+                    valid_source_polygons,
+                    output,
+                    **mask_arguments,
+                )
+            else:
+                metadata = create_text_mask(
+                    source,
+                    region.polygon,
+                    output,
+                    **mask_arguments,
+                )
             save_revision(self.db, region, "mask_generated")
             region.pixel_mask_path = self.storage.relative(output)
             region.region_type = "background_complex"

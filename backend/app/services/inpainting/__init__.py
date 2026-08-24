@@ -1,6 +1,7 @@
 from app.services.inpainting.masking import (
     create_region_mask,
     create_text_mask,
+    create_text_mask_union,
     load_text_mask_source,
     mask_is_empty,
     process_mask,
@@ -13,6 +14,7 @@ __all__ = [
     "SimpleLaMaInpainter",
     "create_region_mask",
     "create_text_mask",
+    "create_text_mask_union",
     "load_text_mask_source",
     "process_mask",
     "mask_is_empty",

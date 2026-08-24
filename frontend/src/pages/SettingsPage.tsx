@@ -153,7 +153,7 @@ const RECOMMENDATION_STAGES: Array<{kind: RecommendationKind, label: string, hin
 
 const RECOMMENDATION_GUIDES: Record<RecommendationKind, CandidateGuide[]> = {
   detection: [
-    {provider:'paddleocr', title:'PaddleOCR 文字检测', summary:'高精度日文文本检测，支持旋转框和不规则排版。', pros:['漫画小字与竖排召回率高', '保留四边形和旋转信息'], cons:['首次使用需加载模型', '纯 CPU 运行较慢'], requirements:['PaddleOCR / PaddlePaddle', 'GPU 建议 2 GB+ 显存；CPU 建议 4 GB+ 内存']},
+    {provider:'paddleocr', title:'PaddleOCR 文字检测', summary:'高精度日文文本检测，并按气泡实例安全合并同组对白。', pros:['漫画小字与竖排召回率高', '气泡外或归属歧义的文本不合并'], cons:['首次使用需加载模型', '纯 CPU 运行较慢'], requirements:['PaddleOCR / PaddlePaddle', '气泡模型约 11.8 MB，使用 CPU 推理', 'GPU 建议 2 GB+ 显存；CPU 建议 4 GB+ 内存']},
     {provider:'opencv-fallback', title:'OpenCV 文本检测', summary:'基于阈值和形态学的轻量本地检测。', pros:['启动快且无需模型权重', '低配置 CPU 也能运行'], cons:['复杂背景容易漏检或误检', '竖排、倾斜和艺术字效果较弱'], requirements:['OpenCV', '任意现代 CPU']},
   ],
   inpainting: [
@@ -572,7 +572,7 @@ Requirements:
 6. Return only one valid JSON object whose keys exactly match all supplied Region IDs and whose values are translated strings. Do not use Markdown, code fences, comments, or any text outside the JSON object.`
 
 const PROVIDER_PRESETS: Record<string, {label: string, title: string, config: Record<string, unknown>}> = {
-  'detection:paddleocr': {label: 'PaddleOCR 文字检测', title: '推荐文字检测（PaddleOCR）', config: {device: 'cuda:0', language: 'japan', ocr_version: 'PP-OCRv5', box_threshold: 0.45, unclip_ratio: 1.8, group_text_lines: false}},
+  'detection:paddleocr': {label: 'PaddleOCR 文字检测', title: '推荐文字检测（PaddleOCR）', config: {device: 'cuda:0', language: 'japan', ocr_version: 'PP-OCRv5', box_threshold: 0.45, unclip_ratio: 1.8, group_text_lines: false, bubble_grouping: {enabled: true, confidence_threshold: 0.25, min_bubble_confidence: 0.35, min_containment: 0.55, min_core_containment: 0.8, ambiguity_margin: 0.12, max_second_containment: 0.45, mask_padding: 3}}},
   'detection:opencv-fallback': {label: 'OpenCV 文本检测', title: '本地 OpenCV 文本检测', config: {device: 'cpu'}},
   'ocr:manga-ocr': {label: 'MangaOCR 漫画识别', title: '推荐漫画识别（MangaOCR）', config: {device: 'cuda:0', model: 'kha-white/manga-ocr-base'}},
   'ocr:paddleocr': {label: 'PaddleOCR 文字识别', title: 'PaddleOCR 文字识别', config: {device: 'cuda:0', language: 'japan'}},

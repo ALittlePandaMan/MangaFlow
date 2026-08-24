@@ -64,6 +64,10 @@ def test_bootstrap_recommended_configs_without_downloading(client) -> None:
     assert defaults["detection"] == "paddleocr"
     assert defaults["ocr"] == "manga-ocr"
     assert defaults["inpainting"] == "lama"
+    recommended_detection = next(
+        item for item in configured if item["kind"] == "detection" and item["is_default"]
+    )
+    assert recommended_detection["config"]["bubble_grouping"]["enabled"] is True
     cloud_translation = next(
         item
         for item in configured

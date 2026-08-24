@@ -124,11 +124,13 @@ cd frontend && npm run dev
 
 推荐组合与可替换 Provider：
 
-- Detection：内置 `opencv-fallback`，或可选 `paddleocr` polygon 检测；`group_text_lines` 默认关闭，避免区域合并后超出气泡。
+- Detection：内置 `opencv-fallback`，推荐使用 `paddleocr` polygon 检测；PaddleOCR 会搭配约 11.8 MB 的 YOLO11n ONNX 气泡实例分割模型，只合并可靠归属于同一气泡的文字框。气泡外或归属有歧义的文字保持独立，旧的纯几何 `group_text_lines` 仍默认关闭。
 - OCR：默认 `manga-ocr`；也可选择 `review-fallback`、`tesseract` 或 `paddleocr`。首次加载 MangaOCR 会下载约 400 MB 权重。
 - Translation：`openai-compatible`。填写 Base URL、模型名和 API Key；Ollama 示例地址为 `http://localhost:11434/v1`。
 - Inpainting：Docker 镜像内置 `simple-lama-inpainting`，推荐配置统一使用 `lama` 处理文字区域；`opencv` 仅作为低资源备选。
 - Rendering：`pillow`，支持系统 `.ttf` / `.otf` / `.ttc` / `.otc` 字体集合和项目上传字体；低对比文字会自动补反色描边。
+
+气泡识别权重来自 [`mednasserallah/manga109-segmentation-bubble-onnx`](https://huggingface.co/mednasserallah/manga109-segmentation-bubble-onnx)，运行时按固定 revision 下载到 `models/bubbles/`，并用 SHA-256 校验，不随仓库提交。上游仓库声明 Apache-2.0，但模型说明涉及 Manga109 训练数据；用于商业发布前请另行确认 Manga109 数据权利范围。
 
 Docker 默认把 NVIDIA GPU 注入后端，并使用 CUDA 12.6 版 PyTorch/PaddlePaddle。可迁移清单的 `device: recommended` 只在缺失配置首次导入时检测硬件，并在数据库中落成明确的 `cuda:0` 或 `cpu`，Provider 运行期间不使用 `auto`。可用 `.env` 中的 `MANGAFLOW_GPU_DEVICE` 指定 GPU index/UUID，默认为 `all`。
 

@@ -83,6 +83,7 @@ def test_forced_detection_preserves_manual_regions_and_replaces_detector_output(
                     polygon=[[x, 30], [x + 50, 30], [x + 50, 130], [x, 130]],
                     bbox=bbox,
                     confidence=0.95,
+                    bubble_id="bubble-stable",
                     metadata={"pass": self.calls},
                 )
             ]
@@ -132,7 +133,78 @@ def test_forced_detection_preserves_manual_regions_and_replaces_detector_output(
     assert first_detected["id"] not in {region["id"] for region in regions}
     replacement = next(region for region in regions if "detection" in region["layout_data"])
     assert replacement["bbox"][0] == 220
+    assert replacement["bubble_id"] == "bubble-stable"
     assert replacement["layout_data"]["detection"]["pass"] == 2
+
+
+def test_balloon_grouped_region_masks_only_its_source_text_polygons(client, monkeypatch) -> None:
+    source_polygons = [
+        [[20, 20], [52, 20], [52, 80], [20, 80]],
+        [[108, 20], [140, 20], [140, 80], [108, 80]],
+    ]
+
+    class GroupedDetector:
+        def detect(self, _image_path):
+            bbox = [20, 20, 120, 60]
+            return [
+                DetectionResult(
+                    polygon=[[20, 20], [140, 20], [140, 80], [20, 80]],
+                    bbox=bbox,
+                    confidence=0.91,
+                    bubble_id="bubble-safe-mask",
+                    metadata={
+                        "line_grouping": {
+                            "method": "balloon_instance",
+                            "source_count": 2,
+                            "source_polygons": source_polygons,
+                        }
+                    },
+                )
+            ]
+
+    detector = GroupedDetector()
+    original_provider = PipelineProcessor._provider
+
+    def use_grouped_detector(processor, kind, requested):
+        if kind == "detection":
+            return detector, "grouped-detector"
+        return original_provider(processor, kind, requested)
+
+    monkeypatch.setattr(PipelineProcessor, "_provider", use_grouped_detector)
+    project = client.post("/api/projects", json={"name": "safe-grouped-mask"}).json()
+    page = client.post(
+        f"/api/projects/{project['id']}/images",
+        files={"files": ("grouped.png", solid_page(), "image/png")},
+    ).json()[0]
+    detection_task = client.post(
+        f"/api/images/{page['id']}/process",
+        json={"start_stage": "detection", "end_stage": "detection", "force": True},
+    ).json()
+    detection_task = wait_for_task(client, detection_task["id"])
+    assert detection_task["status"] == "COMPLETED", detection_task
+
+    mask_task = client.post(
+        f"/api/images/{page['id']}/process",
+        json={"start_stage": "mask", "end_stage": "mask", "force": True, "options": {"expand": 1}},
+    ).json()
+    mask_task = wait_for_task(client, mask_task["id"])
+    assert mask_task["status"] == "COMPLETED", mask_task
+    region = client.get(f"/api/images/{page['id']}/regions").json()[0]
+    response = client.get(region["mask_url"])
+    mask = cv2.imdecode(np.frombuffer(response.content, dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
+
+    assert region["bubble_id"] == "bubble-safe-mask"
+    assert region["layout_data"]["mask_generation"]["method"] == "source_polygon_union"
+    assert mask[50, 30] == 255
+    assert mask[50, 120] == 255
+    assert mask[50, 80] == 0
+
+    edited = client.patch(
+        f"/api/regions/{region['id']}",
+        json={"bbox": [18, 18, 124, 64]},
+    ).json()
+    assert edited["bubble_id"] is None
+    assert "line_grouping" not in edited["layout_data"]["detection"]
 
 
 def test_ocr_commits_incremental_region_progress(client, monkeypatch) -> None:

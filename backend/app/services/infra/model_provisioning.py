@@ -37,6 +37,16 @@ RECOMMENDED_MODELS = {
             "box_threshold": 0.45,
             "unclip_ratio": 1.8,
             "group_text_lines": False,
+            "bubble_grouping": {
+                "enabled": True,
+                "confidence_threshold": 0.25,
+                "min_bubble_confidence": 0.35,
+                "min_containment": 0.55,
+                "min_core_containment": 0.8,
+                "ambiguity_margin": 0.12,
+                "max_second_containment": 0.45,
+                "mask_padding": 3,
+            },
         },
     ),
     "ocr": RecommendedModel(

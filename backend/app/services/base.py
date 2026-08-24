@@ -73,6 +73,7 @@ class DetectionResult:
     orientation: str = "vertical"
     region_type: str = "background_complex"
     metadata: dict[str, Any] = field(default_factory=dict)
+    bubble_id: str | None = None
 
 
 class TextDetector(ModelProvider[list[DetectionResult]], ABC):

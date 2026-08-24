@@ -6,6 +6,7 @@ from app.services.base import ProviderState
 from app.services.inpainting.masking import (
     create_region_mask,
     create_text_mask,
+    create_text_mask_union,
     load_text_mask_source,
     mask_is_empty,
     process_mask,
@@ -90,6 +91,28 @@ def test_text_masks_reuse_one_decoded_page(tmp_path: Path, monkeypatch) -> None:
         )
 
     assert calls == {"read": 1, "convert": 1}
+
+
+def test_text_mask_union_preserves_space_between_grouped_lines(tmp_path: Path) -> None:
+    image_path = tmp_path / "page.png"
+    mask_path = tmp_path / "grouped-mask.png"
+    image = np.full((110, 160, 3), 235, dtype=np.uint8)
+    cv2.rectangle(image, (30, 35), (38, 70), (20, 20, 20), -1)
+    cv2.rectangle(image, (112, 35), (120, 70), (20, 20, 20), -1)
+    cv2.imwrite(str(image_path), image)
+    polygons = [
+        [[20, 20], [52, 20], [52, 85], [20, 85]],
+        [[100, 20], [132, 20], [132, 85], [100, 85]],
+    ]
+
+    metadata = create_text_mask_union(image_path, polygons, mask_path, expand=1)
+    mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+
+    assert metadata["method"] == "source_polygon_union"
+    assert metadata["source_count"] == 2
+    assert mask[50, 30] == 255
+    assert mask[50, 115] == 255
+    assert mask[50, 75] == 0
 
 
 def test_text_mask_preserves_enclosed_label_background(tmp_path: Path) -> None:
