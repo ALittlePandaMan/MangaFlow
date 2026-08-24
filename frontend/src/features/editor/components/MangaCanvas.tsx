@@ -4,7 +4,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { Circle, Group, Image as KonvaImage, Layer, Line, Rect, Stage, Text } from 'react-konva'
 import type { ImagePage, TextRegion } from '../../../types'
 import {cn} from '../../../ui'
-import {ButtonLoading, InlineLoading} from '../../../components/LoadingUI'
+import {ButtonLoading} from '../../../components/LoadingUI'
 import {formatShortcut, shortcutToAria, useShortcutStore} from '../../shortcuts/store'
 import { useEditorStore } from '../store'
 import { RegionPolygonEditor } from './RegionPolygonEditor'
@@ -110,7 +110,6 @@ export function MangaCanvas({ page, regions, onCreate, onUpdate, onRegionAction,
   const [layersCollapsed, setLayersCollapsed] = useState(false)
   const [contextMenu, setContextMenu] = useState<{x: number, y: number, regionId: string, regionKey: string} | null>(null)
   const [marquee, setMarquee] = useState<MarqueeSelection | null>(null)
-  const [showImageLoading, setShowImageLoading] = useState(false)
   const [translatedGeometryPreview, setTranslatedGeometryPreview] = useState<TranslatedGeometryPreview | null>(null)
   const middlePanning = useRef(false)
   const middlePointer = useRef({x: 0, y: 0})
@@ -145,8 +144,6 @@ export function MangaCanvas({ page, regions, onCreate, onUpdate, onRegionAction,
   const scale = Math.max(0.01, fitScale * zoom)
   const regionLabelScale = 1 / Math.max(.01, fitScale)
   const origin = {x: (viewport.width - contentWidth * scale) / 2 + pan.x, y: (viewport.height - page.height * scale) / 2 + pan.y}
-  const canvasImagesLoading = originalState.loading || (view !== 'original' && cleanState.loading)
-
   useLayoutEffect(() => {
     if (wheelFrame.current !== null) cancelAnimationFrame(wheelFrame.current)
     wheelFrame.current = null
@@ -165,18 +162,8 @@ export function MangaCanvas({ page, regions, onCreate, onUpdate, onRegionAction,
     setMiddlePanningActive(false)
     setContextMenu(null)
     setMarquee(null)
-    setShowImageLoading(false)
     setTranslatedGeometryPreview(null)
   }, [page.id])
-
-  useEffect(() => {
-    if (!canvasImagesLoading) {
-      setShowImageLoading(false)
-      return
-    }
-    const timer = window.setTimeout(() => setShowImageLoading(true), 180)
-    return () => window.clearTimeout(timer)
-  }, [canvasImagesLoading])
 
   const stopWheelAnimation = useCallback(() => {
     if (wheelFrame.current !== null) cancelAnimationFrame(wheelFrame.current)
@@ -530,7 +517,6 @@ export function MangaCanvas({ page, regions, onCreate, onUpdate, onRegionAction,
     : false
 
   return <div className={cn('relative size-full overflow-hidden', middlePanningActive && 'cursor-grabbing [&_canvas]:!cursor-grabbing', (marquee || tool === 'polygon') && 'cursor-crosshair [&_canvas]:!cursor-crosshair')} ref={containerRef} onAuxClick={event => event.preventDefault()}>
-    {showImageLoading && <div className="pointer-events-none absolute inset-0 z-[70] grid place-items-center bg-canvas/20" aria-busy="true"><span className="rounded-lg bg-surface/90 px-3 py-2 shadow-soft"><InlineLoading label="正在载入画布图片"/></span></div>}
     <Stage
       width={viewport.width} height={viewport.height}
       onMouseDown={handleDown} onTouchStart={handleDown}
@@ -658,7 +644,11 @@ export function MangaCanvas({ page, regions, onCreate, onUpdate, onRegionAction,
       <button className={cn(contextButtonClass, runningAction === 'inpaint' && 'bg-accent/10 text-ink')} role="menuitem" disabled={!!runningAction} title={`重新修复 (${formatShortcut(shortcuts['region.inpaint'])})`} aria-keyshortcuts={shortcutToAria(shortcuts['region.inpaint'])} onClick={() => runRegionContextAction('inpaint')}>{runningAction === 'inpaint' ? <ButtonLoading label="背景修复中…"/> : <><Eraser size={15}/>重新修复</>}</button>
       <button className={cn(contextButtonClass, runningAction === 'render' && 'bg-accent/10 text-ink')} role="menuitem" disabled={!!runningAction} title={`重新排版 (${formatShortcut(shortcuts['region.render'])})`} aria-keyshortcuts={shortcutToAria(shortcuts['region.render'])} onClick={() => runRegionContextAction('render')}>{runningAction === 'render' ? <ButtonLoading label="排版处理中…"/> : <><TextCursorInput size={15}/>重新排版</>}</button>
     </div>}
-    {view !== 'comparison' && <div className="absolute right-3.5 top-3.5 z-10 w-44 select-none text-secondary" aria-label="画布图层">
+    {view !== 'comparison' && <div
+      className="absolute right-3.5 top-3.5 z-10 w-44 select-none text-secondary"
+      style={{filter: layersCollapsed ? undefined : 'drop-shadow(var(--shadow-soft))'}}
+      aria-label="画布图层"
+    >
       <button
         className={cn('relative z-10 flex h-[36px] min-h-[36px] w-full cursor-pointer items-center justify-start gap-2 border border-line-strong bg-popover px-3 font-mono text-xs font-medium uppercase leading-none tracking-[1px] text-secondary outline-none transition-colors hover:bg-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-accent/30 [&>svg:first-child]:text-accent', layersCollapsed ? 'rounded-xl shadow-soft' : 'rounded-t-xl rounded-b-none')}
         style={{borderBottomColor: layersCollapsed ? 'var(--color-line-strong)' : 'var(--color-line)'}}
@@ -667,7 +657,7 @@ export function MangaCanvas({ page, regions, onCreate, onUpdate, onRegionAction,
         <Layers3 className="shrink-0" size={15}/><span className="flex h-full items-center leading-none">图层</span><ChevronDown className={cn('ml-auto text-muted transition-transform duration-200 motion-reduce:transition-none', layersCollapsed && '-rotate-90')} size={15}/>
       </button>
       <div
-        className={cn('absolute right-0 top-full w-full overflow-hidden rounded-b-xl border-x border-b border-line-strong bg-popover shadow-soft transition-[clip-path] duration-200 ease-out motion-reduce:transition-none', layersCollapsed && 'pointer-events-none')}
+        className={cn('absolute right-0 top-full w-full overflow-hidden rounded-b-xl border-x border-b border-line-strong bg-popover transition-[clip-path] duration-200 ease-out motion-reduce:transition-none', layersCollapsed && 'pointer-events-none')}
         style={{clipPath: layersCollapsed ? 'inset(0 0 100% 0)' : 'inset(0 0 0 0)'}}
         aria-hidden={layersCollapsed}
       ><div className="flex flex-col gap-1 p-1">{Object.entries(layers).map(([name, visible]) => <label className="relative flex h-[34px] shrink-0 cursor-pointer items-center gap-2 rounded-lg px-2 text-[11px] leading-none text-secondary transition-colors hover:bg-hover hover:text-ink" key={name}>

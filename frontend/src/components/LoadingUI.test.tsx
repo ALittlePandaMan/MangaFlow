@@ -1,7 +1,7 @@
 import {render, screen} from '@testing-library/react'
 import {describe, expect, it} from 'vitest'
 
-import {ActivitySpinner, ProgressBar} from './LoadingUI'
+import {ActivitySpinner, EditorSkeleton, ProgressBar} from './LoadingUI'
 
 describe('LoadingUI', () => {
   it('clamps progress values to the accessible percentage range', () => {
@@ -18,5 +18,11 @@ describe('LoadingUI', () => {
     render(<ActivitySpinner label="正在重新翻译"/>)
 
     expect(screen.getByRole('status', {name:'正在重新翻译'})).toBeInTheDocument()
+  })
+
+  it('uses the editor sidebar widths while loading', () => {
+    render(<EditorSkeleton/>)
+
+    expect(screen.getByLabelText('正在打开工作台')).toHaveClass('grid-cols-[200px_minmax(0,1fr)_320px]')
   })
 })

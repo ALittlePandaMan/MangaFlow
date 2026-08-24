@@ -11,6 +11,7 @@ import { CanvasZoomControls, EditorToolbar } from '../features/editor/components
 import { MangaCanvas } from '../features/editor/components/MangaCanvas'
 import { RegionProperties } from '../features/editor/components/RegionProperties'
 import {preloadImage, versionedImageSource} from '../features/editor/hooks/useImage'
+import {buildPageWorkflowRequest, pageWorkflowTargetView, type PageWorkflowStage} from '../features/editor/pageWorkflow'
 import { useEditorStore } from '../features/editor/store'
 import {formatShortcut, shortcutForEvent, shortcutToAria, type ShortcutId, useShortcutStore} from '../features/shortcuts/store'
 import { ApiError, api } from '../services/api'
@@ -23,7 +24,6 @@ type TaskUpdateHandler = (task: ProcessingTask) => void | Promise<void>
 type PageContextMenu = {x: number, y: number, pageId: string}
 type PagePress = {pageId: string, fromIndex: number, overIndex: number, pointerId: number, startX: number, startY: number, active: boolean}
 type PageDrag = {pageId: string, fromIndex: number, overIndex: number}
-type PageWorkflowStage = 'ocr' | 'translation' | 'inpainting' | 'rendering'
 type ExportKind = 'project' | 'translated' | 'clean'
 
 const EXPORT_OPTIONS: Array<{kind: ExportKind, label: string, detail: string, formats: string[]}> = [
@@ -917,27 +917,19 @@ export function EditorPage() {
     if (rank < requiredRank[stage]) return
     const currentRegions = regionsRef.current
     const startsWithDetection = stage === 'ocr' && currentRegions.length === 0
-    const request = ({
-      ocr: {
-        start_stage: startsWithDetection ? 'detection' : 'ocr',
-        end_stage: 'ocr',
-        force: !startsWithDetection,
-        options: {crop_padding: 4},
-      },
-      translation: {start_stage: 'translation', end_stage: 'translation', force: true, options: {}},
-      inpainting: {start_stage: 'mask', end_stage: 'inpainting', force: true, options: {rebuild_clean: true}},
-      rendering: {start_stage: 'rendering', end_stage: 'rendering', force: true, options: {}},
-    } as const)[stage]
+    const targetView = pageWorkflowTargetView(stage)
+    if (targetView) setView(targetView)
+    const request = buildPageWorkflowRequest(stage, startsWithDetection)
     const startingNotices: Record<PageWorkflowStage, string> = {
       ocr: startsWithDetection ? '正在检测文字区域并执行 OCR…' : '正在重新 OCR 当前页的文字区域…',
       translation: '正在重新翻译当前页，完成后才能执行修复…',
-      inpainting: '正在重新生成文字 Mask 并修复背景…',
+      inpainting: '正在重新生成文字 Mask、修复背景并自动重新排版…',
       rendering: '正在根据当前译文重新排版…',
     }
     const completedNotices: Record<PageWorkflowStage, string> = {
       ocr: 'OCR 已完成，请核对文字区域和原文；确认无误后再执行重新翻译。',
       translation: '翻译已完成，可以继续执行重新修复。',
-      inpainting: '背景修复已完成，可以继续执行重新排版。',
+      inpainting: '背景修复与重新排版已完成。',
       rendering: '当前页重新排版已完成。',
     }
     blurActiveControl()
@@ -950,7 +942,10 @@ export function EditorPage() {
       const task = await api.images.process(page.id, request)
       setRunningPageTask(task)
       const result = await refreshAfterTask(task.id, syncTaskProgress)
-      if (result?.task.status === 'COMPLETED') setNotice(completedNotices[stage])
+      if (result?.task.status === 'COMPLETED') {
+        if (targetView) setView(targetView)
+        setNotice(completedNotices[stage])
+      }
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason))
     } finally {
@@ -1115,7 +1110,7 @@ export function EditorPage() {
   const workflowButtons: Array<{stage: PageWorkflowStage, shortcutId: ShortcutId, label: string, requiredRank: number, title: string, icon: typeof ScanText}> = [
     {stage: 'ocr', shortcutId:'page.workflowOcr', label: '重新 OCR', requiredRank: 0, title: regions.length ? '重新识别当前页已有文字区域' : '当前页没有文字区域，将先自动检测再执行 OCR', icon: ScanText},
     {stage: 'translation', shortcutId:'page.workflowTranslate', label: '重新翻译', requiredRank: 1, title: workflowRank >= 1 ? '使用最新 OCR 原文重新翻译' : '请先完成重新 OCR', icon: Languages},
-    {stage: 'inpainting', shortcutId:'page.workflowInpaint', label: '重新修复', requiredRank: 2, title: workflowRank >= 2 ? '重新生成文字 Mask 并修复背景' : '请先依次完成重新 OCR 和重新翻译', icon: Eraser},
+    {stage: 'inpainting', shortcutId:'page.workflowInpaint', label: '重新修复', requiredRank: 2, title: workflowRank >= 2 ? '重新生成文字 Mask、修复背景并自动重新排版' : '请先依次完成重新 OCR 和重新翻译', icon: Eraser},
     {stage: 'rendering', shortcutId:'page.workflowRender', label: '重新排版', requiredRank: 3, title: workflowRank >= 3 ? '使用当前译文和样式重新排版' : '请先依次完成 OCR、翻译和修复', icon: TextCursorInput},
   ]
 
@@ -1245,9 +1240,9 @@ export function EditorPage() {
         >{resettingPage ? <ButtonLoading label="恢复中…"/> : <><RotateCcw size={14}/>重置当前页</>}</button>
       </div>}
     />
-    {showingInitialLoading ? <EditorSkeleton canvasControls={<CanvasZoomControls/>}/> : <div className="grid min-h-0 grid-cols-[208px_minmax(0,1fr)_336px] max-[1200px]:grid-cols-[184px_minmax(0,1fr)_312px]">
+    {showingInitialLoading ? <EditorSkeleton canvasControls={<CanvasZoomControls/>}/> : <div className="grid min-h-0 grid-cols-[200px_minmax(0,1fr)_320px]">
       <aside className="flex min-h-0 flex-col border-r border-line-subtle bg-panel">
-        <div className="flex h-10 shrink-0 items-center justify-between border-b border-line-subtle px-3.5 font-mono text-[12px] font-semibold uppercase tracking-[.8px] text-muted"><span>页面</span><button className={cn(buttonClass, '!size-8 !min-h-8 !p-0 border-0 bg-transparent')} disabled={editorBusy} title={`导入图片 (${formatShortcut(shortcuts['page.import'])})`} aria-label="导入图片" aria-keyshortcuts={shortcutToAria(shortcuts['page.import'])} onClick={openImagePicker}>{uploadingPages ? <ButtonLoading compact label="正在导入图片"/> : <ImagePlus aria-hidden="true" size={16}/>}</button></div>
+        <div className="flex h-12 shrink-0 items-center justify-between border-b border-line-subtle px-3.5 font-mono text-[12px] font-semibold uppercase tracking-[.8px] text-muted"><span>页面</span><button className={cn(buttonClass, '!size-8 !min-h-8 !p-0 border-0 bg-transparent')} disabled={editorBusy} title={`导入图片 (${formatShortcut(shortcuts['page.import'])})`} aria-label="导入图片" aria-keyshortcuts={shortcutToAria(shortcuts['page.import'])} onClick={openImagePicker}>{uploadingPages ? <ButtonLoading compact label="正在导入图片"/> : <ImagePlus aria-hidden="true" size={16}/>}</button></div>
         <div ref={pageListRef} className={cn('min-h-0 flex-1 overflow-auto p-2.5', scrollbarClass)} onContextMenu={openImagePickerFromBlank}>{pages.map((item, index) => <button
           key={item.id}
           data-page-id={item.id}
@@ -1270,8 +1265,8 @@ export function EditorPage() {
             if (!editorBusy) navigate(`/projects/${projectId}/editor/${item.id}`)
           }}
         >
-          <div className={cn('relative flex aspect-[3/4] w-full justify-center overflow-hidden bg-[#0a0a09] transition-shadow', selectedPageId === item.id && 'ring-1 ring-inset ring-canvas/50')}><img className="pointer-events-none size-full select-none object-contain" draggable={false} src={item.rendered_url || item.original_url} alt={item.filename}/><span className={cn('absolute bottom-1 left-1 bg-canvas px-1 py-0.5 font-mono text-[12px]', selectedPageId === item.id && 'text-accent')}>{String(index + 1).padStart(2,'0')}</span>{activePageTask?.image_id === item.id && <span className="absolute right-1 top-1 grid rounded-full bg-canvas/90 p-1 shadow-panel"><CircularProgress value={activePageTask.progress} size={34} label={`${item.filename} 处理进度`}/></span>}</div>
-          <small className={cn('mt-2 block truncate text-[12px]', selectedPageId === item.id ? 'font-semibold text-accent-ink' : 'text-secondary')} title={item.filename}>{item.filename}</small><i className={cn('mt-1 block truncate font-mono text-[12px] not-italic', selectedPageId === item.id ? 'text-accent-ink/75' : pageState(item).className)}>{pageState(item).label}</i>
+          <div className={cn('relative flex aspect-[3/4] w-full justify-center overflow-hidden bg-transparent transition-shadow', selectedPageId === item.id && 'ring-1 ring-inset ring-canvas/50')} style={item.width > 0 && item.height > 0 ? {aspectRatio: `${item.width} / ${item.height}`} : undefined}><img className="pointer-events-none block size-full select-none object-contain" draggable={false} width={item.width} height={item.height} src={item.rendered_url || item.original_url} alt={item.filename}/><span className={cn('absolute bottom-1 left-1 bg-canvas px-1 py-0.5 font-mono text-[12px]', selectedPageId === item.id && 'text-accent')}>{String(index + 1).padStart(2,'0')}</span>{activePageTask?.image_id === item.id && <span className="absolute right-1 top-1 grid rounded-full bg-canvas/90 p-1 shadow-panel"><CircularProgress value={activePageTask.progress} size={34} label={`${item.filename} 处理进度`}/></span>}</div>
+          <small className={cn('mt-2 block truncate text-[12px]', selectedPageId === item.id ? 'font-semibold text-accent-ink' : 'text-secondary')} title={item.filename}>{item.filename}</small><i className={cn('mt-1 block truncate font-mono text-[12px] not-italic', pageState(item).emphasized && 'font-semibold', selectedPageId === item.id ? 'text-accent-ink' : pageState(item).className)}>{pageState(item).label}</i>
         </button>)}
         {!pages.length && <div className="flex min-h-full items-center justify-center"><button className={`${buttonClass} min-h-[140px] w-full flex-col border-dashed bg-transparent text-[12px] text-muted`} disabled={editorBusy} onClick={openImagePicker}><Upload size={22}/>导入漫画图片</button></div>}
         </div>
@@ -1348,14 +1343,15 @@ function pageNeedsOcr(page: ImagePage): boolean {
   return !page.ocr_exempt && ['UPLOADED', 'DETECTED', 'FAILED'].includes(page.status)
 }
 
-function pageState(page: ImagePage): {className: string, label: string} {
-  if (page.ocr_exempt) return {className: 'text-accent', label: '已翻译'}
+function pageState(page: ImagePage): {className: string, label: string, emphasized?: boolean} {
+  if (page.ocr_exempt) return {className: 'text-success-soft-ink', label: '已翻译', emphasized: true}
   const status = page.status === 'NEEDS_REVIEW' ? 'COMPLETED' : page.status
   const labels: Record<string, string> = {
     UPLOADED: '未识别', DETECTING: '检测中', DETECTED: '待识别', OCR_RUNNING: '识别中', OCR_DONE: '待确认',
     TRANSLATING: '翻译中', TRANSLATED: '已翻译', MASK_GENERATING: '生成 Mask', INPAINTING: '修复中',
     INPAINTED: '已修复', LAYOUTING: '排版中', RENDERING: '渲染中', COMPLETED: '已完成', FAILED: '失败',
   }
-  const className = status === 'FAILED' ? 'text-danger' : status === 'COMPLETED' ? 'text-accent' : 'text-muted'
-  return {className, label: labels[status] || status}
+  const translated = status === 'TRANSLATED'
+  const className = status === 'FAILED' ? 'text-danger' : status === 'COMPLETED' ? 'text-accent' : translated ? 'text-success-soft-ink' : 'text-muted'
+  return {className, label: labels[status] || status, emphasized: translated}
 }

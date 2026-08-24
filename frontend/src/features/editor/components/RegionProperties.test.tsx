@@ -58,6 +58,18 @@ function renderProperties(onUpdate = vi.fn()) {
 describe('RegionProperties coordinate rotation', () => {
   beforeEach(() => useEditorStore.setState({view: 'original'}))
 
+  it('does not display the internal OCR confidence', () => {
+    renderProperties()
+
+    expect(screen.queryByText('99%')).not.toBeInTheDocument()
+  })
+
+  it('uses the same 48px header height as the page list', () => {
+    renderProperties()
+
+    expect(screen.getByText(region.region_key).closest('section')).toHaveClass('h-12')
+  })
+
   it('rotates the source polygon without changing translated text rotation', () => {
     const onUpdate = renderProperties()
 

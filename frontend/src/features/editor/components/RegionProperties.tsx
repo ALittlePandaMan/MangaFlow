@@ -1,12 +1,14 @@
 import { Eraser, Eye, EyeOff, Languages, Layers3, Lock, LockOpen, Merge, Scan, ScanLine, ScanText, TextCursorInput, Trash2, X } from 'lucide-react'
 import { useLayoutEffect, useRef } from 'react'
 import type { TextRegion } from '../../../types'
-import {buttonClass, cn, dangerButtonClass, iconButtonClass, inputClass, primaryButtonClass, scrollbarClass, textareaClass} from '../../../ui'
+import {buttonClass, cn, dangerButtonClass, inputClass, primaryButtonClass, scrollbarClass, textareaClass} from '../../../ui'
 import {ColorControl, NumberControl, SelectControl} from '../../../components/FormControls'
 import {ButtonLoading} from '../../../components/LoadingUI'
 import {formatShortcut, shortcutToAria, useShortcutStore} from '../../shortcuts/store'
 import {isPerspectiveQuad} from '../lib/perspectiveText'
 import { useEditorStore } from '../store'
+
+const regionIconButtonClass = cn(buttonClass, '!size-8 !min-h-8 !p-0')
 
 interface Props {
   region?: TextRegion
@@ -87,7 +89,7 @@ export function RegionProperties({region, selectedRegions, selectedCount, fontOp
         <button className={`${buttonClass} !min-h-[34px]`} disabled={!!busyAction} title={`取消选择 (${formatShortcut(shortcuts['region.cancelSelection'])})`} aria-keyshortcuts={shortcutToAria(shortcuts['region.cancelSelection'])} onClick={() => select(null)}><X size={16}/>取消选择</button>
       </div>
     </div> : !region ? <div className="flex min-h-[260px] flex-1 flex-col items-center justify-center p-8 text-center text-muted"><Scan size={30}/><p className="mt-3 text-[12px] leading-relaxed">选择一个文字区域以编辑属性</p></div> : <>
-      <section className="flex h-[52px] shrink-0 items-center justify-between border-b border-line-subtle bg-surface px-3"><div className="flex items-center gap-2"><span className="font-mono text-xs font-semibold">{region.region_key}</span><i className="rounded border border-accent/25 bg-accent/10 px-2 py-1 font-mono text-[8px] font-medium not-italic text-accent">{Math.round(region.confidence * 100)}%</i></div><div className="flex gap-1"><button className={iconButtonClass} title={region.visible ? '关闭：预览和导出时不显示译文' : '打开：预览和导出时显示译文'} aria-label={region.visible ? '关闭区域显示' : '打开区域显示'} onClick={() => onAction('visibility')}>{region.visible ? <Eye size={16}/> : <EyeOff size={16}/>}</button><button className={iconButtonClass} title={region.locked ? '解除锁定' : '锁定区域'} aria-label={region.locked ? '解除锁定' : '锁定区域'} onClick={() => onUpdate(region.id, {locked: !region.locked})}>{region.locked ? <Lock size={16}/> : <LockOpen size={16}/>}</button></div></section>
+      <section className="flex h-12 shrink-0 items-center justify-between border-b border-line-subtle bg-surface px-3"><span className="font-mono text-xs font-semibold">{region.region_key}</span><div className="flex gap-1"><button className={regionIconButtonClass} title={region.visible ? '关闭：预览和导出时不显示译文' : '打开：预览和导出时显示译文'} aria-label={region.visible ? '关闭区域显示' : '打开区域显示'} onClick={() => onAction('visibility')}>{region.visible ? <Eye aria-hidden="true" size={16}/> : <EyeOff aria-hidden="true" size={16}/>}</button><button className={regionIconButtonClass} title={region.locked ? '解除锁定' : '锁定区域'} aria-label={region.locked ? '解除锁定' : '锁定区域'} onClick={() => onUpdate(region.id, {locked: !region.locked})}>{region.locked ? <Lock aria-hidden="true" size={16}/> : <LockOpen aria-hidden="true" size={16}/>}</button></div></section>
       <section className={sectionClass}><h3 className={headingClass}>文本内容</h3>
         <label className={fieldClass}>原文<AutoResizeTextarea value={region.source_text} onChange={value => onUpdate(region.id, {source_text: value})} placeholder="OCR 原文" /></label>
         <label className={fieldClass}>译文<AutoResizeTextarea className="bg-accent/[.025] focus:bg-accent/[.04]" value={region.translated_text} onChange={value => onUpdate(region.id, {translated_text: value})} placeholder="输入译文" /></label>
