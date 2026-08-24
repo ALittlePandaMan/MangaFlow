@@ -3,7 +3,13 @@ from pathlib import Path
 import cv2
 import numpy as np
 from app.services.base import ProviderState
-from app.services.inpainting.masking import create_region_mask, create_text_mask, mask_is_empty, process_mask
+from app.services.inpainting.masking import (
+    create_region_mask,
+    create_text_mask,
+    load_text_mask_source,
+    mask_is_empty,
+    process_mask,
+)
 from app.services.inpainting.providers import HybridInpainter, OpenCVInpainter, SimpleLaMaInpainter
 from PIL import Image, ImageCms
 
@@ -47,6 +53,43 @@ def test_text_mask_fills_tight_polygon_on_uniform_background(tmp_path: Path) -> 
     assert mask[50, 30] == 255
     assert metadata["method"] == "uniform_background_polygon"
     assert metadata["suggested_region_type"] == "background_complex"
+
+
+def test_text_masks_reuse_one_decoded_page(tmp_path: Path, monkeypatch) -> None:
+    image_path = tmp_path / "page.png"
+    image = np.full((120, 180, 3), 235, dtype=np.uint8)
+    cv2.rectangle(image, (35, 25), (45, 90), (20, 20, 20), -1)
+    cv2.rectangle(image, (110, 25), (120, 90), (20, 20, 20), -1)
+    cv2.imwrite(str(image_path), image)
+
+    calls = {"read": 0, "convert": 0}
+    original_read = cv2.imread
+    original_convert = cv2.cvtColor
+
+    def counted_read(*args, **kwargs):
+        calls["read"] += 1
+        return original_read(*args, **kwargs)
+
+    def counted_convert(*args, **kwargs):
+        calls["convert"] += 1
+        return original_convert(*args, **kwargs)
+
+    monkeypatch.setattr(cv2, "imread", counted_read)
+    monkeypatch.setattr(cv2, "cvtColor", counted_convert)
+    source_image, source_lab = load_text_mask_source(image_path)
+    for index, polygon in enumerate((
+        [[20, 15], [70, 15], [70, 105], [20, 105]],
+        [[95, 15], [145, 15], [145, 105], [95, 105]],
+    )):
+        create_text_mask(
+            image_path,
+            polygon,
+            tmp_path / f"mask-{index}.png",
+            source_image=source_image,
+            source_lab=source_lab,
+        )
+
+    assert calls == {"read": 1, "convert": 1}
 
 
 def test_text_mask_preserves_enclosed_label_background(tmp_path: Path) -> None:

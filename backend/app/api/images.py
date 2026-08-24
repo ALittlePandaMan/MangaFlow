@@ -40,7 +40,12 @@ def reset_image(image_id: str, db: Session = Depends(get_db)) -> ImageRead:
         select(ProcessingTask.id).where(
             ProcessingTask.image_id == image_id,
             ProcessingTask.status.in_(
-                [TaskStatus.QUEUED.value, TaskStatus.RUNNING.value, TaskStatus.PAUSED.value]
+                [
+                    TaskStatus.QUEUED.value,
+                    TaskStatus.RUNNING.value,
+                    TaskStatus.CANCELLING.value,
+                    TaskStatus.PAUSED.value,
+                ]
             ),
         )
     )
@@ -74,7 +79,12 @@ def set_image_ocr_exempt(image_id: str, exempt: bool, db: Session = Depends(get_
     active_task = db.scalar(
         select(ProcessingTask.id).where(
             ProcessingTask.image_id == image_id,
-            ProcessingTask.status.in_([TaskStatus.QUEUED.value, TaskStatus.RUNNING.value, TaskStatus.PAUSED.value]),
+            ProcessingTask.status.in_([
+                TaskStatus.QUEUED.value,
+                TaskStatus.RUNNING.value,
+                TaskStatus.CANCELLING.value,
+                TaskStatus.PAUSED.value,
+            ]),
         )
     )
     if active_task:

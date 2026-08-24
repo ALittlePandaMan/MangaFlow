@@ -25,6 +25,20 @@ def installed_ttf() -> Path:
     return font
 
 
+def test_image_url_version_changes_only_with_the_artifact(client) -> None:
+    project = client.post("/api/projects", json={"name": "stable-artifact-url"}).json()
+    page = client.post(
+        f"/api/projects/{project['id']}/images",
+        files={"files": ("page.png", image_file(), "image/png")},
+    ).json()[0]
+
+    updated = client.patch(f"/api/images/{page['id']}/ocr-exempt?exempt=true").json()
+
+    assert updated["updated_at"] != page["updated_at"]
+    assert updated["original_url"] == page["original_url"]
+    assert client.get(updated["original_url"]).headers["cache-control"] == "public, max-age=31536000, immutable"
+
+
 def test_project_page_and_region_crud(client) -> None:
     project_response = client.post("/api/projects", json={"name": "第一话"})
     assert project_response.status_code == 201

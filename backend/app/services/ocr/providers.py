@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import logging
+from functools import lru_cache
 from pathlib import Path
+from threading import RLock
 
 import numpy as np
 from app.services.base import OCRProvider, OCRResult, ProviderCapabilities, ProviderError
@@ -16,18 +18,30 @@ from app.services.infra.paddle import extract_paddle_lines
 from PIL import Image
 
 logger = logging.getLogger(__name__)
+_crop_lock = RLock()
+
+
+@lru_cache(maxsize=2)
+def _decoded_page(path: str) -> Image.Image:
+    # Uploaded originals are immutable and page IDs make their paths unique.
+    with Image.open(path) as source:
+        return source.convert("RGB")
 
 
 def _crop(image_path: Path, bbox: list[float], padding: int) -> Image.Image:
-    image = Image.open(image_path).convert("RGB")
-    x, y, width, height = bbox
-    box = (
-        max(0, int(x - padding)),
-        max(0, int(y - padding)),
-        min(image.width, int(x + width + padding)),
-        min(image.height, int(y + height + padding)),
-    )
-    return image.crop(box)
+    path = image_path.resolve()
+    # PIL crop is read-only with respect to the source, but serialize access to
+    # the shared decoded page for deployments that raise task concurrency.
+    with _crop_lock:
+        image = _decoded_page(str(path))
+        x, y, width, height = bbox
+        box = (
+            max(0, int(x - padding)),
+            max(0, int(y - padding)),
+            min(image.width, int(x + width + padding)),
+            min(image.height, int(y + height + padding)),
+        )
+        return image.crop(box)
 
 
 class NullOCRProvider(OCRProvider):

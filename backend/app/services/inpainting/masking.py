@@ -8,6 +8,15 @@ import numpy as np
 from PIL import Image, ImageDraw
 
 
+def load_text_mask_source(image_path: Path) -> tuple[np.ndarray, np.ndarray]:
+    """Decode and convert a page once for a complete mask-generation pass."""
+    image = cv2.imread(str(image_path), cv2.IMREAD_COLOR)
+    if image is None:
+        raise ValueError(f"Cannot read image: {image_path}")
+    lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB).astype(np.float32)
+    return image, lab
+
+
 def create_region_mask(
     width: int,
     height: int,
@@ -34,11 +43,15 @@ def create_text_mask(
     *,
     expand: int = 2,
     color_threshold: float = 18.0,
+    source_image: np.ndarray | None = None,
+    source_lab: np.ndarray | None = None,
 ) -> dict[str, Any]:
     """Create a glyph-level mask by learning colors around a detected text line."""
-    image = cv2.imread(str(image_path), cv2.IMREAD_COLOR)
-    if image is None:
-        raise ValueError(f"Cannot read image: {image_path}")
+    if source_image is None:
+        image, lab = load_text_mask_source(image_path)
+    else:
+        image = source_image
+        lab = source_lab if source_lab is not None else cv2.cvtColor(image, cv2.COLOR_BGR2LAB).astype(np.float32)
     height, width = image.shape[:2]
     points = np.asarray(
         [[np.clip(round(point[0]), 0, width - 1), np.clip(round(point[1]), 0, height - 1)] for point in polygon],
@@ -54,7 +67,6 @@ def create_text_mask(
     ring_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (ring_radius * 2 + 1, ring_radius * 2 + 1))
     outside_ring = cv2.subtract(cv2.dilate(region, ring_kernel, iterations=1), region)
 
-    lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB).astype(np.float32)
     samples = lab[outside_ring > 0]
     if len(samples) < 16:
         samples = lab[region > 0]

@@ -196,6 +196,66 @@ def test_ocr_commits_incremental_region_progress(client, monkeypatch) -> None:
     assert completed["status"] == "COMPLETED", completed
 
 
+def test_cancelling_ocr_stops_before_the_next_region(client, monkeypatch) -> None:
+    second_region_started = threading.Event()
+    release_second_region = threading.Event()
+
+    class CancelAwareOCR:
+        calls = 0
+
+        def ensure_loaded(self) -> None:
+            return
+
+        def recognize(self, _image_path, _bbox, orientation, _padding) -> OCRResult:
+            self.calls += 1
+            if self.calls == 2:
+                second_region_started.set()
+                release_second_region.wait(timeout=5)
+            return OCRResult(text=f"recognized-{self.calls}", confidence=0.9, orientation=orientation)
+
+    fake_ocr = CancelAwareOCR()
+    original_provider = PipelineProcessor._provider
+
+    def use_cancel_aware_ocr(processor, kind, requested):
+        if kind == "ocr":
+            return fake_ocr, "cancel-aware-test"
+        return original_provider(processor, kind, requested)
+
+    monkeypatch.setattr(PipelineProcessor, "_provider", use_cancel_aware_ocr)
+    project = client.post("/api/projects", json={"name": "cancel-ocr"}).json()
+    page = client.post(
+        f"/api/projects/{project['id']}/images",
+        files={"files": ("cancel.png", manga_page(), "image/png")},
+    ).json()[0]
+    for index in range(3):
+        client.post(
+            f"/api/images/{page['id']}/regions",
+            json={"bbox": [50 + index * 80, 80, 60, 140], "reading_order": index + 1},
+        )
+
+    task = client.post(
+        f"/api/images/{page['id']}/process",
+        json={"start_stage": "ocr", "end_stage": "ocr", "force": True, "options": {}},
+    ).json()
+    try:
+        assert second_region_started.wait(timeout=3)
+        cancelled = client.post(f"/api/tasks/{task['id']}/cancel")
+        assert cancelled.status_code == 200, cancelled.text
+        assert cancelled.json()["status"] == "CANCELLED"
+    finally:
+        release_second_region.set()
+
+    for _ in range(100):
+        updated_page = client.get(f"/api/images/{page['id']}").json()
+        if updated_page["current_stage"] is None:
+            break
+        time.sleep(0.03)
+    regions = client.get(f"/api/images/{page['id']}/regions").json()
+    assert fake_ocr.calls == 2
+    assert [region["source_text"] for region in regions] == ["recognized-1", "recognized-2", ""]
+    assert updated_page["status"] == "OCR_DONE"
+
+
 def test_ocr_process_can_target_multiple_selected_regions(client, monkeypatch) -> None:
     class SelectedRegionOCR:
         calls = 0
@@ -580,6 +640,10 @@ def test_mask_to_render_pipeline_and_export(client, monkeypatch) -> None:
     assert processed["clean_url"]
     assert processed["rendered_url"]
     assert processed["text_layer_url"]
+    metadata_only_update = client.patch(f"/api/images/{page['id']}/ocr-exempt?exempt=true").json()
+    assert metadata_only_update["clean_url"] == processed["clean_url"]
+    assert metadata_only_update["rendered_url"] == processed["rendered_url"]
+    assert metadata_only_update["text_layer_url"] == processed["text_layer_url"]
     updated_region = client.get(f"/api/images/{page['id']}/regions").json()[0]
     assert updated_region["mask_url"]
     assert updated_region["layout_data"]["placements"]

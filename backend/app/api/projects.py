@@ -229,7 +229,12 @@ def export(project_id: str, payload: ExportRequest, db: Session = Depends(get_db
             select(ProcessingTask.id).where(
                 ProcessingTask.project_id == project.id,
                 ProcessingTask.status.in_(
-                    [TaskStatus.QUEUED.value, TaskStatus.RUNNING.value, TaskStatus.PAUSED.value]
+                    [
+                        TaskStatus.QUEUED.value,
+                        TaskStatus.RUNNING.value,
+                        TaskStatus.CANCELLING.value,
+                        TaskStatus.PAUSED.value,
+                    ]
                 ),
             )
         )

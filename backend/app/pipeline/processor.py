@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import shutil
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -18,7 +19,7 @@ from app.models import ImagePage, ModelConfig, ProcessingTask, TextRegion, Trans
 from app.models.enums import PageStatus, PipelineStage, TaskStatus
 from app.services.infra.model_manifest import persist_model_settings
 from app.services.infra.model_provisioning import ensure_recommended_config
-from app.services.inpainting import create_text_mask
+from app.services.inpainting import create_text_mask, load_text_mask_source
 from app.services.quality import evaluate_page
 from app.services.regions import save_revision
 from app.services.registry import registry
@@ -50,12 +51,19 @@ class TaskPaused(RuntimeError):
     pass
 
 
+class TaskCancelled(RuntimeError):
+    pass
+
+
 class PipelineProcessor:
     def __init__(self, db: Session) -> None:
         self.db = db
         self.storage = get_storage()
         self.settings = get_settings()
         self._active_task_id: str | None = None
+        self._active_page: ImagePage | None = None
+        self._page_status_before_stage: str | None = None
+        self._last_progress_commit = 0.0
 
     async def execute(self, task_id: str) -> None:
         self._active_task_id = task_id
@@ -67,6 +75,8 @@ class PipelineProcessor:
         )
         if page is None:
             raise ValueError("Task page no longer exists")
+        self._active_page = page
+        self._page_status_before_stage = page.status
         payload = task.payload or {}
         start = str(payload.get("start_stage") or task.task_type or "detection")
         end = str(payload.get("end_stage") or task.task_type or "rendering")
@@ -84,10 +94,15 @@ class PipelineProcessor:
         region_ids = {str(value) for value in raw_region_ids} if isinstance(raw_region_ids, list) and raw_region_ids else None
         for index, stage in enumerate(stages):
             self.db.refresh(task)
+            self._page_status_before_stage = page.status
+            if task.status in {TaskStatus.CANCELLING.value, TaskStatus.CANCELLED.value}:
+                task.status = TaskStatus.CANCELLED.value
+                self._finish_interrupted_page(page)
+                raise TaskCancelled("Task cancelled")
             if task.pause_requested:
                 task.status = TaskStatus.PAUSED.value
                 task.message = f"Paused before {stage}"
-                self.db.commit()
+                self._finish_interrupted_page(page)
                 raise TaskPaused(task.message)
             task.current_stage = stage
             task.message = f"Running {stage}"
@@ -134,6 +149,11 @@ class PipelineProcessor:
                 )
             elif stage == "rendering":
                 self.render(page, payload.get("provider"), region_id=region_id)
+            self.db.refresh(task)
+            if task.status in {TaskStatus.CANCELLING.value, TaskStatus.CANCELLED.value}:
+                task.status = TaskStatus.CANCELLED.value
+                self._finish_interrupted_page(page)
+                raise TaskCancelled("Task cancelled")
             page.status = PAGE_DONE_STATUS[stage]
             task.progress = (index + 1) / len(stages)
             self.db.commit()
@@ -271,9 +291,32 @@ class PipelineProcessor:
         total: int,
         message: str,
     ) -> None:
+        now = time.monotonic()
+        self.db.refresh(task)
+        if task.status in {TaskStatus.CANCELLING.value, TaskStatus.CANCELLED.value}:
+            task.status = TaskStatus.CANCELLED.value
+            if self._active_page is not None:
+                self._finish_interrupted_page(self._active_page)
+            raise TaskCancelled("Task cancelled")
+        if task.pause_requested:
+            task.status = TaskStatus.PAUSED.value
+            task.message = f"Paused during {task.current_stage or 'processing'}"
+            if self._active_page is not None:
+                self._finish_interrupted_page(self._active_page)
+            raise TaskPaused(task.message)
+        # Persist the first visible result and the terminal result immediately,
+        # while batching fast middle-region updates to avoid an fsync per box.
+        if completed not in {0, 1, total} and now - self._last_progress_commit < 0.5:
+            return
         fraction = completed / total if total else 1.0
         task.progress = min(1.0, (stage_index + fraction) / max(1, stage_count))
         task.message = message
+        self.db.commit()
+        self._last_progress_commit = now
+
+    def _finish_interrupted_page(self, page: ImagePage) -> None:
+        page.current_stage = None
+        page.status = self._page_status_before_stage or PageStatus.UPLOADED.value
         self.db.commit()
 
     async def translate(
@@ -354,11 +397,16 @@ class PipelineProcessor:
         self._invalidate_outputs(page, clean=not partial_repair)
         page_directory = self.storage.page_dir(page.project_id, page.id)
         source = self.storage.absolute(page.original_path)
-        for region in self._regions(page, region_id, region_ids):
-            if region.locked and region.pixel_mask_path and not force:
-                continue
-            if region.pixel_mask_path and not force:
-                continue
+        regions = [
+            region
+            for region in self._regions(page, region_id, region_ids)
+            if not (region.pixel_mask_path and not force)
+        ]
+        if not regions:
+            return
+        source_image, source_lab = load_text_mask_source(source)
+        for region in regions:
+            self._check_interruption()
             output = page_directory / "masks" / f"{region.id}.png"
             metadata = create_text_mask(
                 source,
@@ -366,6 +414,8 @@ class PipelineProcessor:
                 output,
                 expand=int(options.get("expand", 2)),
                 color_threshold=float(options.get("color_threshold", 18.0)),
+                source_image=source_image,
+                source_lab=source_lab,
             )
             save_revision(self.db, region, "mask_generated")
             region.pixel_mask_path = self.storage.relative(output)
@@ -425,6 +475,7 @@ class PipelineProcessor:
 
         shutil.copy2(current, final)
         page.clean_path = self.storage.relative(final)
+        self._record_artifact_version(page, "clean", final)
         self.db.flush()
 
     def _inpaint_selected(
@@ -489,6 +540,7 @@ class PipelineProcessor:
 
         shutil.copy2(current, final)
         page.clean_path = self.storage.relative(final)
+        self._record_artifact_version(page, "clean", final)
         self.db.flush()
         source_path.unlink(missing_ok=True)
         mask_path.unlink(missing_ok=True)
@@ -522,6 +574,8 @@ class PipelineProcessor:
                 region.layout_data = {**(region.layout_data or {}), **layout}
         page.rendered_path = self.storage.relative(output)
         page.text_layer_path = self.storage.relative(text_layer)
+        self._record_artifact_version(page, "rendered", output)
+        self._record_artifact_version(page, "text_layer", text_layer)
         self.db.flush()
 
     def _provider(self, kind: str, requested: str | None) -> tuple[Any, str]:
@@ -570,7 +624,41 @@ class PipelineProcessor:
 
     @staticmethod
     def _invalidate_outputs(page: ImagePage, *, clean: bool) -> None:
+        metadata = dict(page.metadata_json or {})
+        versions = dict(metadata.get("artifact_versions", {}))
         if clean:
             page.clean_path = None
+            versions.pop("clean", None)
         page.rendered_path = None
         page.text_layer_path = None
+        versions.pop("rendered", None)
+        versions.pop("text_layer", None)
+        if versions:
+            metadata["artifact_versions"] = versions
+        else:
+            metadata.pop("artifact_versions", None)
+        page.metadata_json = metadata
+
+    @staticmethod
+    def _record_artifact_version(page: ImagePage, artifact: str, path: Path) -> None:
+        metadata = dict(page.metadata_json or {})
+        versions = dict(metadata.get("artifact_versions", {}))
+        versions[artifact] = path.stat().st_mtime_ns
+        page.metadata_json = {**metadata, "artifact_versions": versions}
+
+    def _check_interruption(self) -> None:
+        if not self._active_task_id:
+            return
+        task = self._task(self._active_task_id)
+        self.db.refresh(task)
+        if task.status in {TaskStatus.CANCELLING.value, TaskStatus.CANCELLED.value}:
+            task.status = TaskStatus.CANCELLED.value
+            if self._active_page is not None:
+                self._finish_interrupted_page(self._active_page)
+            raise TaskCancelled("Task cancelled")
+        if task.pause_requested:
+            task.status = TaskStatus.PAUSED.value
+            task.message = f"Paused during {task.current_stage or 'processing'}"
+            if self._active_page is not None:
+                self._finish_interrupted_page(self._active_page)
+            raise TaskPaused(task.message)

@@ -36,6 +36,7 @@ class RegionType(StrEnum):
 class TaskStatus(StrEnum):
     QUEUED = "QUEUED"
     RUNNING = "RUNNING"
+    CANCELLING = "CANCELLING"
     PAUSED = "PAUSED"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"

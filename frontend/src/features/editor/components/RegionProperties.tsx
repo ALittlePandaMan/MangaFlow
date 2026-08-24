@@ -21,7 +21,8 @@ interface Props {
 }
 
 export function RegionProperties({region, selectedRegions, selectedCount, fontOptions, busyAction, onUpdate, onAction}: Props) {
-  const {select, view} = useEditorStore()
+  const select = useEditorStore(state => state.select)
+  const view = useEditorStore(state => state.view)
   const shortcuts = useShortcutStore(state => state.shortcuts)
   const sectionClass = 'border-b border-line-subtle p-4'
   const headingClass = 'mb-3.5 flex items-center gap-2 font-mono text-[11px] font-semibold uppercase leading-none tracking-[1.3px] text-muted before:h-3 before:w-0.5 before:rounded before:bg-accent/70'

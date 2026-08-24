@@ -111,7 +111,13 @@ export const api = {
     }),
   },
   tasks: {
-    list: (projectId?: string) => request<ProcessingTask[]>(`/tasks${projectId ? `?project_id=${projectId}` : ''}`),
+    list: (projectId?: string, imageId?: string) => {
+      const query = new URLSearchParams()
+      if (projectId) query.set('project_id', projectId)
+      if (imageId) query.set('image_id', imageId)
+      const suffix = query.size ? `?${query.toString()}` : ''
+      return request<ProcessingTask[]>(`/tasks${suffix}`)
+    },
     get: (id: string) => request<ProcessingTask>(`/tasks/${id}`),
     action: (id: string, action: 'pause' | 'resume' | 'retry' | 'cancel') => request<ProcessingTask>(`/tasks/${id}/${action}`, { method: 'POST' }),
   },

@@ -19,7 +19,10 @@ const views: {id: ViewMode, label: string, shortcutId: ShortcutId, title?: strin
 ]
 
 export function EditorToolbar({ onUndo, onRedo, canUndo, canRedo, disabled = false, rightActions }: {onUndo: () => void, onRedo: () => void, canUndo: boolean, canRedo: boolean, disabled?: boolean, rightActions?: React.ReactNode}) {
-  const {tool, setTool, view, setView} = useEditorStore()
+  const tool = useEditorStore(state => state.tool)
+  const setTool = useEditorStore(state => state.setTool)
+  const view = useEditorStore(state => state.view)
+  const setView = useEditorStore(state => state.setView)
   const shortcuts = useShortcutStore(state => state.shortcuts)
   const toolButton = 'grid size-8 min-h-8 cursor-pointer place-items-center rounded-lg border border-transparent bg-transparent p-0 text-muted outline-none transition-colors hover:bg-hover hover:text-ink disabled:cursor-not-allowed disabled:opacity-30 focus-visible:ring-2 focus-visible:ring-accent/30'
   return <div className="flex h-12 items-center border-b border-line bg-surface px-4">
@@ -34,7 +37,8 @@ export function EditorToolbar({ onUndo, onRedo, canUndo, canRedo, disabled = fal
 }
 
 export function CanvasZoomControls({disabled = false}: {disabled?: boolean}) {
-  const {zoom, setZoom} = useEditorStore()
+  const zoom = useEditorStore(state => state.zoom)
+  const setZoom = useEditorStore(state => state.setZoom)
   const shortcuts = useShortcutStore(state => state.shortcuts)
   const button = 'grid size-8 min-h-8 cursor-pointer place-items-center rounded-lg border border-transparent bg-transparent p-0 text-secondary outline-none transition-colors hover:bg-hover hover:text-ink disabled:cursor-not-allowed disabled:opacity-30 focus-visible:ring-2 focus-visible:ring-accent/30'
   return <div className="absolute left-3.5 top-3.5 z-20 flex items-center gap-1 rounded-xl border border-line-strong bg-popover p-1 shadow-soft backdrop-blur-xl" aria-label="画布缩放">

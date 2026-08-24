@@ -1,6 +1,6 @@
 import Konva from 'konva'
 import { ChevronDown, Eraser, Languages, Layers3, ScanText, TextCursorInput } from 'lucide-react'
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Circle, Group, Image as KonvaImage, Layer, Line, Rect, Stage, Text } from 'react-konva'
 import type { ImagePage, TextRegion } from '../../../types'
 import {cn} from '../../../ui'
@@ -8,7 +8,7 @@ import {ButtonLoading} from '../../../components/LoadingUI'
 import {formatShortcut, shortcutToAria, useShortcutStore} from '../../shortcuts/store'
 import { useEditorStore } from '../store'
 import { RegionPolygonEditor } from './RegionPolygonEditor'
-import { useImage, versionedImageSource } from '../hooks/useImage'
+import { useImage } from '../hooks/useImage'
 import {isPerspectiveQuad, perspectiveQuadSize, warpCanvasToQuad, type WarpedCanvas} from '../lib/perspectiveText'
 
 interface Props {
@@ -18,6 +18,7 @@ interface Props {
   onUpdate: (id: string, patch: Partial<TextRegion>) => Promise<void>
   onRegionAction: (id: string, action: string, options?: Record<string, unknown>) => void
   runningAction: string | null
+  interactionKey: string
 }
 
 type RenderStyle = {textColor: string, strokeColor: string, strokeWidth: number}
@@ -98,7 +99,7 @@ function ComparisonLabel({x, scale, text}: {x: number, scale: number, text: stri
   </Group>
 }
 
-export function MangaCanvas({ page, regions, onCreate, onUpdate, onRegionAction, runningAction }: Props) {
+function MangaCanvasComponent({ page, regions, onCreate, onUpdate, onRegionAction, runningAction }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const contextMenuRef = useRef<HTMLDivElement>(null)
   const [viewport, setViewport] = useState({width: 800, height: 700})
@@ -116,12 +117,21 @@ export function MangaCanvas({ page, regions, onCreate, onUpdate, onRegionAction,
   const marqueeCandidate = useRef<MarqueeSelection | null>(null)
   const marqueeActive = useRef(false)
   const polygonSubmitting = useRef(false)
-  const originalState = useImage(page.original_url)
-  const cleanSource = page.clean_url ? versionedImageSource(page.clean_url, page.updated_at) : page.original_url
-  const cleanState = useImage(cleanSource)
+  const view = useEditorStore(state => state.view)
+  const tool = useEditorStore(state => state.tool)
+  const zoom = useEditorStore(state => state.zoom)
+  const setZoom = useEditorStore(state => state.setZoom)
+  const selectedIds = useEditorStore(state => state.selectedIds)
+  const select = useEditorStore(state => state.select)
+  const selectMany = useEditorStore(state => state.selectMany)
+  const layers = useEditorStore(state => state.layers)
+  const toggleLayer = useEditorStore(state => state.toggleLayer)
+  const comparison = view === 'comparison'
+  const cleanSource = page.clean_url || page.original_url
+  const originalState = useImage(comparison || layers.original ? page.original_url : null)
+  const cleanState = useImage(comparison || layers.clean ? cleanSource : null)
   const original = originalState.image
   const clean = cleanState.image
-  const { view, tool, zoom, setZoom, selectedIds, select, selectMany, layers, toggleLayer } = useEditorStore()
   const shortcuts = useShortcutStore(state => state.shortcuts)
   const currentView = useRef<ViewTransform>({zoom, pan})
   const targetView = useRef<ViewTransform>({zoom, pan})
@@ -669,6 +679,13 @@ export function MangaCanvas({ page, regions, onCreate, onUpdate, onRegionAction,
     <div className="pointer-events-none absolute bottom-3 right-3 min-w-12 rounded-lg border border-line-strong bg-canvas/90 px-2.5 py-1.5 text-center font-mono text-[11px] font-semibold text-ink shadow-soft backdrop-blur-md">{Math.round(zoom * 100)}%</div>
   </div>
 }
+
+export const MangaCanvas = memo(MangaCanvasComponent, (previous, next) =>
+  previous.page === next.page &&
+  previous.regions === next.regions &&
+  previous.runningAction === next.runningAction &&
+  previous.interactionKey === next.interactionKey
+)
 
 function TranslatedRegions({regions, displayScale}: {regions: TextRegion[], displayScale: number}) {
   return <>{regions.filter(region => region.visible).map(region => {

@@ -8,6 +8,11 @@ import {MangaCanvas} from './MangaCanvas'
 
 type MockNodeProps = {children?: ReactNode}
 
+const {stageRenderMock, useImageMock} = vi.hoisted(() => ({
+  stageRenderMock: vi.fn(),
+  useImageMock: vi.fn((_source: string | null | undefined) => ({image: null, loading: true, error: false})),
+}))
+
 vi.mock('konva', () => {
   class Group {
     add() {}
@@ -25,7 +30,7 @@ vi.mock('react-konva', () => {
   const EmptyNode = () => null
 
   return {
-    Stage: ({children}: MockNodeProps) => <div data-testid="konva-stage">{children}</div>,
+    Stage: ({children}: MockNodeProps) => { stageRenderMock(); return <div data-testid="konva-stage">{children}</div> },
     Layer: Container,
     Group: Container,
     Circle: EmptyNode,
@@ -37,8 +42,7 @@ vi.mock('react-konva', () => {
 })
 
 vi.mock('../hooks/useImage', () => ({
-  useImage: vi.fn(() => ({image: null, loading: true, error: false})),
-  versionedImageSource: (source: string) => source,
+  useImage: useImageMock,
 }))
 
 const page: ImagePage = {
@@ -71,6 +75,8 @@ describe('MangaCanvas image loading', () => {
 
   beforeEach(() => {
     vi.useFakeTimers()
+    stageRenderMock.mockClear()
+    useImageMock.mockClear()
     useEditorStore.setState({
       view: 'translated',
       tool: 'select',
@@ -89,6 +95,7 @@ describe('MangaCanvas image loading', () => {
       onUpdate={vi.fn(async () => undefined)}
       onRegionAction={vi.fn()}
       runningAction={null}
+      interactionKey="translated:select:false:"
     />)
 
     act(() => vi.advanceTimersByTime(250))
@@ -96,5 +103,48 @@ describe('MangaCanvas image loading', () => {
     expect(screen.getByTestId('konva-stage')).toBeInTheDocument()
     expect(screen.queryByText('正在载入画布图片')).not.toBeInTheDocument()
     expect(screen.queryByRole('status', {name: '正在载入画布图片'})).not.toBeInTheDocument()
+    expect(useImageMock.mock.calls.slice(-2).map(([source]) => source)).toEqual([null, '/media/page-clean.png'])
+  })
+
+  it('loads both page artifacts only for comparison view', () => {
+    useEditorStore.setState({
+      view: 'comparison',
+      layers: {original: false, detection: false, clean: false, translated: false},
+    })
+
+    render(<MangaCanvas
+      page={page}
+      regions={[]}
+      onCreate={vi.fn(async () => true)}
+      onUpdate={vi.fn(async () => undefined)}
+      onRegionAction={vi.fn()}
+      runningAction={null}
+      interactionKey="comparison:select:false:"
+    />)
+
+    expect(useImageMock.mock.calls.slice(-2).map(([source]) => source)).toEqual([
+      '/media/page.png',
+      '/media/page-clean.png',
+    ])
+  })
+
+  it('skips expensive canvas reconciliation for unrelated parent updates', () => {
+    const props = {
+      page,
+      regions: [],
+      onCreate: vi.fn(async () => true),
+      onUpdate: vi.fn(async () => undefined),
+      onRegionAction: vi.fn(),
+      runningAction: null,
+      interactionKey: 'translated:select:false:',
+    }
+    const {rerender} = render(<MangaCanvas {...props}/>)
+    const rendered = stageRenderMock.mock.calls.length
+
+    rerender(<MangaCanvas {...props} onCreate={vi.fn(async () => true)} onUpdate={vi.fn(async () => undefined)}/>)
+    expect(stageRenderMock).toHaveBeenCalledTimes(rendered)
+
+    rerender(<MangaCanvas {...props} interactionKey="translated:select:true:"/>)
+    expect(stageRenderMock.mock.calls.length).toBeGreaterThan(rendered)
   })
 })

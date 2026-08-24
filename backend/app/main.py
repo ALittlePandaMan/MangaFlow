@@ -7,6 +7,8 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.responses import Response
+from starlette.types import Scope
 
 from app.api.router import api_router
 from app.core.config import get_settings
@@ -27,6 +29,16 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+
+class VersionedMediaFiles(StaticFiles):
+    """Allow content-versioned artifacts to stay in the browser cache."""
+
+    async def get_response(self, path: str, scope: Scope) -> Response:
+        response = await super().get_response(path, scope)
+        if response.status_code == 200 and b"v=" in scope.get("query_string", b""):
+            response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        return response
 
 
 def provision_models_from_manifest() -> None:
@@ -92,7 +104,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-app.mount("/media", StaticFiles(directory=get_storage().root), name="media")
+app.mount("/media", VersionedMediaFiles(directory=get_storage().root), name="media")
 
 app.include_router(api_router, prefix=settings.api_prefix)
 

@@ -70,6 +70,8 @@ def resume_task(task_id: str, db: Session = Depends(get_db)) -> ProcessingTask:
     task = require_task(db, task_id)
     if task.status != TaskStatus.PAUSED.value:
         raise HTTPException(409, "Only paused tasks can be resumed")
+    if task_manager.is_active(task_id):
+        raise HTTPException(409, "Wait for the paused worker to stop before resuming")
     task.pause_requested = False
     task.status = TaskStatus.QUEUED.value
     task.message = "Queued to resume"
@@ -84,6 +86,8 @@ def retry_task(task_id: str, db: Session = Depends(get_db)) -> ProcessingTask:
     task = require_task(db, task_id)
     if task.status not in {TaskStatus.FAILED.value, TaskStatus.CANCELLED.value}:
         raise HTTPException(409, "Only failed or cancelled tasks can be retried")
+    if task_manager.is_active(task_id):
+        raise HTTPException(409, "Wait for the previous worker to stop before retrying")
     task.status = TaskStatus.QUEUED.value
     task.progress = 0.0
     task.pause_requested = False
@@ -98,10 +102,10 @@ def retry_task(task_id: str, db: Session = Depends(get_db)) -> ProcessingTask:
 @router.post("/tasks/{task_id}/cancel", response_model=TaskRead)
 def cancel_task(task_id: str, db: Session = Depends(get_db)) -> ProcessingTask:
     task = require_task(db, task_id)
-    if task.status in {TaskStatus.COMPLETED.value, TaskStatus.CANCELLED.value}:
+    if task.status in {TaskStatus.COMPLETED.value, TaskStatus.CANCELLING.value, TaskStatus.CANCELLED.value}:
         raise HTTPException(409, f"Cannot cancel a {task.status} task")
-    task.status = TaskStatus.CANCELLED.value
-    task.message = "Cancellation requested"
+    task.status = TaskStatus.CANCELLING.value if task_manager.has_started(task.id) else TaskStatus.CANCELLED.value
+    task.message = "Stopping current work" if task.status == TaskStatus.CANCELLING.value else "Cancelled"
     db.commit()
     task_manager.cancel(task.id)
     db.refresh(task)
@@ -122,7 +126,12 @@ def batch_process(project_id: str, payload: BatchProcessRequest, db: Session = D
             db.scalars(
                 select(ProcessingTask.image_id).where(
                     ProcessingTask.project_id == project_id,
-                    ProcessingTask.status.in_([TaskStatus.QUEUED.value, TaskStatus.RUNNING.value, TaskStatus.PAUSED.value]),
+                    ProcessingTask.status.in_([
+                        TaskStatus.QUEUED.value,
+                        TaskStatus.RUNNING.value,
+                        TaskStatus.CANCELLING.value,
+                        TaskStatus.PAUSED.value,
+                    ]),
                 )
             ).all()
         )

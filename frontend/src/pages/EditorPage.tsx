@@ -1,5 +1,5 @@
 import { Archive, BookOpenText, CheckCircle2, ChevronDown, Download, Eraser, Image as ImageIcon, ImagePlus, Languages, Layers3, RotateCcw, ScanText, TextCursorInput, Trash2, Upload } from 'lucide-react'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useRef, useState } from 'react'
 import type { MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from 'react'
 import { createPortal } from 'react-dom'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
@@ -10,16 +10,16 @@ import { DEFAULT_FONT_FAMILIES } from '../constants/fonts'
 import { CanvasZoomControls, EditorToolbar } from '../features/editor/components/EditorToolbar'
 import { MangaCanvas } from '../features/editor/components/MangaCanvas'
 import { RegionProperties } from '../features/editor/components/RegionProperties'
-import {preloadImage, versionedImageSource} from '../features/editor/hooks/useImage'
+import {preloadImage} from '../features/editor/hooks/useImage'
 import {buildPageWorkflowRequest, pageWorkflowTargetView, type PageWorkflowStage} from '../features/editor/pageWorkflow'
 import { useEditorStore } from '../features/editor/store'
 import {formatShortcut, shortcutForEvent, shortcutToAria, type ShortcutId, useShortcutStore} from '../features/shortcuts/store'
 import { ApiError, api } from '../services/api'
-import type { FontResource, ImagePage, ProcessingTask, Project, TextRegion } from '../types'
+import type { FontResource, ImagePage, ProcessingTask, Project, TextRegion, ViewMode } from '../types'
 import {buttonClass, cn, dangerButtonClass, eyebrowClass, iconButtonClass, primaryButtonClass, scrollbarClass, textareaClass} from '../ui'
 
 type HistoryEntry = {id: string, before: TextRegion, after: TextRegion}
-type PendingChange = {before: TextRegion, patch: Partial<TextRegion>, timer: number, version: number}
+type PendingChange = {pageId: string, before: TextRegion, patch: Partial<TextRegion>, timer: number, version: number}
 type TaskUpdateHandler = (task: ProcessingTask) => void | Promise<void>
 type PageContextMenu = {x: number, y: number, pageId: string}
 type PagePress = {pageId: string, fromIndex: number, overIndex: number, pointerId: number, startX: number, startY: number, active: boolean}
@@ -33,6 +33,76 @@ const EXPORT_OPTIONS: Array<{kind: ExportKind, label: string, detail: string, fo
 ]
 
 const PAGE_DRAG_START_THRESHOLD = 3
+
+function visiblePageSources(page: ImagePage, view: ViewMode, layers: {original: boolean, clean: boolean}) {
+  const cleanSource = page.clean_url || page.original_url
+  if (view === 'comparison') return [...new Set([page.original_url, cleanSource])]
+  const sources: string[] = []
+  if (layers.original) sources.push(page.original_url)
+  if (layers.clean) sources.push(cleanSource)
+  return [...new Set(sources)]
+}
+
+type PageListItemProps = {
+  item: ImagePage
+  index: number
+  selected: boolean
+  dragged: boolean
+  dropDirection: 'before' | 'after' | null
+  activeTask: ProcessingTask | null
+  onActivate: (event: ReactMouseEvent<HTMLButtonElement>, pageId: string) => void
+  onPointerDown: (event: ReactPointerEvent<HTMLButtonElement>, item: ImagePage, index: number) => void
+  onContextMenu: (event: ReactMouseEvent<HTMLButtonElement>, item: ImagePage) => void
+}
+
+const PageListItem = memo(function PageListItem({
+  item,
+  index,
+  selected,
+  dragged,
+  dropDirection,
+  activeTask,
+  onActivate,
+  onPointerDown,
+  onContextMenu,
+}: PageListItemProps) {
+  const state = pageState(item)
+  return <button
+    data-page-id={item.id}
+    data-page-index={index}
+    aria-current={selected ? 'page' : undefined}
+    className={cn(
+      'relative mb-2.5 block w-full cursor-grab touch-pan-y rounded-xl border p-2.5 text-left outline-none transition-[background-color,border-color,opacity,transform,box-shadow,filter] [content-visibility:auto] [contain-intrinsic-size:auto_280px] focus-visible:border-accent/70 focus-visible:ring-2 focus-visible:ring-accent/25 active:cursor-grabbing',
+      selected
+        ? 'border-accent !bg-accent !text-accent-ink [box-shadow:var(--shadow-card-hover)] hover:brightness-105'
+        : 'border-transparent bg-transparent hover:bg-raised',
+      dragged && 'z-10 scale-[1.015] cursor-grabbing bg-raised opacity-70 shadow-panel',
+      dropDirection === 'after' && 'after:absolute after:-bottom-1 after:inset-x-1 after:h-0.5 after:rounded-full after:bg-accent after:shadow-[0_0_8px_var(--color-accent)]',
+      dropDirection === 'before' && 'before:absolute before:-top-1 before:inset-x-1 before:h-0.5 before:rounded-full before:bg-accent before:shadow-[0_0_8px_var(--color-accent)]',
+    )}
+    onPointerDown={event => onPointerDown(event, item, index)}
+    onContextMenu={event => onContextMenu(event, item)}
+    onClick={event => onActivate(event, item.id)}
+  >
+    <div className={cn('relative flex aspect-[3/4] w-full justify-center overflow-hidden bg-transparent transition-shadow', selected && 'ring-1 ring-inset ring-canvas/50')} style={item.width > 0 && item.height > 0 ? {aspectRatio: `${item.width} / ${item.height}`} : undefined}>
+      <img
+        className="pointer-events-none block size-full select-none object-contain"
+        draggable={false}
+        width={item.width}
+        height={item.height}
+        src={item.rendered_url || item.original_url}
+        alt={item.filename}
+        loading={selected ? 'eager' : 'lazy'}
+        decoding="async"
+        fetchPriority={selected ? 'high' : 'low'}
+      />
+      <span className={cn('absolute bottom-1 left-1 bg-canvas px-1 py-0.5 font-mono text-[12px]', selected && 'text-accent')}>{String(index + 1).padStart(2,'0')}</span>
+      {activeTask && <span className="absolute right-1 top-1 grid rounded-full bg-canvas/90 p-1 shadow-panel"><CircularProgress value={activeTask.progress} size={34} label={`${item.filename} 处理进度`}/></span>}
+    </div>
+    <small className={cn('mt-2 block truncate text-[12px]', selected ? 'font-semibold text-accent-ink' : 'text-secondary')} title={item.filename}>{item.filename}</small>
+    <i className={cn('mt-1 block truncate font-mono text-[12px] not-italic', state.emphasized && 'font-semibold', selected ? 'text-accent-ink' : state.className)}>{state.label}</i>
+  </button>
+})
 
 function preserveLocalRegionGeometry(nextRegions: TextRegion[], currentRegions: TextRegion[]) {
   if (!currentRegions.length) return nextRegions
@@ -77,12 +147,15 @@ function samePolygon(first: number[][], second: number[][]) {
 export function EditorPage() {
   const {projectId = '', imageId} = useParams()
   const navigate = useNavigate()
+  const navigateRef = useRef(navigate)
+  navigateRef.current = navigate
   const [searchParams] = useSearchParams()
   const [project, setProject] = useState<Project | null>(null)
   const [pages, setPages] = useState<ImagePage[]>([])
   const [page, setPage] = useState<ImagePage | null>(null)
   const [regions, setRegions] = useState<TextRegion[]>([])
   const [fontResources, setFontResources] = useState<FontResource[]>([])
+  const pagesRef = useRef<ImagePage[]>([])
   const regionsRef = useRef<TextRegion[]>([])
   const regionStateRevision = useRef(0)
   const pageLoadGeneration = useRef(0)
@@ -131,12 +204,24 @@ export function EditorPage() {
   const recoveredTaskId = useRef<string | null>(null)
   const taskSyncVersion = useRef('')
   const shortcutHandlerRef = useRef<(event: KeyboardEvent) => void>(() => undefined)
-  const {selectedIds, select, setTool, setView, tool, view} = useEditorStore()
+  const routeImageIdRef = useRef(imageId)
+  const routeRegionIdRef = useRef(searchParams.get('region'))
+  routeImageIdRef.current = imageId
+  routeRegionIdRef.current = searchParams.get('region')
+  const selectedIds = useEditorStore(state => state.selectedIds)
+  const select = useEditorStore(state => state.select)
+  const setTool = useEditorStore(state => state.setTool)
+  const setView = useEditorStore(state => state.setView)
+  const tool = useEditorStore(state => state.tool)
+  const view = useEditorStore(state => state.view)
+  const layers = useEditorStore(state => state.layers)
   const shortcuts = useShortcutStore(state => state.shortcuts)
   const {confirm: confirmDialog, isOpen: dialogOpen} = useGlobalDialog()
   const {editorTarget} = useAppHeaderSlots()
   const blockingBusy = schedulingProcess || schedulingBatch || resettingPage || uploadingPages || !!deletingPageId || !!updatingPageRecognitionId || reorderingPages || exporting || !!runningRegionAction
   const editorBusy = blockingBusy || switchingPage
+  const editorBusyRef = useRef(editorBusy)
+  editorBusyRef.current = editorBusy
 
   useEffect(() => {
     const handleShortcut = (event: KeyboardEvent) => shortcutHandlerRef.current(event)
@@ -149,18 +234,26 @@ export function EditorPage() {
     regionsRef.current = next
     setRegions(next)
   }, [])
+  useEffect(() => { pagesRef.current = pages }, [pages])
   const refreshPages = useCallback(async () => {
     const next = await api.projects.images(projectId)
+    pagesRef.current = next
     setPages(next)
-    if (page) setPage(next.find(item => item.id === page.id) || page)
+    setPage(current => current ? next.find(item => item.id === current.id) || current : current)
     return next
-  }, [projectId, page?.id])
-  const loadPage = useCallback(async (id: string, preservedSelection?: string | null, preserveGeometry = false) => {
+  }, [projectId])
+  const loadPage = useCallback(async (id: string, preservedSelection?: string | null, preserveGeometry = false, snapshot?: ImagePage) => {
     const generation = ++pageLoadGeneration.current
     const revisionBeforeRequest = regionStateRevision.current
     const samePageBeforeRequest = currentPageId.current === id
-    const [nextPage, nextRegions] = await Promise.all([api.images.get(id), api.images.regions(id)])
-    const editorStore = useEditorStore.getState()
+    const [nextPage, nextRegions] = await Promise.all([
+      snapshot ? Promise.resolve(snapshot) : api.images.get(id),
+      api.images.regions(id),
+    ])
+    // A rapid A → B → C switch should not spend time decoding B after its
+    // network response arrives late, nor let it overwrite C.
+    if (generation !== pageLoadGeneration.current) return nextRegions
+    let editorStore = useEditorStore.getState()
     let initialView = editorStore.view
     // Before the first repair, users are reviewing detector/OCR geometry.
     // Open that workflow on the source frame so dragging a box cannot be
@@ -168,11 +261,9 @@ export function EditorPage() {
     if (!nextPage.clean_url && initialView === 'translated') {
       initialView = 'original'
       editorStore.setView(initialView)
+      editorStore = useEditorStore.getState()
     }
-    const cleanSource = nextPage.clean_url ? versionedImageSource(nextPage.clean_url, nextPage.updated_at) : nextPage.original_url
-    const initialSources = initialView === 'comparison'
-      ? [nextPage.original_url, cleanSource]
-      : [initialView === 'original' ? nextPage.original_url : cleanSource]
+    const initialSources = visiblePageSources(nextPage, initialView, editorStore.layers)
     await Promise.all(initialSources.map(source => preloadImage(source).catch(() => undefined)))
     if (generation !== pageLoadGeneration.current) return nextRegions
     const localStateChanged = samePageBeforeRequest && currentPageId.current === id && revisionBeforeRequest !== regionStateRevision.current
@@ -181,22 +272,20 @@ export function EditorPage() {
       : preserveGeometry ? preserveLocalRegionGeometry(nextRegions, regionsRef.current) : nextRegions
     currentPageId.current = id
     setPage(nextPage); setRegionState(resolvedRegions); setUndoStack([]); setRedoStack([])
-    const target = preservedSelection === undefined ? searchParams.get('region') : preservedSelection
+    const target = preservedSelection === undefined ? routeRegionIdRef.current : preservedSelection
     select(target && resolvedRegions.some(region => region.id === target) ? target : null)
     return resolvedRegions
-  }, [searchParams, select])
+  }, [select, setRegionState])
 
+  // Project metadata, the page index and fonts are stable while navigating
+  // between pages. Load them once per project instead of putting that entire
+  // request group on every image switch's critical path.
   useEffect(() => {
     let disposed = false
-    const initialProjectLoad = loadedProjectId.current !== projectId
-    if (initialProjectLoad) {
-      setLoading(true)
-      setSwitchingPage(false)
-    } else {
-      setSwitchingPage(true)
-      select(null)
-    }
-    const load = async () => {
+    loadedProjectId.current = null
+    setLoading(true)
+    setSwitchingPage(false)
+    const loadProject = async () => {
       try {
         const [nextProject, nextPages, globalFonts, projectFonts] = await Promise.all([
           api.projects.get(projectId),
@@ -205,29 +294,72 @@ export function EditorPage() {
           api.projects.fonts(projectId).catch(() => []),
         ])
         if (disposed) return
-        setProject(nextProject); setPages(nextPages); setContextText(JSON.stringify(nextProject.translation_context || {}, null, 2))
+        pagesRef.current = nextPages
+        setProject(nextProject)
+        setPages(nextPages)
+        setContextText(JSON.stringify(nextProject.translation_context || {}, null, 2))
         setFontResources([...new Map([...projectFonts, ...globalFonts].map(font => [font.name, font])).values()])
-        const target = imageId || nextPages[0]?.id
+        let target = routeImageIdRef.current || nextPages[0]?.id
         if (target) {
-          if (!imageId) navigate(`/projects/${projectId}/editor/${target}`, {replace: true})
-          await loadPage(target)
+          if (!routeImageIdRef.current) navigateRef.current(`/projects/${projectId}/editor/${target}`, {replace: true})
+          while (target && !disposed) {
+            await loadPage(target, undefined, false, nextPages.find(item => item.id === target))
+            const latestTarget = routeImageIdRef.current || nextPages[0]?.id
+            if (!latestTarget || latestTarget === target) break
+            target = latestTarget
+          }
+        } else {
+          currentPageId.current = null
+          setPage(null)
+          setRegionState([])
         }
+        if (!disposed) loadedProjectId.current = projectId
       } catch (reason) {
         if (!disposed) setError(reason instanceof Error ? reason.message : String(reason))
       } finally {
-        if (!disposed) {
-          loadedProjectId.current = projectId
-          if (initialProjectLoad) setLoading(false)
-          else setSwitchingPage(false)
-        }
+        if (!disposed) setLoading(false)
       }
     }
-    void load()
+    void loadProject()
     return () => {
       disposed = true
       pageLoadGeneration.current += 1
     }
-  }, [projectId, imageId])
+  }, [loadPage, projectId, setRegionState])
+
+  // A route-only image change reuses the page snapshot already held by the
+  // sidebar, so the switch normally needs just the regions request and image
+  // decode (which adjacent preloading usually satisfies).
+  useEffect(() => {
+    if (!imageId || loadedProjectId.current !== projectId) return
+    if (currentPageId.current === imageId) {
+      setSwitchingPage(false)
+      return
+    }
+    let disposed = false
+    setSwitchingPage(true)
+    select(null)
+    void loadPage(imageId, undefined, false, pagesRef.current.find(item => item.id === imageId))
+      .catch(reason => { if (!disposed) setError(reason instanceof Error ? reason.message : String(reason)) })
+      .finally(() => { if (!disposed) setSwitchingPage(false) })
+    return () => {
+      disposed = true
+      pageLoadGeneration.current += 1
+    }
+  }, [imageId, loadPage, projectId, select])
+
+  useEffect(() => {
+    if (!page || pages.length < 2) return
+    const index = pages.findIndex(item => item.id === page.id)
+    if (index < 0) return
+    const neighbors = [pages[index - 1], pages[index + 1]].filter((item): item is ImagePage => Boolean(item))
+    const timer = window.setTimeout(() => {
+      for (const neighbor of neighbors) {
+        for (const source of visiblePageSources(neighbor, view, layers)) void preloadImage(source).catch(() => undefined)
+      }
+    }, 80)
+    return () => window.clearTimeout(timer)
+  }, [layers, page?.id, pages, view])
 
   useEffect(() => {
     if (typeof FontFace === 'undefined' || !document.fonts) return
@@ -310,13 +442,17 @@ export function EditorPage() {
         const updated = await api.regions.update(id, change.patch)
         // A slower save must not paint its response over a newer drag that is
         // already visible locally. The queued newer save will apply next.
-        if ((regionEditVersions.current.get(id) || 0) === change.version) {
+        const currentPageMatches = currentPageId.current === change.pageId
+        if (currentPageMatches && (regionEditVersions.current.get(id) || 0) === change.version) {
           setRegionState(regionsRef.current.map(region => region.id === id ? updated : region))
         }
-        setUndoStack(stack => [...stack.slice(-99), {id, before: change.before, after: updated}]); setRedoStack([])
+        if (currentPageMatches) {
+          setUndoStack(stack => [...stack.slice(-99), {id, before: change.before, after: updated}])
+          setRedoStack([])
+        }
         return updated
       } catch (reason) {
-        if ((regionEditVersions.current.get(id) || 0) === change.version) {
+        if (currentPageId.current === change.pageId && (regionEditVersions.current.get(id) || 0) === change.version) {
           setRegionState(regionsRef.current.map(region => region.id === id ? change.before : region))
         }
         setError(reason instanceof Error ? reason.message : String(reason))
@@ -333,7 +469,8 @@ export function EditorPage() {
 
   const updateRegion = async (id: string, patch: Partial<TextRegion>) => {
     const current = regionsRef.current.find(region => region.id === id)
-    if (!current) return
+    const pageId = currentPageId.current
+    if (!current || !pageId) return
     const existing = pending.current.get(id)
     if (existing) window.clearTimeout(existing.timer)
     const before = existing?.before || current
@@ -341,7 +478,7 @@ export function EditorPage() {
     const version = (regionEditVersions.current.get(id) || 0) + 1
     regionEditVersions.current.set(id, version)
     setRegionState(regionsRef.current.map(region => region.id === id ? {...region, ...patch} : region))
-    const change: PendingChange = {before, patch: mergedPatch, timer: 0, version}
+    const change: PendingChange = {pageId, before, patch: mergedPatch, timer: 0, version}
     change.timer = window.setTimeout(() => {void commitPendingRegion(id, change).catch(() => undefined)}, 320)
     pending.current.set(id, change)
   }
@@ -435,7 +572,7 @@ export function EditorPage() {
           lastVersion = version
         }
         if (['COMPLETED','FAILED','CANCELLED'].includes(task.status)) return task
-        await new Promise(resolve => window.setTimeout(resolve, 800))
+        await new Promise(resolve => window.setTimeout(resolve, task.status === 'QUEUED' ? 1600 : 800))
       } catch (reason) {
         const transientGatewayError = reason instanceof ApiError && [502, 503, 504].includes(reason.status)
         const transientNetworkError = reason instanceof TypeError
@@ -450,7 +587,10 @@ export function EditorPage() {
   const syncTaskProgress = useCallback(async (task: ProcessingTask) => {
     setRunningPageTask(task)
     if (!page?.id || task.image_id !== page.id || task.progress <= 0) return
-    const version = `${task.id}:${task.current_stage || ''}:${task.progress}:${task.updated_at}`
+    // OCR may report once per region. The overlay needs every progress value,
+    // but page geometry/artifact snapshots only need refreshing at stage
+    // boundaries; the terminal path performs one final authoritative reload.
+    const version = `${task.id}:${task.current_stage || ''}`
     if (taskSyncVersion.current === version) return
     taskSyncVersion.current = version
     const monitorGeneration = taskMonitorGeneration.current
@@ -474,9 +614,9 @@ export function EditorPage() {
   const refreshAfterTask = async (taskId: string, onUpdate?: TaskUpdateHandler) => {
     const task = await waitForTask(taskId, onUpdate)
     if (!task) return null
-    if (task.status === 'COMPLETED') return {task, region: await reloadCurrent()}
-    else if (task.status === 'FAILED') setError(task.error_message || '处理任务失败')
-    return {task, region: undefined}
+    const region = await reloadCurrent()
+    if (task.status === 'FAILED') setError(task.error_message || '处理任务失败')
+    return {task, region}
   }
 
   useEffect(() => {
@@ -486,9 +626,9 @@ export function EditorPage() {
 
     const recoverActiveTask = async () => {
       try {
-        const tasks = await api.tasks.list(projectId)
+        const tasks = await api.tasks.list(projectId, page.id)
         if (disposed) return
-        const active = tasks.find(task => task.image_id === page.id && ['QUEUED', 'RUNNING'].includes(task.status))
+        const active = tasks.find(task => task.image_id === page.id && ['QUEUED', 'RUNNING', 'CANCELLING'].includes(task.status))
         if (!active || recoveredTaskId.current === active.id) return
         recoveredTaskId.current = active.id
         claimedTaskId = active.id
@@ -706,16 +846,25 @@ export function EditorPage() {
     fileRef.current.click()
   }
 
-  const openPageContextMenu = (event: ReactMouseEvent, item: ImagePage) => {
+  const openPageContextMenu = useCallback((event: ReactMouseEvent, item: ImagePage) => {
     event.preventDefault()
     event.stopPropagation()
-    if (editorBusy || pagePressRef.current?.active) return
+    if (editorBusyRef.current || pagePressRef.current?.active) return
     setPageContextMenu({
       x: Math.max(8, Math.min(event.clientX, window.innerWidth - 190)),
       y: Math.max(8, Math.min(event.clientY, window.innerHeight - 140)),
       pageId: item.id,
     })
-  }
+  }, [])
+
+  const activatePage = useCallback((event: ReactMouseEvent<HTMLButtonElement>, pageId: string) => {
+    if (suppressPageClick.current) {
+      event.preventDefault()
+      event.stopPropagation()
+      return
+    }
+    if (!editorBusyRef.current) navigateRef.current(`/projects/${projectId}/editor/${pageId}`)
+  }, [projectId])
 
   const openImagePickerFromBlank = (event: ReactMouseEvent<HTMLDivElement>) => {
     if ((event.target as HTMLElement).closest('[data-page-id]')) return
@@ -818,8 +967,8 @@ export function EditorPage() {
     }
   }
 
-  const beginPagePress = (event: ReactPointerEvent<HTMLButtonElement>, item: ImagePage, index: number) => {
-    if (editorBusy || !event.isPrimary || event.button !== 0) return
+  const beginPagePress = useCallback((event: ReactPointerEvent<HTMLButtonElement>, item: ImagePage, index: number) => {
+    if (editorBusyRef.current || !event.isPrimary || event.button !== 0) return
     setPageContextMenu(null)
     pagePressRef.current = {
       pageId: item.id,
@@ -830,7 +979,7 @@ export function EditorPage() {
       startY: event.clientY,
       active: false,
     }
-  }
+  }, [])
 
   useEffect(() => {
     const finish = (event?: PointerEvent) => {
@@ -1085,7 +1234,7 @@ export function EditorPage() {
       : schedulingProcess
         ? pageTaskBusyLabel(runningPageTask, runningWorkflowStage)
         : ({ocr: `正在重新 OCR ${selectedScope}…`, translate: `正在重新翻译${selectedScope}…`, inpaint: `正在重新修复${selectedScope}…`, render: `正在重新排版${selectedScope}…`, merge: '正在合并所选区域…', delete: '正在删除所选区域…', visibility: '正在更新区域显示…', create: '正在创建文字区域…'} as Record<string, string>)[runningRegionAction || ''] || '正在处理…'
-  const activePageTask = runningPageTask && ['QUEUED', 'RUNNING'].includes(runningPageTask.status.toUpperCase())
+  const activePageTask = runningPageTask && ['QUEUED', 'RUNNING', 'CANCELLING'].includes(runningPageTask.status.toUpperCase())
     ? runningPageTask
     : null
   const busyProgress = schedulingBatch
@@ -1243,35 +1392,27 @@ export function EditorPage() {
     {showingInitialLoading ? <EditorSkeleton canvasControls={<CanvasZoomControls/>}/> : <div className="grid min-h-0 grid-cols-[200px_minmax(0,1fr)_320px]">
       <aside className="flex min-h-0 flex-col border-r border-line-subtle bg-panel">
         <div className="flex h-12 shrink-0 items-center justify-between border-b border-line-subtle px-3.5 font-mono text-[12px] font-semibold uppercase tracking-[.8px] text-muted"><span>页面</span><button className={cn(buttonClass, '!size-8 !min-h-8 !p-0 border-0 bg-transparent')} disabled={editorBusy} title={`导入图片 (${formatShortcut(shortcuts['page.import'])})`} aria-label="导入图片" aria-keyshortcuts={shortcutToAria(shortcuts['page.import'])} onClick={openImagePicker}>{uploadingPages ? <ButtonLoading compact label="正在导入图片"/> : <ImagePlus aria-hidden="true" size={16}/>}</button></div>
-        <div ref={pageListRef} className={cn('min-h-0 flex-1 overflow-auto p-2.5', scrollbarClass)} onContextMenu={openImagePickerFromBlank}>{pages.map((item, index) => <button
-          key={item.id}
-          data-page-id={item.id}
-          data-page-index={index}
-          aria-current={selectedPageId === item.id ? 'page' : undefined}
-          className={cn(
-            'relative mb-2.5 block w-full cursor-grab touch-pan-y rounded-xl border p-2.5 text-left outline-none transition-[background-color,border-color,opacity,transform,box-shadow,filter] focus-visible:border-accent/70 focus-visible:ring-2 focus-visible:ring-accent/25 active:cursor-grabbing',
-            selectedPageId === item.id
-              ? 'border-accent !bg-accent !text-accent-ink [box-shadow:var(--shadow-card-hover)] hover:brightness-105'
-              : 'border-transparent bg-transparent hover:bg-raised',
-            pageDrag?.pageId === item.id && 'z-10 scale-[1.015] cursor-grabbing bg-raised opacity-70 shadow-panel',
-            pageDrag && pageDrag.overIndex === index && pageDrag.fromIndex !== index && (pageDrag.overIndex > pageDrag.fromIndex
-              ? 'after:absolute after:-bottom-1 after:inset-x-1 after:h-0.5 after:rounded-full after:bg-accent after:shadow-[0_0_8px_var(--color-accent)]'
-              : 'before:absolute before:-top-1 before:inset-x-1 before:h-0.5 before:rounded-full before:bg-accent before:shadow-[0_0_8px_var(--color-accent)]'),
-          )}
-          onPointerDown={event => beginPagePress(event, item, index)}
-          onContextMenu={event => openPageContextMenu(event, item)}
-          onClick={event => {
-            if (suppressPageClick.current) {event.preventDefault(); event.stopPropagation(); return}
-            if (!editorBusy) navigate(`/projects/${projectId}/editor/${item.id}`)
-          }}
-        >
-          <div className={cn('relative flex aspect-[3/4] w-full justify-center overflow-hidden bg-transparent transition-shadow', selectedPageId === item.id && 'ring-1 ring-inset ring-canvas/50')} style={item.width > 0 && item.height > 0 ? {aspectRatio: `${item.width} / ${item.height}`} : undefined}><img className="pointer-events-none block size-full select-none object-contain" draggable={false} width={item.width} height={item.height} src={item.rendered_url || item.original_url} alt={item.filename}/><span className={cn('absolute bottom-1 left-1 bg-canvas px-1 py-0.5 font-mono text-[12px]', selectedPageId === item.id && 'text-accent')}>{String(index + 1).padStart(2,'0')}</span>{activePageTask?.image_id === item.id && <span className="absolute right-1 top-1 grid rounded-full bg-canvas/90 p-1 shadow-panel"><CircularProgress value={activePageTask.progress} size={34} label={`${item.filename} 处理进度`}/></span>}</div>
-          <small className={cn('mt-2 block truncate text-[12px]', selectedPageId === item.id ? 'font-semibold text-accent-ink' : 'text-secondary')} title={item.filename}>{item.filename}</small><i className={cn('mt-1 block truncate font-mono text-[12px] not-italic', pageState(item).emphasized && 'font-semibold', selectedPageId === item.id ? 'text-accent-ink' : pageState(item).className)}>{pageState(item).label}</i>
-        </button>)}
+        <div ref={pageListRef} className={cn('min-h-0 flex-1 overflow-auto p-2.5', scrollbarClass)} onContextMenu={openImagePickerFromBlank}>{pages.map((item, index) => {
+          const dropDirection = pageDrag && pageDrag.overIndex === index && pageDrag.fromIndex !== index
+            ? (pageDrag.overIndex > pageDrag.fromIndex ? 'after' : 'before')
+            : null
+          return <PageListItem
+            key={item.id}
+            item={item}
+            index={index}
+            selected={selectedPageId === item.id}
+            dragged={pageDrag?.pageId === item.id}
+            dropDirection={dropDirection}
+            activeTask={activePageTask?.image_id === item.id ? activePageTask : null}
+            onActivate={activatePage}
+            onPointerDown={beginPagePress}
+            onContextMenu={openPageContextMenu}
+          />
+        })}
         {!pages.length && <div className="flex min-h-full items-center justify-center"><button className={`${buttonClass} min-h-[140px] w-full flex-col border-dashed bg-transparent text-[12px] text-muted`} disabled={editorBusy} onClick={openImagePicker}><Upload size={22}/>导入漫画图片</button></div>}
         </div>
       </aside>
-      <main className="relative min-h-0 min-w-0 bg-canvas bg-[linear-gradient(45deg,var(--color-panel)_25%,transparent_25%),linear-gradient(-45deg,var(--color-panel)_25%,transparent_25%),linear-gradient(45deg,transparent_75%,var(--color-panel)_75%),linear-gradient(-45deg,transparent_75%,var(--color-panel)_75%)] [background-position:0_0,0_10px,10px_-10px,-10px_0] [background-size:20px_20px]">{page ? <MangaCanvas page={page} regions={regions} onCreate={createRegion} onUpdate={updateRegion} onRegionAction={(id, name, options) => {void action(name, options, id)}} runningAction={runningRegionAction}/> : <div className="flex h-full flex-col items-center justify-center text-muted"><ImagePlus size={36}/><h3 className="mb-1 mt-3 text-base text-secondary">导入漫画页面</h3><p className="mb-4 mt-0 text-xs">支持 JPG、PNG 和 WebP，可一次选择多张。</p><button className={`${primaryButtonClass} !min-h-[34px]`} disabled={editorBusy} onClick={openImagePicker}>选择图片</button></div>}<CanvasZoomControls disabled={editorBusy}/></main>
+      <main className="relative min-h-0 min-w-0 bg-canvas bg-[linear-gradient(45deg,var(--color-panel)_25%,transparent_25%),linear-gradient(-45deg,var(--color-panel)_25%,transparent_25%),linear-gradient(45deg,transparent_75%,var(--color-panel)_75%),linear-gradient(-45deg,transparent_75%,var(--color-panel)_75%)] [background-position:0_0,0_10px,10px_-10px,-10px_0] [background-size:20px_20px]">{page ? <MangaCanvas page={page} regions={regions} onCreate={createRegion} onUpdate={updateRegion} onRegionAction={(id, name, options) => {void action(name, options, id)}} runningAction={runningRegionAction} interactionKey={`${view}:${tool}:${editorBusy}:${selectedIds.join(',')}`}/> : <div className="flex h-full flex-col items-center justify-center text-muted"><ImagePlus size={36}/><h3 className="mb-1 mt-3 text-base text-secondary">导入漫画页面</h3><p className="mb-4 mt-0 text-xs">支持 JPG、PNG 和 WebP，可一次选择多张。</p><button className={`${primaryButtonClass} !min-h-[34px]`} disabled={editorBusy} onClick={openImagePicker}>选择图片</button></div>}<CanvasZoomControls disabled={editorBusy}/></main>
       <RegionProperties region={selectedIds.length === 1 ? regions.find(region => region.id === selectedIds[0]) : undefined} selectedRegions={regions.filter(region => selectedIds.includes(region.id))} selectedCount={selectedIds.length} fontOptions={[...DEFAULT_FONT_FAMILIES.map(font => font.name), ...fontResources.map(font => font.name)]} busyAction={runningRegionAction} onUpdate={updateRegion} onAction={action}/>
     </div>}
     {pageContextMenu && createPortal(<div ref={pageContextMenuRef} className="fixed z-[110] w-[182px] overflow-hidden rounded-xl border border-line-strong bg-popover p-1 text-secondary shadow-dialog backdrop-blur-xl" style={{left: pageContextMenu.x, top: pageContextMenu.y}} role="menu" aria-label="图片操作">

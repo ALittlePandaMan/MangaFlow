@@ -41,26 +41,37 @@ def project_read(project: Project) -> ProjectRead:
     cover_page = min(project.pages, key=lambda page: page.order_index, default=None)
     cover_url = get_storage().media_url(cover_page.original_path) if cover_page else None
     if cover_url and cover_page:
-        cover_url = f"{cover_url}?v={int(cover_page.updated_at.timestamp() * 1000)}"
+        cover_url = f"{cover_url}?v={int(cover_page.created_at.timestamp() * 1000)}"
     return result.model_copy(update={"page_count": len(project.pages), "cover_url": cover_url})
 
 
 def image_read(page: ImagePage) -> ImageRead:
     storage = get_storage()
     result = ImageRead.model_validate(page)
-    version = int(page.updated_at.timestamp() * 1000)
+    artifact_versions = (page.metadata_json or {}).get("artifact_versions", {})
 
-    def versioned(path: str | None) -> str | None:
+    def versioned(path: str | None, artifact: str) -> str | None:
         url = storage.media_url(path)
-        return f"{url}?v={version}" if url else None
+        if not url or not path:
+            return None
+        # Original files never change after upload. Generated artifacts record
+        # their own version when written; legacy imports fall back to the page
+        # timestamp without paying for many cross-filesystem stat() calls in a
+        # large project listing.
+        version = (
+            int(page.created_at.timestamp() * 1000)
+            if artifact == "original"
+            else artifact_versions.get(artifact) or int(page.updated_at.timestamp() * 1000)
+        )
+        return f"{url}?v={version}"
 
     return result.model_copy(
         update={
             "ocr_exempt": bool((page.metadata_json or {}).get("ocr_exempt", False)),
-            "original_url": versioned(page.original_path),
-            "clean_url": versioned(page.clean_path),
-            "rendered_url": versioned(page.rendered_path),
-            "text_layer_url": versioned(page.text_layer_path),
+            "original_url": versioned(page.original_path, "original"),
+            "clean_url": versioned(page.clean_path, "clean"),
+            "rendered_url": versioned(page.rendered_path, "rendered"),
+            "text_layer_url": versioned(page.text_layer_path, "text_layer"),
         }
     )
 
