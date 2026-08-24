@@ -36,7 +36,7 @@ class VersionedMediaFiles(StaticFiles):
 
     async def get_response(self, path: str, scope: Scope) -> Response:
         response = await super().get_response(path, scope)
-        if response.status_code == 200 and b"v=" in scope.get("query_string", b""):
+        if response.status_code in {200, 206, 304} and b"v=" in scope.get("query_string", b""):
             response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
         return response
 

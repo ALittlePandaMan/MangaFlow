@@ -36,7 +36,17 @@ def test_image_url_version_changes_only_with_the_artifact(client) -> None:
 
     assert updated["updated_at"] != page["updated_at"]
     assert updated["original_url"] == page["original_url"]
-    assert client.get(updated["original_url"]).headers["cache-control"] == "public, max-age=31536000, immutable"
+    response = client.get(updated["original_url"])
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "public, max-age=31536000, immutable"
+
+    partial = client.get(updated["original_url"], headers={"Range": "bytes=0-9"})
+    assert partial.status_code == 206
+    assert partial.headers["cache-control"] == "public, max-age=31536000, immutable"
+
+    not_modified = client.get(updated["original_url"], headers={"If-None-Match": response.headers["etag"]})
+    assert not_modified.status_code == 304
+    assert not_modified.headers["cache-control"] == "public, max-age=31536000, immutable"
 
 
 def test_project_page_and_region_crud(client) -> None:

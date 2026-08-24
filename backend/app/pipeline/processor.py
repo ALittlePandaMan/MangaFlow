@@ -45,6 +45,14 @@ PAGE_DONE_STATUS = {
     "inpainting": PageStatus.INPAINTED.value,
     "rendering": PageStatus.COMPLETED.value,
 }
+STAGE_PREVIOUS_STATUS = {
+    "detection": PageStatus.UPLOADED.value,
+    "ocr": PageStatus.DETECTED.value,
+    "translation": PageStatus.OCR_DONE.value,
+    "mask": PageStatus.TRANSLATED.value,
+    "inpainting": PageStatus.MASK_GENERATING.value,
+    "rendering": PageStatus.INPAINTED.value,
+}
 
 
 class TaskPaused(RuntimeError):
@@ -63,6 +71,7 @@ class PipelineProcessor:
         self._active_task_id: str | None = None
         self._active_page: ImagePage | None = None
         self._page_status_before_stage: str | None = None
+        self._page_error_before_stage: str | None = None
         self._last_progress_commit = 0.0
 
     async def execute(self, task_id: str) -> None:
@@ -77,6 +86,7 @@ class PipelineProcessor:
             raise ValueError("Task page no longer exists")
         self._active_page = page
         self._page_status_before_stage = page.status
+        self._page_error_before_stage = page.error_message
         payload = task.payload or {}
         start = str(payload.get("start_stage") or task.task_type or "detection")
         end = str(payload.get("end_stage") or task.task_type or "rendering")
@@ -95,8 +105,8 @@ class PipelineProcessor:
         for index, stage in enumerate(stages):
             self.db.refresh(task)
             self._page_status_before_stage = page.status
+            self._page_error_before_stage = page.error_message
             if task.status in {TaskStatus.CANCELLING.value, TaskStatus.CANCELLED.value}:
-                task.status = TaskStatus.CANCELLED.value
                 self._finish_interrupted_page(page)
                 raise TaskCancelled("Task cancelled")
             if task.pause_requested:
@@ -151,12 +161,18 @@ class PipelineProcessor:
                 self.render(page, payload.get("provider"), region_id=region_id)
             self.db.refresh(task)
             if task.status in {TaskStatus.CANCELLING.value, TaskStatus.CANCELLED.value}:
-                task.status = TaskStatus.CANCELLED.value
                 self._finish_interrupted_page(page)
                 raise TaskCancelled("Task cancelled")
             page.status = PAGE_DONE_STATUS[stage]
+            page.current_stage = None
             task.progress = (index + 1) / len(stages)
             self.db.commit()
+            # Close the race where cancellation is committed after the check
+            # above but before the stage-done page state is committed.
+            self.db.refresh(task)
+            if task.status in {TaskStatus.CANCELLING.value, TaskStatus.CANCELLED.value}:
+                self._finish_interrupted_page(page)
+                raise TaskCancelled("Task cancelled")
         failed_tasks = list(
             self.db.scalars(
                 select(ProcessingTask).where(
@@ -277,7 +293,6 @@ class PipelineProcessor:
                 reasons.append("low_ocr_confidence")
             region.review_reasons = sorted(set(reasons))
             region.needs_review = bool(reasons)
-            self.db.flush()
             if progress:
                 progress(completed, total, f"OCR {completed}/{total}")
 
@@ -294,7 +309,6 @@ class PipelineProcessor:
         now = time.monotonic()
         self.db.refresh(task)
         if task.status in {TaskStatus.CANCELLING.value, TaskStatus.CANCELLED.value}:
-            task.status = TaskStatus.CANCELLED.value
             if self._active_page is not None:
                 self._finish_interrupted_page(self._active_page)
             raise TaskCancelled("Task cancelled")
@@ -317,7 +331,20 @@ class PipelineProcessor:
     def _finish_interrupted_page(self, page: ImagePage) -> None:
         page.current_stage = None
         page.status = self._page_status_before_stage or PageStatus.UPLOADED.value
+        page.error_message = self._page_error_before_stage
         self.db.commit()
+
+    def finish_interrupted_page(self) -> None:
+        if self._active_page is not None:
+            self._finish_interrupted_page(self._active_page)
+
+    @staticmethod
+    def stable_status_before(stage: str | None, current_status: str) -> str:
+        """Best-effort recovery when the process lost its stage snapshot."""
+
+        if stage and current_status == PAGE_RUNNING_STATUS.get(stage):
+            return STAGE_PREVIOUS_STATUS[stage]
+        return current_status
 
     async def translate(
         self,
@@ -652,7 +679,6 @@ class PipelineProcessor:
         task = self._task(self._active_task_id)
         self.db.refresh(task)
         if task.status in {TaskStatus.CANCELLING.value, TaskStatus.CANCELLED.value}:
-            task.status = TaskStatus.CANCELLED.value
             if self._active_page is not None:
                 self._finish_interrupted_page(self._active_page)
             raise TaskCancelled("Task cancelled")

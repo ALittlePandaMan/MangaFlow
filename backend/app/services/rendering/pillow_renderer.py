@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from functools import lru_cache
 from math import hypot
 from pathlib import Path
 from typing import Any
@@ -11,14 +10,9 @@ from app.services.base import ProviderCapabilities, Renderer
 from app.services.layout import FontResolver, MangaLayoutEngine
 from app.utils.geometry import order_quadrilateral, perspective_coefficients
 from app.utils.image_metadata import load_rgb_with_metadata, save_png_with_metadata
-from PIL import Image, ImageChops, ImageColor, ImageDraw, ImageFont
+from PIL import Image, ImageChops, ImageColor, ImageDraw
 
 RENDER_OUTPUT_VERSION = 2
-
-
-@lru_cache(maxsize=256)
-def _render_font(path: str, size: int) -> ImageFont.FreeTypeFont:
-    return ImageFont.truetype(path, size)
 
 
 class PillowRenderer(Renderer):
@@ -141,7 +135,10 @@ class PillowRenderer(Renderer):
         stroke_fill = ImageColor.getrgb(render_style["stroke_color"]) + (round(255 * region.opacity),)
         stroke_width = max(0, round(float(render_style["stroke_width"]) * raster_scale))
         for placement in layout.placements:
-            font = _render_font(placement.font_path, max(1, round(placement.font_size * raster_scale)))
+            font = MangaLayoutEngine._font(
+                Path(placement.font_path),
+                max(1, round(placement.font_size * raster_scale)),
+            )
             position = (
                 (placement.x + offset_x) * raster_scale,
                 (placement.y + offset_y) * raster_scale,

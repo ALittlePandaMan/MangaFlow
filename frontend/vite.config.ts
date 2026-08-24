@@ -7,9 +7,11 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      '/api/ws': { target: 'ws://localhost:8000', ws: true },
-      '/api': 'http://localhost:8000',
-      '/media': 'http://localhost:8000',
+      // Avoid Node's IPv6 -> IPv4 fallback delay when Docker only exposes the
+      // backend on IPv4. On Windows, `localhost` added ~250 ms per request.
+      '/api/ws': { target: 'ws://127.0.0.1:8000', ws: true },
+      '/api': 'http://127.0.0.1:8000',
+      '/media': 'http://127.0.0.1:8000',
     },
   },
 })

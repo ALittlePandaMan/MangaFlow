@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from sqlalchemy import select
@@ -92,6 +93,9 @@ def retry_task(task_id: str, db: Session = Depends(get_db)) -> ProcessingTask:
     task.progress = 0.0
     task.pause_requested = False
     task.error_message = None
+    task.current_stage = None
+    task.started_at = None
+    task.finished_at = None
     task.message = "Queued for retry"
     db.commit()
     db.refresh(task)
@@ -104,10 +108,18 @@ def cancel_task(task_id: str, db: Session = Depends(get_db)) -> ProcessingTask:
     task = require_task(db, task_id)
     if task.status in {TaskStatus.COMPLETED.value, TaskStatus.CANCELLING.value, TaskStatus.CANCELLED.value}:
         raise HTTPException(409, f"Cannot cancel a {task.status} task")
-    task.status = TaskStatus.CANCELLING.value if task_manager.has_started(task.id) else TaskStatus.CANCELLED.value
-    task.message = "Stopping current work" if task.status == TaskStatus.CANCELLING.value else "Cancelled"
+    # Publish the cooperative state before touching the in-memory queue. A
+    # worker that wins the start race will now observe CANCELLING, while the
+    # manager atomically decides whether this dispatch had actually started.
+    task.status = TaskStatus.CANCELLING.value
+    task.message = "Stopping current work"
     db.commit()
-    task_manager.cancel(task.id)
+    if not task_manager.cancel(task.id):
+        task.status = TaskStatus.CANCELLED.value
+        task.current_stage = None
+        task.message = "Cancelled"
+        task.finished_at = datetime.now(timezone.utc)
+        db.commit()
     db.refresh(task)
     return task
 

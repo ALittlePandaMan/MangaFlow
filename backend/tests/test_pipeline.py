@@ -197,8 +197,8 @@ def test_ocr_commits_incremental_region_progress(client, monkeypatch) -> None:
 
 
 def test_cancelling_ocr_stops_before_the_next_region(client, monkeypatch) -> None:
-    second_region_started = threading.Event()
-    release_second_region = threading.Event()
+    third_region_started = threading.Event()
+    release_third_region = threading.Event()
 
     class CancelAwareOCR:
         calls = 0
@@ -208,9 +208,9 @@ def test_cancelling_ocr_stops_before_the_next_region(client, monkeypatch) -> Non
 
         def recognize(self, _image_path, _bbox, orientation, _padding) -> OCRResult:
             self.calls += 1
-            if self.calls == 2:
-                second_region_started.set()
-                release_second_region.wait(timeout=5)
+            if self.calls == 3:
+                third_region_started.set()
+                release_third_region.wait(timeout=5)
             return OCRResult(text=f"recognized-{self.calls}", confidence=0.9, orientation=orientation)
 
     fake_ocr = CancelAwareOCR()
@@ -227,7 +227,7 @@ def test_cancelling_ocr_stops_before_the_next_region(client, monkeypatch) -> Non
         f"/api/projects/{project['id']}/images",
         files={"files": ("cancel.png", manga_page(), "image/png")},
     ).json()[0]
-    for index in range(3):
+    for index in range(4):
         client.post(
             f"/api/images/{page['id']}/regions",
             json={"bbox": [50 + index * 80, 80, 60, 140], "reading_order": index + 1},
@@ -238,22 +238,102 @@ def test_cancelling_ocr_stops_before_the_next_region(client, monkeypatch) -> Non
         json={"start_stage": "ocr", "end_stage": "ocr", "force": True, "options": {}},
     ).json()
     try:
-        assert second_region_started.wait(timeout=3)
+        assert third_region_started.wait(timeout=3)
+        cancel_started_at = time.perf_counter()
         cancelled = client.post(f"/api/tasks/{task['id']}/cancel")
+        cancel_duration = time.perf_counter() - cancel_started_at
         assert cancelled.status_code == 200, cancelled.text
-        assert cancelled.json()["status"] == "CANCELLED"
+        assert cancelled.json()["status"] == "CANCELLING"
+        assert cancel_duration < 1.0
+        retry_while_stopping = client.post(f"/api/tasks/{task['id']}/retry")
+        assert retry_while_stopping.status_code == 409
     finally:
-        release_second_region.set()
+        release_third_region.set()
 
     for _ in range(100):
+        cancelled_task = client.get(f"/api/tasks/{task['id']}").json()
         updated_page = client.get(f"/api/images/{page['id']}").json()
-        if updated_page["current_stage"] is None:
+        if cancelled_task["status"] == "CANCELLED" and updated_page["current_stage"] is None:
             break
         time.sleep(0.03)
     regions = client.get(f"/api/images/{page['id']}/regions").json()
+    assert cancelled_task["status"] == "CANCELLED"
+    assert fake_ocr.calls == 3
+    assert [region["source_text"] for region in regions] == [
+        "recognized-1",
+        "recognized-2",
+        "recognized-3",
+        "",
+    ]
+    assert updated_page["status"] == "UPLOADED"
+
+
+def test_queued_cancel_can_be_retried_without_the_old_dispatch_running(client, monkeypatch) -> None:
+    first_inference_started = threading.Event()
+    release_first_inference = threading.Event()
+
+    class QueuedRetryOCR:
+        calls = 0
+
+        def ensure_loaded(self) -> None:
+            return
+
+        def recognize(self, _image_path, _bbox, orientation, _padding) -> OCRResult:
+            self.calls += 1
+            if self.calls == 1:
+                first_inference_started.set()
+                release_first_inference.wait(timeout=5)
+            return OCRResult(text=f"attempt-{self.calls}", confidence=0.95, orientation=orientation)
+
+    fake_ocr = QueuedRetryOCR()
+    original_provider = PipelineProcessor._provider
+
+    def use_queued_retry_ocr(processor, kind, requested):
+        if kind == "ocr":
+            return fake_ocr, "queued-retry-test"
+        return original_provider(processor, kind, requested)
+
+    monkeypatch.setattr(PipelineProcessor, "_provider", use_queued_retry_ocr)
+    project = client.post("/api/projects", json={"name": "queued-cancel-retry"}).json()
+    pages = client.post(
+        f"/api/projects/{project['id']}/images",
+        files=[
+            ("files", ("blocking.png", manga_page(), "image/png")),
+            ("files", ("queued.png", manga_page(), "image/png")),
+        ],
+    ).json()
+    for page in pages:
+        response = client.post(
+            f"/api/images/{page['id']}/regions",
+            json={"bbox": [80, 70, 70, 150], "reading_order": 1},
+        )
+        assert response.status_code == 201, response.text
+
+    blocking_task = client.post(
+        f"/api/images/{pages[0]['id']}/process",
+        json={"start_stage": "ocr", "end_stage": "ocr", "force": True},
+    ).json()
+    assert first_inference_started.wait(timeout=3)
+    queued_task = client.post(
+        f"/api/images/{pages[1]['id']}/process",
+        json={"start_stage": "ocr", "end_stage": "ocr", "force": True},
+    ).json()
+
+    cancelled = client.post(f"/api/tasks/{queued_task['id']}/cancel")
+    assert cancelled.status_code == 200, cancelled.text
+    assert cancelled.json()["status"] == "CANCELLED"
+    retried = client.post(f"/api/tasks/{queued_task['id']}/retry")
+    assert retried.status_code == 202, retried.text
+    assert retried.json()["status"] == "QUEUED"
+
+    release_first_inference.set()
+    blocking_task = wait_for_task(client, blocking_task["id"])
+    retried = wait_for_task(client, queued_task["id"])
+    assert blocking_task["status"] == "COMPLETED", blocking_task
+    assert retried["status"] == "COMPLETED", retried
     assert fake_ocr.calls == 2
-    assert [region["source_text"] for region in regions] == ["recognized-1", "recognized-2", ""]
-    assert updated_page["status"] == "OCR_DONE"
+    queued_regions = client.get(f"/api/images/{pages[1]['id']}/regions").json()
+    assert [region["source_text"] for region in queued_regions] == ["attempt-2"]
 
 
 def test_ocr_process_can_target_multiple_selected_regions(client, monkeypatch) -> None:

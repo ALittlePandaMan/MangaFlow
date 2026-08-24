@@ -34,6 +34,29 @@ const EXPORT_OPTIONS: Array<{kind: ExportKind, label: string, detail: string, fo
 
 const PAGE_DRAG_START_THRESHOLD = 3
 
+type ImageFetchPriorityAttributes = {
+  // React 18 passes standards-compliant lowercase custom attributes through
+  // without the unknown camelCase prop warning emitted for `fetchPriority`.
+  fetchpriority: 'high' | 'low'
+}
+
+function viewNeedsCleanArtifact(view: ViewMode) {
+  return view === 'clean' || view === 'translated'
+}
+
+function viewSourceLayers(view: ViewMode) {
+  return {
+    original: view === 'original',
+    clean: viewNeedsCleanArtifact(view),
+  }
+}
+
+function safePageView(page: ImagePage, currentView: ViewMode, restoreView?: ViewMode | null) {
+  if (!page.clean_url && viewNeedsCleanArtifact(currentView)) return 'original'
+  if (page.clean_url && currentView === 'original' && restoreView && viewNeedsCleanArtifact(restoreView)) return restoreView
+  return currentView
+}
+
 function visiblePageSources(page: ImagePage, view: ViewMode, layers: {original: boolean, clean: boolean}) {
   const cleanSource = page.clean_url || page.original_url
   if (view === 'comparison') return [...new Set([page.original_url, cleanSource])]
@@ -67,6 +90,9 @@ const PageListItem = memo(function PageListItem({
   onContextMenu,
 }: PageListItemProps) {
   const state = pageState(item)
+  const fetchPriorityAttributes = {
+    fetchpriority: selected ? 'high' : 'low',
+  } satisfies ImageFetchPriorityAttributes
   return <button
     data-page-id={item.id}
     data-page-index={index}
@@ -94,7 +120,7 @@ const PageListItem = memo(function PageListItem({
         alt={item.filename}
         loading={selected ? 'eager' : 'lazy'}
         decoding="async"
-        fetchPriority={selected ? 'high' : 'low'}
+        {...fetchPriorityAttributes}
       />
       <span className={cn('absolute bottom-1 left-1 bg-canvas px-1 py-0.5 font-mono text-[12px]', selected && 'text-accent')}>{String(index + 1).padStart(2,'0')}</span>
       {activeTask && <span className="absolute right-1 top-1 grid rounded-full bg-canvas/90 p-1 shadow-panel"><CircularProgress value={activeTask.progress} size={34} label={`${item.filename} 处理进度`}/></span>}
@@ -235,6 +261,12 @@ export function EditorPage() {
     setRegions(next)
   }, [])
   useEffect(() => { pagesRef.current = pages }, [pages])
+  const syncPageState = useCallback((nextPage: ImagePage) => {
+    const nextPages = pagesRef.current.map(item => item.id === nextPage.id ? nextPage : item)
+    pagesRef.current = nextPages
+    setPages(nextPages)
+    setPage(nextPage)
+  }, [])
   const refreshPages = useCallback(async () => {
     const next = await api.projects.images(projectId)
     pagesRef.current = next
@@ -246,6 +278,10 @@ export function EditorPage() {
     const generation = ++pageLoadGeneration.current
     const revisionBeforeRequest = regionStateRevision.current
     const samePageBeforeRequest = currentPageId.current === id
+    // Keep the project-list snapshot on the critical path while starting the
+    // authoritative request immediately. A failed background check is merely
+    // a cache miss: the already-visible snapshot remains usable.
+    const authoritativePage = snapshot ? api.images.get(id).catch(() => null) : null
     const [nextPage, nextRegions] = await Promise.all([
       snapshot ? Promise.resolve(snapshot) : api.images.get(id),
       api.images.regions(id),
@@ -254,12 +290,13 @@ export function EditorPage() {
     // network response arrives late, nor let it overwrite C.
     if (generation !== pageLoadGeneration.current) return nextRegions
     let editorStore = useEditorStore.getState()
-    let initialView = editorStore.view
+    const requestedView = editorStore.view
+    const initialView = safePageView(nextPage, requestedView)
+    const restoreView = initialView === requestedView ? null : requestedView
     // Before the first repair, users are reviewing detector/OCR geometry.
     // Open that workflow on the source frame so dragging a box cannot be
     // mistaken for editing the independent translated layout frame.
-    if (!nextPage.clean_url && initialView === 'translated') {
-      initialView = 'original'
+    if (initialView !== requestedView) {
       editorStore.setView(initialView)
       editorStore = useEditorStore.getState()
     }
@@ -271,11 +308,39 @@ export function EditorPage() {
       ? reconcileRegionSnapshot(nextRegions, regionsRef.current)
       : preserveGeometry ? preserveLocalRegionGeometry(nextRegions, regionsRef.current) : nextRegions
     currentPageId.current = id
-    setPage(nextPage); setRegionState(resolvedRegions); setUndoStack([]); setRedoStack([])
+    syncPageState(nextPage); setRegionState(resolvedRegions); setUndoStack([]); setRedoStack([])
     const target = preservedSelection === undefined ? routeRegionIdRef.current : preservedSelection
     select(target && resolvedRegions.some(region => region.id === target) ? target : null)
+
+    if (authoritativePage) {
+      void authoritativePage.then(async freshPage => {
+        const isCurrent = () => generation === pageLoadGeneration.current && currentPageId.current === id
+        if (!freshPage || freshPage.id !== id || !isCurrent()) return
+
+        // The user may change views while the authority request or image decode
+        // is in flight. Repeat until the resources prepared for the fresh page
+        // are still the ones visible at the instant it is committed.
+        let preparedSources: string[] | null = null
+        while (isCurrent()) {
+          const latestStore = useEditorStore.getState()
+          const freshView = safePageView(freshPage, latestStore.view, restoreView)
+          const sourceLayers = freshView === latestStore.view ? latestStore.layers : viewSourceLayers(freshView)
+          const freshSources = visiblePageSources(freshPage, freshView, sourceLayers)
+          const sourcesArePrepared = preparedSources !== null &&
+            preparedSources.length === freshSources.length &&
+            preparedSources.every((source, index) => source === freshSources[index])
+          if (sourcesArePrepared) {
+            if (freshView !== latestStore.view) latestStore.setView(freshView)
+            syncPageState(freshPage)
+            return
+          }
+          await Promise.all(freshSources.map(source => preloadImage(source).catch(() => undefined)))
+          preparedSources = freshSources
+        }
+      })
+    }
     return resolvedRegions
-  }, [select, setRegionState])
+  }, [select, setRegionState, syncPageState])
 
   // Project metadata, the page index and fonts are stable while navigating
   // between pages. Load them once per project instead of putting that entire
@@ -599,8 +664,7 @@ export function EditorPage() {
     const selectedId = useEditorStore.getState().selectedIds[0] || null
     const [nextPage, nextRegions] = await Promise.all([api.images.get(requestedPageId), api.images.regions(requestedPageId)])
     if (monitorGeneration !== taskMonitorGeneration.current || nextPage.id !== requestedPageId) return
-    setPage(nextPage)
-    setPages(current => current.map(item => item.id === nextPage.id ? nextPage : item))
+    syncPageState(nextPage)
     // A region may be created or edited while this refresh is in flight. Do
     // not let an older response replace that newer local state; the next task
     // update (or final reload) will fetch an authoritative list again.
@@ -609,7 +673,7 @@ export function EditorPage() {
       setRegionState(resolvedRegions)
       if (selectedId && !resolvedRegions.some(region => region.id === selectedId)) select(null)
     }
-  }, [page?.id, select])
+  }, [page?.id, select, syncPageState])
 
   const refreshAfterTask = async (taskId: string, onUpdate?: TaskUpdateHandler) => {
     const task = await waitForTask(taskId, onUpdate)
