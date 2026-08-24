@@ -1,8 +1,9 @@
 import { BookOpen, Boxes, Check, CircleAlert, LockKeyhole, RefreshCw, Settings, Sparkles } from 'lucide-react'
 import { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react'
-import { NavLink, Outlet, useLocation } from 'react-router-dom'
+import { NavLink, Outlet } from 'react-router-dom'
 import { useGlobalDialog } from './GlobalDialog'
 import { PageLoader } from './LoadingUI'
+import {ThemeToggle} from './ThemeToggle'
 import { RecommendedConfigurationWizard } from '../pages/SettingsPage'
 import { api } from '../services/api'
 import type { FontResource, ModelConfiguration, ModelDescriptor, SetupStatus } from '../types'
@@ -20,8 +21,6 @@ export function useAppHeaderSlots(): AppHeaderSlots {
 }
 
 export function AppShell() {
-  const location = useLocation()
-  const editorActive = location.pathname.includes('/editor')
   const [editorTarget, setEditorTarget] = useState<HTMLDivElement | null>(null)
   const [setup, setSetup] = useState<SetupStatus | null>(null)
   const [available, setAvailable] = useState<ModelDescriptor[]>([])
@@ -49,7 +48,7 @@ export function AppShell() {
     <div className={cn('h-full pt-14', scrollbarClass)}>
       <header className="fixed inset-x-0 top-0 z-50 flex h-14 items-center border-b border-line-subtle bg-canvas px-5">
         <NavLink to="/projects" className="flex w-[260px] items-center gap-3 text-inherit no-underline" aria-label="MangaFlow 首页">
-          <span className="grid size-8 place-items-center rounded-md bg-accent text-[17px] font-bold text-[#06241c]">漫</span>
+          <span className="grid size-8 place-items-center rounded-md bg-accent text-[17px] font-bold text-accent-ink">漫</span>
           <span className="flex flex-col leading-none"><strong className="text-[16px] font-bold leading-tight tracking-[.2px]">MangaFlow</strong><small className="mt-1 flex items-center gap-1.5 font-mono text-[9px] font-medium leading-[1.4] tracking-[1.4px] text-muted"><span>AI LETTERING STUDIO</span><span className="tracking-normal text-accent/80">v{packageMetadata.version}</span></small></span>
         </NavLink>
         <nav className="absolute left-1/2 top-0 flex h-full -translate-x-1/2 items-center gap-1">
@@ -57,7 +56,7 @@ export function AppShell() {
           <NavLink to="/settings" className={({isActive}) => cn('flex h-[38px] items-center gap-2 rounded-lg px-4 text-xs font-semibold text-secondary no-underline transition-colors hover:bg-raised hover:text-ink', isActive && 'bg-raised text-ink')}><Settings size={17} />设置</NavLink>
         </nav>
         <div className="ml-3 flex h-full min-w-0 flex-1 items-center gap-3" ref={setEditorTarget}/>
-        {!editorActive && <div className="ml-auto flex items-center gap-2 font-mono text-[11px] text-muted"><span className="size-[7px] rounded-full bg-accent shadow-[0_0_8px_var(--color-accent)]" /> 本地工作区</div>}
+        <ThemeToggle/>
       </header>
       <main className="h-full"><Outlet /></main>
     </div>

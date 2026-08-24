@@ -76,7 +76,7 @@ export function SkeletonBlock({className}: {className?: string}) {
 export function PageLoader({label = '正在打开 MangaFlow', detail = '正在准备工作区与核心资源'}: {label?: string, detail?: string}) {
   return <div className="relative grid h-full min-h-[520px] place-items-center overflow-hidden bg-app" role="status" aria-live="polite" aria-label={label}>
     <div className="absolute inset-0 opacity-25 [background-image:radial-gradient(circle_at_50%_38%,rgb(16_211_163/.18),transparent_30%),linear-gradient(rgb(255_255_255/.025)_1px,transparent_1px),linear-gradient(90deg,rgb(255_255_255/.025)_1px,transparent_1px)] [background-size:auto,36px_36px,36px_36px]"/>
-    <div className="relative flex w-[min(360px,calc(100%-48px))] flex-col items-center text-center"><span className="loading-page-mark grid size-14 place-items-center rounded-2xl bg-accent text-2xl font-extrabold text-[#06241c] shadow-[0_0_36px_rgb(16_211_163/.2)]">漫</span><strong className="mt-5 text-sm tracking-[.2px] text-ink">{label}</strong><small className="mt-2 text-[10px] leading-relaxed text-muted">{detail}</small><IndeterminateProgress className="mt-5 w-full"/></div>
+    <div className="relative flex w-[min(360px,calc(100%-48px))] flex-col items-center text-center"><span className="loading-page-mark grid size-14 place-items-center rounded-2xl bg-accent text-2xl font-extrabold text-accent-ink shadow-[0_0_36px_rgb(16_211_163/.2)]">漫</span><strong className="mt-5 text-sm tracking-[.2px] text-ink">{label}</strong><small className="mt-2 text-[10px] leading-relaxed text-muted">{detail}</small><IndeterminateProgress className="mt-5 w-full"/></div>
   </div>
 }
 

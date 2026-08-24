@@ -1,9 +1,24 @@
 <!doctype html>
-<html lang="zh-CN" class="h-full min-w-[1080px] overflow-hidden bg-app font-sans text-ink scheme-dark selection:bg-accent selection:text-[#06241c]">
+<html lang="zh-CN" class="h-full min-w-[1080px] overflow-hidden bg-app font-sans text-ink selection:bg-accent selection:text-accent-ink">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#11110f" />
+    <script>
+      (() => {
+        const key = 'mangaflow.theme'
+        let mode = 'system'
+        try {
+          const stored = localStorage.getItem(key)
+          if (stored === 'light' || stored === 'dark' || stored === 'system') mode = stored
+        } catch {}
+        const systemDark = matchMedia('(prefers-color-scheme: dark)').matches
+        const resolved = mode === 'system' ? (systemDark ? 'dark' : 'light') : mode
+        document.documentElement.dataset.theme = resolved
+        document.documentElement.dataset.themeMode = mode
+        document.querySelector('meta[name="theme-color"]').content = resolved === 'dark' ? '#111310' : '#ecefe9'
+      })()
+    </script>
     <title>MangaFlow</title>
   </head>
   <body class="m-0 h-full overflow-hidden text-sm leading-normal antialiased">

@@ -164,7 +164,7 @@ export function GlobalDialogProvider({children}: {children: ReactNode}) {
 
   return <GlobalDialogContext.Provider value={api}>
     {children}
-    {active && createPortal(<div className="fixed inset-0 z-[200] grid animate-[dialog-backdrop-in_.16s_ease-out] place-items-center bg-[rgb(7_9_8/.76)] p-6 backdrop-blur-md" onMouseDown={event => {
+    {active && createPortal(<div className="fixed inset-0 z-[200] grid animate-[dialog-backdrop-in_.16s_ease-out] place-items-center bg-overlay p-6 backdrop-blur-md" onMouseDown={event => {
       if (event.target === event.currentTarget && (active.mode !== 'content' || active.options.dismissible)) close(false, active.id)
     }}>
       <div ref={dialogRef} className={cn('relative max-h-[calc(100vh-48px)] animate-[dialog-card-in_.2s_cubic-bezier(.2,.8,.2,1)] overflow-hidden rounded-2xl bg-surface text-ink shadow-dialog', active.mode === 'content' ? cn('flex w-[min(620px,calc(100vw-48px))] flex-col', active.options.size === 'small' && 'w-[min(420px,calc(100vw-48px))]', active.options.size === 'large' && 'w-[min(760px,calc(100vw-48px))]', active.options.size === 'xlarge' && 'w-[min(960px,calc(100vw-48px))]') : 'w-[min(440px,calc(100vw-48px))]')} role={active.mode === 'alert' ? 'alertdialog' : 'dialog'} aria-modal="true" aria-labelledby="global-dialog-title" aria-describedby={active.mode === 'content' ? active.options.description ? 'global-dialog-description' : undefined : 'global-dialog-message'}>
