@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/ALittlePandaMan/MangaFlow/actions/workflows/ci.yml/badge.svg)](https://github.com/ALittlePandaMan/MangaFlow/actions/workflows/ci.yml)
 
-当前版本：`v0.1.1`
+当前版本：`v0.1.2`
 
 MangaFlow 是一个面向日本漫画的非破坏式 AI 翻译与嵌字工作台。它把文字检测、OCR、上下文翻译、文字分割、背景修复、横/竖排版、人工精修和批量导出串成可恢复流水线。原图始终只读，Mask、净图、透明文字层和最终译图分别保存。
 
