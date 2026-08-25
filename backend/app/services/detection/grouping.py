@@ -16,12 +16,17 @@ def group_text_regions_by_bubbles(
     bubbles: list[BubbleInstance],
     *,
     page_key: str = "",
+    image_path: Path | None = None,
     min_bubble_confidence: float = 0.35,
     min_containment: float = 0.55,
     min_core_containment: float = 0.8,
     ambiguity_margin: float = 0.12,
     max_second_containment: float = 0.45,
     mask_padding: int = 3,
+    split_connected_instances: bool = True,
+    split_max_neck_ratio: float = 0.22,
+    split_min_boundary_coverage: float = 0.7,
+    split_min_boundary_run: float = 0.65,
 ) -> list[DetectionResult]:
     """Assign text polygons to balloon instances and merge only equal IDs.
 
@@ -48,7 +53,34 @@ def group_text_regions_by_bubbles(
             order.append(key)
             grouped[key] = []
         grouped[key].append((index, region))
-    return [_merge_balloon_group(grouped[key]) for key in order]
+
+    if split_connected_instances:
+        if not 0 <= split_max_neck_ratio <= 0.5:
+            raise ValueError("split_max_neck_ratio must be between 0 and 0.5")
+        if not 0 <= split_min_boundary_coverage <= 1 or not 0 <= split_min_boundary_run <= 1:
+            raise ValueError("boundary split thresholds must be between 0 and 1")
+
+    image = None
+    if split_connected_instances and image_path is not None and image_path.is_file():
+        image = cv2.imread(str(image_path), cv2.IMREAD_GRAYSCALE)
+    bubbles_by_id = {_stable_bubble_id(page_key, bubble): bubble for bubble in bubbles}
+    output: list[DetectionResult] = []
+    for key in order:
+        group = grouped[key]
+        split_groups = [group]
+        bubble = bubbles_by_id.get(key)
+        if split_connected_instances and bubble is not None and len(group) > 1:
+            split_groups = _split_connected_balloon_group(
+                group,
+                bubble,
+                page_key=page_key,
+                image=image,
+                max_neck_ratio=split_max_neck_ratio,
+                min_boundary_coverage=split_min_boundary_coverage,
+                min_boundary_run=split_min_boundary_run,
+            )
+        output.extend(_merge_balloon_group(item) for item in split_groups)
+    return output
 
 
 def assign_text_to_bubbles(
@@ -205,6 +237,486 @@ def _with_balloon_assignment(
     )
 
 
+def _split_connected_balloon_group(
+    group: list[tuple[int, DetectionResult]],
+    bubble: BubbleInstance,
+    *,
+    page_key: str,
+    image: np.ndarray | None,
+    max_neck_ratio: float,
+    min_boundary_coverage: float,
+    min_boundary_run: float,
+) -> list[list[tuple[int, DetectionResult]]]:
+    """Split a model instance only when topology or its visible outline proves it contains two balloons."""
+
+    parent_bubble_id = group[0][1].bubble_id
+    if parent_bubble_id is None:
+        return [group]
+
+    neck_split = _split_group_at_mask_neck(group, bubble, max_neck_ratio=max_neck_ratio)
+    if neck_split is not None:
+        groups, details = neck_split
+        return _tag_balloon_subgroups(
+            groups,
+            page_key=page_key,
+            parent_bubble_id=parent_bubble_id,
+            method="mask_neck",
+            details=details,
+        )
+
+    boundary_split = _split_group_at_visible_boundary(
+        group,
+        bubble,
+        image=image,
+        min_boundary_coverage=min_boundary_coverage,
+        min_boundary_run=min_boundary_run,
+    )
+    if boundary_split is None:
+        return [group]
+    groups, details = boundary_split
+    return _tag_balloon_subgroups(
+        groups,
+        page_key=page_key,
+        parent_bubble_id=parent_bubble_id,
+        method="text_gap_boundary",
+        details=details,
+    )
+
+
+def _split_group_at_mask_neck(
+    group: list[tuple[int, DetectionResult]],
+    bubble: BubbleInstance,
+    *,
+    max_neck_ratio: float,
+) -> tuple[list[list[tuple[int, DetectionResult]]], dict[str, object]] | None:
+    """Find narrow bridges while ignoring mask lobes that contain no detected text."""
+
+    if max_neck_ratio <= 0 or bubble.mask.size == 0:
+        return None
+    mask = (bubble.mask > 0).astype(np.uint8)
+    # Compact masks can touch every crop edge (and synthetic rectangular masks
+    # can contain no zero pixel at all). Padding supplies the outside background
+    # that OpenCV's distance transform requires for finite edge distances.
+    padded_mask = np.pad(mask, 1, mode="constant")
+    distance = cv2.distanceTransform(padded_mask, cv2.DIST_L2, 5)[1:-1, 1:-1]
+    peak_radius = float(distance.max())
+    max_radius = int(np.floor(peak_radius * max_neck_ratio))
+    if max_radius < 2:
+        return None
+
+    minimum_component_area = max(24, int(np.count_nonzero(mask) * 0.08))
+    origin = np.asarray(bubble.mask_origin, dtype=np.float64)
+    for radius in range(2, max_radius + 1):
+        eroded = (distance > radius).astype(np.uint8)
+        component_count, labels, stats, _ = cv2.connectedComponentsWithStats(eroded, 8)
+        meaningful_labels = {
+            label
+            for label in range(1, component_count)
+            if int(stats[label, cv2.CC_STAT_AREA]) >= minimum_component_area
+        }
+        if len(meaningful_labels) < 2:
+            continue
+
+        members_by_label: dict[int, list[tuple[int, DetectionResult]]] = {}
+        uncertain = False
+        for item in group:
+            region = item[1]
+            center = _polygon_centroid(region.polygon)
+            core_points = np.asarray(_scale_polygon(region.polygon, center, 0.7), dtype=np.float64) - origin
+            core_mask = np.zeros_like(mask)
+            cv2.fillPoly(core_mask, [np.rint(core_points).astype(np.int32)], 1)
+            values = labels[core_mask > 0]
+            original_core_area = int(np.count_nonzero((core_mask > 0) & (mask > 0)))
+            counts = {
+                label: int(np.count_nonzero(values == label))
+                for label in meaningful_labels
+                if np.any(values == label)
+            }
+            total = sum(counts.values())
+            if not counts or total <= 0 or original_core_area <= 0:
+                uncertain = True
+                break
+            best_label, best_count = max(counts.items(), key=lambda item: item[1])
+            if best_count / total < 0.8 or best_count / original_core_area < 0.4:
+                uncertain = True
+                break
+            members_by_label.setdefault(best_label, []).append(item)
+        if uncertain or len(members_by_label) < 2:
+            continue
+
+        groups = sorted(members_by_label.values(), key=lambda members: min(index for index, _ in members))
+        return groups, {
+            "erosion_radius": radius,
+            "neck_ratio": round(radius / peak_radius, 4),
+        }
+    return None
+
+
+def _split_group_at_visible_boundary(
+    group: list[tuple[int, DetectionResult]],
+    bubble: BubbleInstance,
+    *,
+    image: np.ndarray | None,
+    min_boundary_coverage: float,
+    min_boundary_run: float,
+) -> tuple[list[list[tuple[int, DetectionResult]]], dict[str, object]] | None:
+    """Confirm a text-layout cut with a dark path aligned to the instance outline."""
+
+    if image is None or len(group) < 2:
+        return None
+    orientation_counts: dict[str, int] = {}
+    for _, region in group:
+        orientation_counts[region.orientation] = orientation_counts.get(region.orientation, 0) + 1
+    orientation = max(orientation_counts, key=orientation_counts.get)
+    dominant = [item for item in group if item[1].orientation == orientation]
+    if orientation not in {"vertical", "horizontal"} or len(dominant) / len(group) < 0.8:
+        return None
+
+    evidence_maps = _bubble_boundary_evidence(image, bubble, [region for _, region in group])
+    if evidence_maps is None:
+        return None
+    boundary_evidence, internal_evidence, boundary_support, mask_support = evidence_maps
+
+    def geometry(region: DetectionResult) -> tuple[float, float, float, float, float, float]:
+        x, y, width, height = region.bbox
+        if orientation == "vertical":
+            return x, x + width, y, y + height, width, height
+        return y, y + height, x, x + width, height, width
+
+    ordered = sorted(dominant, key=lambda item: sum(geometry(item[1])[:2]) / 2)
+    short_side = float(np.median([geometry(region)[4] for _, region in ordered]))
+    long_side = float(np.median([geometry(region)[5] for _, region in ordered]))
+    minimum_gap = max(2.0, short_side * 0.04)
+    minimum_cap = max(12.0, long_side * 0.2)
+    half_width = max(4.0, short_side * 0.2)
+    accepted: list[dict[str, object]] = []
+
+    for cut_index in range(1, len(ordered)):
+        first, second = ordered[:cut_index], ordered[cut_index:]
+        first_edge = max(geometry(region)[1] for _, region in first)
+        second_edge = min(geometry(region)[0] for _, region in second)
+        gap = second_edge - first_edge
+        if gap < minimum_gap:
+            continue
+
+        first_lead = float(np.median([geometry(region)[2] for _, region in first]))
+        second_lead = float(np.median([geometry(region)[2] for _, region in second]))
+        first_trail = float(np.median([geometry(region)[3] for _, region in first]))
+        second_trail = float(np.median([geometry(region)[3] for _, region in second]))
+        leading_cap = (min(first_lead, second_lead), max(first_lead, second_lead))
+        trailing_cap = (min(first_trail, second_trail), max(first_trail, second_trail))
+        if leading_cap[1] - leading_cap[0] >= trailing_cap[1] - trailing_cap[0]:
+            cap_kind, cap = "leading", leading_cap
+        else:
+            cap_kind, cap = "trailing", trailing_cap
+        cap_length = cap[1] - cap[0]
+        if cap_length < minimum_cap:
+            continue
+
+        cut = (first_edge + second_edge) / 2
+        coverage, run = _boundary_path_metrics(
+            boundary_evidence,
+            bubble,
+            orientation=orientation,
+            cut=cut,
+            cap=cap,
+            half_width=half_width,
+        )
+        boundary_source = "mask_boundary"
+        if coverage < min_boundary_coverage or run < min_boundary_run:
+            coverage, run = _anchored_internal_path_metrics(
+                internal_evidence,
+                boundary_support,
+                mask_support,
+                bubble,
+                orientation=orientation,
+                cut=cut,
+                cap=cap,
+                cap_kind=cap_kind,
+                half_width=half_width,
+            )
+            boundary_source = "anchored_internal_line"
+            if coverage < max(0.9, min_boundary_coverage) or run < max(0.85, min_boundary_run):
+                continue
+        accepted.append(
+            {
+                "cut": round(cut, 3),
+                "gap": round(gap, 3),
+                "cap_length": round(cap_length, 3),
+                "boundary_coverage": round(coverage, 4),
+                "boundary_run": round(run, 4),
+                "boundary_source": boundary_source,
+            }
+        )
+
+    if not accepted:
+        return None
+
+    cuts = sorted(float(item["cut"]) for item in accepted)
+    groups_by_bucket: dict[int, list[tuple[int, DetectionResult]]] = {}
+    for item in group:
+        region = item[1]
+        axis_start, axis_end = geometry(region)[:2]
+        axis_center = (axis_start + axis_end) / 2
+        bucket = sum(axis_center > cut for cut in cuts)
+        groups_by_bucket.setdefault(bucket, []).append(item)
+    if len(groups_by_bucket) < 2:
+        return None
+    groups = sorted(groups_by_bucket.values(), key=lambda members: min(index for index, _ in members))
+    return groups, {"orientation": orientation, "cuts": accepted}
+
+
+def _bubble_boundary_evidence(
+    image: np.ndarray,
+    bubble: BubbleInstance,
+    regions: list[DetectionResult],
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None:
+    origin_x, origin_y = bubble.mask_origin
+    height, width = bubble.mask.shape
+    if (
+        origin_x < 0
+        or origin_y < 0
+        or origin_x + width > image.shape[1]
+        or origin_y + height > image.shape[0]
+    ):
+        return None
+    crop = image[origin_y : origin_y + height, origin_x : origin_x + width]
+    mask = (bubble.mask > 0).astype(np.uint8)
+    # Padding makes crop edges real mask edges even when the compact mask is
+    # completely filled. Without it, OpenCV treats an all-one crop as having
+    # no outside boundary at all.
+    padded_mask = np.pad(mask, 2, mode="constant")
+    dilated = cv2.dilate(padded_mask, np.ones((3, 3), dtype=np.uint8))[2:-2, 2:-2]
+    eroded = cv2.erode(padded_mask, np.ones((5, 5), dtype=np.uint8))[2:-2, 2:-2]
+    boundary = (dilated > 0) & (eroded == 0)
+
+    text_core = np.zeros_like(mask)
+    origin = np.asarray((origin_x, origin_y), dtype=np.float64)
+    for region in regions:
+        center = _polygon_centroid(region.polygon)
+        points = np.asarray(_scale_polygon(region.polygon, center, 0.7), dtype=np.float64) - origin
+        cv2.fillPoly(text_core, [np.rint(points).astype(np.int32)], 1)
+    ink = (crop < 180) & (text_core == 0)
+    return (
+        (ink & boundary).astype(np.uint8),
+        (ink & (dilated > 0)).astype(np.uint8),
+        boundary.astype(np.uint8),
+        (dilated > 0).astype(np.uint8),
+    )
+
+
+def _boundary_path_metrics(
+    evidence: np.ndarray,
+    bubble: BubbleInstance,
+    *,
+    orientation: str,
+    cut: float,
+    cap: tuple[float, float],
+    half_width: float,
+) -> tuple[float, float]:
+    path_map = _oriented_path_map(
+        evidence,
+        bubble,
+        orientation=orientation,
+        cut=cut,
+        flow_range=cap,
+        half_width=half_width,
+    )
+    if path_map.shape[0] < 2 or path_map.shape[1] == 0:
+        return 0.0, 0.0
+    return _maximum_path_coverage(path_map)
+
+
+def _anchored_internal_path_metrics(
+    internal_evidence: np.ndarray,
+    boundary_support: np.ndarray,
+    mask_support: np.ndarray,
+    bubble: BubbleInstance,
+    *,
+    orientation: str,
+    cut: float,
+    cap: tuple[float, float],
+    cap_kind: str,
+    half_width: float,
+) -> tuple[float, float]:
+    origin_x, origin_y = bubble.mask_origin
+    height, width = internal_evidence.shape
+    full_flow_range = (
+        (float(origin_y), float(origin_y + height))
+        if orientation == "vertical"
+        else (float(origin_x), float(origin_x + width))
+    )
+    internal_map = _oriented_path_map(
+        internal_evidence,
+        bubble,
+        orientation=orientation,
+        cut=cut,
+        flow_range=full_flow_range,
+        half_width=half_width,
+    )
+    boundary_map = _oriented_path_map(
+        boundary_support,
+        bubble,
+        orientation=orientation,
+        cut=cut,
+        flow_range=full_flow_range,
+        half_width=half_width,
+    )
+    support_map = _oriented_path_map(
+        mask_support,
+        bubble,
+        orientation=orientation,
+        cut=cut,
+        flow_range=full_flow_range,
+        half_width=half_width,
+    )
+    if internal_map.shape[0] < 2 or internal_map.shape[1] == 0:
+        return 0.0, 0.0
+    support_rows = np.flatnonzero(np.any(support_map > 0, axis=1))
+    if len(support_rows) == 0:
+        return 0.0, 0.0
+
+    flow_origin = full_flow_range[0]
+    cap_start = max(0, int(np.floor(cap[0] - flow_origin)))
+    cap_end = min(internal_map.shape[0], int(np.ceil(cap[1] - flow_origin)))
+    if cap_kind == "leading":
+        start, end = int(support_rows[0]), cap_end
+        anchor_at_start = True
+    else:
+        start, end = cap_start, int(support_rows[-1]) + 1
+        anchor_at_start = False
+    if end - start < 2:
+        return 0.0, 0.0
+
+    segment = internal_map[start:end]
+    anchor_depth = max(4, int(np.ceil(len(segment) * 0.08)))
+    anchor_slice = slice(0, min(len(segment), anchor_depth)) if anchor_at_start else slice(-anchor_depth, None)
+    if not np.any(segment[anchor_slice] & boundary_map[start:end][anchor_slice]):
+        return 0.0, 0.0
+    return _maximum_path_coverage(segment)
+
+
+def _oriented_path_map(
+    evidence: np.ndarray,
+    bubble: BubbleInstance,
+    *,
+    orientation: str,
+    cut: float,
+    flow_range: tuple[float, float],
+    half_width: float,
+) -> np.ndarray:
+    origin_x, origin_y = bubble.mask_origin
+    height, width = evidence.shape
+    if orientation == "vertical":
+        left = max(0, int(np.floor(cut - half_width)) - origin_x)
+        right = min(width, int(np.ceil(cut + half_width)) - origin_x + 1)
+        top = max(0, int(np.floor(flow_range[0])) - origin_y)
+        bottom = min(height, int(np.ceil(flow_range[1])) - origin_y)
+        return evidence[top:bottom, left:right]
+    if orientation == "horizontal":
+        left = max(0, int(np.floor(flow_range[0])) - origin_x)
+        right = min(width, int(np.ceil(flow_range[1])) - origin_x)
+        top = max(0, int(np.floor(cut - half_width)) - origin_y)
+        bottom = min(height, int(np.ceil(cut + half_width)) - origin_y + 1)
+        return evidence[top:bottom, left:right].T
+    return np.zeros((0, 0), dtype=np.uint8)
+
+
+def _maximum_path_coverage(path_map: np.ndarray) -> tuple[float, float]:
+    rows, columns = path_map.shape
+    scores = path_map[0].astype(np.float32)
+    backtrack = np.zeros((rows, columns), dtype=np.int32)
+    for row in range(1, rows):
+        previous = scores
+        scores = np.empty(columns, dtype=np.float32)
+        for column in range(columns):
+            start, end = max(0, column - 1), min(columns, column + 2)
+            offset = int(np.argmax(previous[start:end]))
+            best_column = start + offset
+            scores[column] = previous[best_column] + float(path_map[row, column])
+            backtrack[row, column] = best_column
+
+    column = int(np.argmax(scores))
+    matches = np.zeros(rows, dtype=bool)
+    for row in range(rows - 1, -1, -1):
+        matches[row] = bool(path_map[row, column])
+        if row:
+            column = int(backtrack[row, column])
+    coverage = float(np.count_nonzero(matches) / rows)
+    positions = np.flatnonzero(matches)
+    if len(positions) == 0:
+        return coverage, 0.0
+    longest = 1
+    start = previous_position = int(positions[0])
+    for position_value in positions[1:]:
+        position = int(position_value)
+        if position - previous_position > 3:
+            longest = max(longest, previous_position - start + 1)
+            start = position
+        previous_position = position
+    longest = max(longest, previous_position - start + 1)
+    return coverage, float(longest / rows)
+
+
+def _tag_balloon_subgroups(
+    groups: list[list[tuple[int, DetectionResult]]],
+    *,
+    page_key: str,
+    parent_bubble_id: str,
+    method: str,
+    details: dict[str, object],
+) -> list[list[tuple[int, DetectionResult]]]:
+    ordered_groups = sorted(groups, key=lambda members: min(index for index, _ in members))
+    output: list[list[tuple[int, DetectionResult]]] = []
+    for child_index, members in enumerate(ordered_groups):
+        child_bbox = _member_union_bbox([region for _, region in members])
+        child_bubble_id = _stable_child_bubble_id(page_key, parent_bubble_id, child_bbox)
+        split_info = {
+            "method": method,
+            "parent_bubble_id": parent_bubble_id,
+            "child_index": child_index,
+            "child_count": len(ordered_groups),
+            "child_bbox": child_bbox,
+            **details,
+        }
+        tagged: list[tuple[int, DetectionResult]] = []
+        for original_index, region in members:
+            metadata = dict(region.metadata)
+            assignment_value = metadata.get("balloon_assignment")
+            assignment = dict(assignment_value) if isinstance(assignment_value, dict) else {}
+            assignment.update(
+                {
+                    "bubble_id": child_bubble_id,
+                    "parent_bubble_id": parent_bubble_id,
+                }
+            )
+            metadata["balloon_assignment"] = assignment
+            metadata["instance_split"] = split_info
+            tagged.append(
+                (
+                    original_index,
+                    replace(region, bubble_id=child_bubble_id, metadata=metadata),
+                )
+            )
+        output.append(tagged)
+    return output
+
+
+def _stable_child_bubble_id(page_key: str, parent_bubble_id: str, bbox: list[float]) -> str:
+    quantized_bbox = [round(float(value) / 4) * 4 for value in bbox]
+    payload = f"{page_key}|{parent_bubble_id}|{','.join(str(value) for value in quantized_bbox)}"
+    digest = hashlib.blake2s(payload.encode("utf-8"), digest_size=6).hexdigest()
+    return f"bubble-{digest}"
+
+
+def _member_union_bbox(members: list[DetectionResult]) -> list[float]:
+    left = min(region.bbox[0] for region in members)
+    top = min(region.bbox[1] for region in members)
+    right = max(region.bbox[0] + region.bbox[2] for region in members)
+    bottom = max(region.bbox[1] + region.bbox[3] for region in members)
+    return [left, top, right - left, bottom - top]
+
+
 def _merge_balloon_group(group: list[tuple[int, DetectionResult]]) -> DetectionResult:
     if len(group) == 1:
         return group[0][1]
@@ -216,11 +728,7 @@ def _merge_balloon_group(group: list[tuple[int, DetectionResult]]) -> DetectionR
         raise ValueError("Only text regions assigned to one bubble can be merged")
     bubble_id = next(iter(bubble_ids))
 
-    left = min(region.bbox[0] for region in members)
-    top = min(region.bbox[1] for region in members)
-    right = max(region.bbox[0] + region.bbox[2] for region in members)
-    bottom = max(region.bbox[1] + region.bbox[3] for region in members)
-    bbox = [left, top, right - left, bottom - top]
+    bbox = _member_union_bbox(members)
 
     orientation_weights: dict[str, float] = {}
     for region in members:
@@ -252,17 +760,28 @@ def _merge_balloon_group(group: list[tuple[int, DetectionResult]]) -> DetectionR
         values = [float(item[key]) for item in source_assignments if isinstance(item.get(key), (int, float))]
         if values:
             grouped_assignment[key] = round(min(values), 4)
+    parent_ids = {
+        str(item["parent_bubble_id"])
+        for item in source_assignments
+        if isinstance(item.get("parent_bubble_id"), str)
+    }
+    if len(parent_ids) == 1:
+        grouped_assignment["parent_bubble_id"] = next(iter(parent_ids))
 
     metadata = dict(members[0].metadata)
     metadata["balloon_assignment"] = grouped_assignment
-    metadata["line_grouping"] = {
+    line_grouping: dict[str, object] = {
         "method": "balloon_instance",
         "source_count": len(members),
         "source_boxes": [list(region.bbox) for region in members],
         "source_polygons": [[list(point) for point in region.polygon] for region in members],
         "source_confidences": [float(region.confidence) for region in members],
+        "source_orientations": [region.orientation for region in members],
         "member_order": member_order,
     }
+    if isinstance(metadata.get("instance_split"), dict):
+        line_grouping["instance_split"] = metadata["instance_split"]
+    metadata["line_grouping"] = line_grouping
     return DetectionResult(
         polygon=bbox_to_polygon(bbox),
         bbox=bbox,

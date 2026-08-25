@@ -61,7 +61,7 @@ export const SHORTCUT_DEFINITIONS: ShortcutDefinition[] = [
   {id:'region.inpaint', group:'regions', label:'所选区域重新修复', description:'只重新修复当前所选区域', defaultBinding:'Alt+Digit3'},
   {id:'region.render', group:'regions', label:'所选区域重新排版', description:'只重新排版当前所选区域', defaultBinding:'Alt+Digit4'},
 
-  {id:'page.workflowOcr', group:'page', label:'当前页重新 OCR', description:'执行当前页处理流程的 OCR 阶段', defaultBinding:'Mod+Shift+Digit1'},
+  {id:'page.workflowOcr', group:'page', label:'当前页重新 OCR', description:'重新识别当前页；旧版区域会先重新检测并按气泡合并', defaultBinding:'Mod+Shift+Digit1'},
   {id:'page.workflowTranslate', group:'page', label:'当前页重新翻译', description:'执行当前页处理流程的翻译阶段', defaultBinding:'Mod+Shift+Digit2'},
   {id:'page.workflowInpaint', group:'page', label:'当前页重新修复', description:'执行当前页处理流程的修复阶段', defaultBinding:'Mod+Shift+Digit3'},
   {id:'page.workflowRender', group:'page', label:'当前页重新排版', description:'执行当前页处理流程的排版阶段', defaultBinding:'Mod+Shift+Digit4'},

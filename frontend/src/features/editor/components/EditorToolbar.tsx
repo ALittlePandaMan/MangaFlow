@@ -18,20 +18,22 @@ const views: {id: ViewMode, label: string, shortcutId: ShortcutId, title?: strin
   {id: 'comparison', label: '对比', shortcutId: 'view.comparison', title: '原图 / 译文左右对比'},
 ]
 
-export function EditorToolbar({ onUndo, onRedo, canUndo, canRedo, disabled = false, rightActions }: {onUndo: () => void, onRedo: () => void, canUndo: boolean, canRedo: boolean, disabled?: boolean, rightActions?: React.ReactNode}) {
+export function EditorToolbar({ onUndo, onRedo, canUndo, canRedo, disabled = false, centerContent, rightActions }: {onUndo: () => void, onRedo: () => void, canUndo: boolean, canRedo: boolean, disabled?: boolean, centerContent?: React.ReactNode, rightActions?: React.ReactNode}) {
   const tool = useEditorStore(state => state.tool)
   const setTool = useEditorStore(state => state.setTool)
   const view = useEditorStore(state => state.view)
   const setView = useEditorStore(state => state.setView)
   const shortcuts = useShortcutStore(state => state.shortcuts)
   const toolButton = 'grid size-8 min-h-8 cursor-pointer place-items-center rounded-lg border border-transparent bg-transparent p-0 text-muted outline-none transition-colors hover:bg-hover hover:text-ink disabled:cursor-not-allowed disabled:opacity-30 focus-visible:ring-2 focus-visible:ring-accent/30'
-  return <div className="flex h-12 items-center border-b border-line bg-surface px-4">
+  return <div className="flex h-12 items-center border-b border-line bg-surface px-4" role="toolbar" aria-label="编辑器顶部工具栏">
     <div className="flex gap-1.5">{tools.map(item => <button disabled={disabled} key={item.id} className={cn(toolButton, tool === item.id && '!border-accent !bg-accent !text-accent-ink shadow-[0_0_0_2px_rgb(16_211_163/.12)] hover:!bg-accent-hover hover:!text-accent-ink')} title={`${item.title} (${formatShortcut(shortcuts[item.shortcutId])})`} aria-label={item.title} aria-keyshortcuts={shortcutToAria(shortcuts[item.shortcutId])} aria-pressed={tool === item.id} onClick={() => setTool(item.id)}>{item.icon}</button>)}</div>
     <span className="mx-3 h-5 border-l border-line" />
     <div className="flex gap-1.5"><button className={toolButton} disabled={disabled || !canUndo} onClick={onUndo} title={`撤销 (${formatShortcut(shortcuts['edit.undo'])})`} aria-label="撤销" aria-keyshortcuts={shortcutToAria(shortcuts['edit.undo'])}><Undo2 size={17}/></button><button className={toolButton} disabled={disabled || !canRedo} onClick={onRedo} title={`重做 (${formatShortcut(shortcuts['edit.redo'])})`} aria-label="重做" aria-keyshortcuts={shortcutToAria(shortcuts['edit.redo'])}><Redo2 size={17}/></button></div>
     <span className="mx-3 h-5 border-l border-line" />
     <div className="flex overflow-hidden rounded-lg border border-line bg-panel">{views.map(item => <button disabled={disabled} className={cn('h-8 min-h-8 cursor-pointer border-0 bg-panel px-3.5 text-[11px] text-muted outline-none transition-colors hover:bg-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/25 disabled:cursor-not-allowed disabled:opacity-30', view === item.id && '!bg-accent/15 font-semibold !text-accent hover:!bg-accent/20')} key={item.id} title={`${item.title || item.label} (${formatShortcut(shortcuts[item.shortcutId])})`} aria-keyshortcuts={shortcutToAria(shortcuts[item.shortcutId])} aria-pressed={view === item.id} onClick={() => setView(item.id)}>{item.label}</button>)}</div>
-    <div className="flex-1" />
+    <div className="flex min-w-0 flex-1 items-center justify-center px-4">
+      {centerContent}
+    </div>
     {rightActions && <div className="flex shrink-0 items-center">{rightActions}</div>}
   </div>
 }

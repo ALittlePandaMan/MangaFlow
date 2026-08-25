@@ -64,6 +64,13 @@ class OpenCVTextDetector(TextDetector):
                     confidence=max(0.35, density),
                     orientation=orientation,
                     region_type="background_complex",
+                    metadata={
+                        "balloon_assignment": {
+                            "status": "disabled",
+                            "bubble_id": None,
+                            "reason": "provider_unsupported",
+                        },
+                    },
                 )
             )
         # Reading order is assigned by the pipeline; large false-positive sets are capped.
@@ -182,8 +189,10 @@ class PaddleTextDetector(TextDetector):
                 )
             )
         bubble_config = _bubble_grouping_config(self.config)
-        if not output or not bool(bubble_config.get("enabled", True)):
+        if not output:
             return output
+        if not bool(bubble_config.get("enabled", True)):
+            return _mark_bubble_grouping_disabled(output)
         if self._bubble_unavailable_reason is not None:
             return _mark_bubble_grouping_unavailable(output, self._bubble_unavailable_reason)
         try:
@@ -194,12 +203,19 @@ class PaddleTextDetector(TextDetector):
                 output,
                 bubbles,
                 page_key=str(image_path.resolve()),
+                image_path=image_path,
                 min_bubble_confidence=float(bubble_config.get("min_bubble_confidence", 0.35)),
                 min_containment=float(bubble_config.get("min_containment", 0.55)),
                 min_core_containment=float(bubble_config.get("min_core_containment", 0.8)),
                 ambiguity_margin=float(bubble_config.get("ambiguity_margin", 0.12)),
                 max_second_containment=float(bubble_config.get("max_second_containment", 0.45)),
                 mask_padding=int(bubble_config.get("mask_padding", 3)),
+                split_connected_instances=bool(bubble_config.get("split_connected_instances", True)),
+                split_max_neck_ratio=float(bubble_config.get("split_max_neck_ratio", 0.22)),
+                split_min_boundary_coverage=float(
+                    bubble_config.get("split_min_boundary_coverage", 0.7)
+                ),
+                split_min_boundary_run=float(bubble_config.get("split_min_boundary_run", 0.65)),
             )
         except Exception as exc:
             self._bubble_unavailable_reason = "segmentation_failed"
@@ -229,6 +245,19 @@ def _mark_bubble_grouping_unavailable(
                 "status": "unavailable",
                 "bubble_id": None,
                 "reason": reason,
+            },
+        }
+    return output
+
+
+def _mark_bubble_grouping_disabled(output: list[DetectionResult]) -> list[DetectionResult]:
+    for result in output:
+        result.metadata = {
+            **result.metadata,
+            "balloon_assignment": {
+                "status": "disabled",
+                "bubble_id": None,
+                "reason": "configuration_disabled",
             },
         }
     return output

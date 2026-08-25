@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import cv2
 import numpy as np
 from app.services.base import ProviderState
 from app.services.detection.bubbles import BubbleInstance
-from app.services.detection.providers import PaddleTextDetector
+from app.services.detection.providers import OpenCVTextDetector, PaddleTextDetector
 from app.utils.geometry import bbox_to_polygon
 
 PAGE_SHAPE = (240, 320)
@@ -83,7 +84,27 @@ def test_explicitly_disabled_bubble_grouping_does_not_call_segmenter(tmp_path: P
     assert len(detected) == 2
     assert [region.bbox for region in detected] == [[132.0, 45.0, 20.0, 70.0], [96.0, 58.0, 22.0, 82.0]]
     assert all(region.bubble_id is None for region in detected)
-    assert all("balloon_assignment" not in region.metadata for region in detected)
+    assert all(
+        region.metadata["balloon_assignment"]
+        == {"status": "disabled", "bubble_id": None, "reason": "configuration_disabled"}
+        for region in detected
+    )
+
+
+def test_opencv_fallback_marks_bubble_grouping_as_unsupported(tmp_path: Path) -> None:
+    image_path = tmp_path / "fallback.png"
+    image = np.full((160, 160), 255, dtype=np.uint8)
+    cv2.rectangle(image, (70, 30), (84, 125), 0, -1)
+    assert cv2.imwrite(str(image_path), image)
+
+    detected = OpenCVTextDetector().detect(image_path)
+
+    assert detected
+    assert all(
+        region.metadata["balloon_assignment"]
+        == {"status": "disabled", "bubble_id": None, "reason": "provider_unsupported"}
+        for region in detected
+    )
 
 
 def test_segmentation_failure_keeps_original_boxes_and_marks_grouping_unavailable(tmp_path: Path) -> None:

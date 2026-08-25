@@ -1,3 +1,6 @@
+from pathlib import Path
+
+import cv2
 import numpy as np
 from app.services.base import DetectionResult
 from app.services.detection.bubbles import BubbleInstance
@@ -39,9 +42,29 @@ def rectangular_bubble(
     )
 
 
+def masked_bubble(
+    instance_id: str,
+    bbox: list[int],
+    mask: np.ndarray,
+    *,
+    confidence: float = 0.95,
+) -> BubbleInstance:
+    x, y, width, height = bbox
+    assert mask.shape == (height, width)
+    return BubbleInstance(
+        instance_id=instance_id,
+        bbox=[float(value) for value in bbox],
+        confidence=confidence,
+        polygon=bbox_to_polygon(bbox),
+        mask=mask.astype(np.uint8),
+        mask_origin=(x, y),
+        image_shape=PAGE_SHAPE,
+    )
+
+
 def test_merges_multiple_text_regions_assigned_to_the_same_bubble() -> None:
     regions = [
-        text_region([132, 45, 20, 70], confidence=0.94),
+        text_region([132, 45, 20, 70], orientation="horizontal", confidence=0.94),
         text_region([96, 58, 22, 82], confidence=0.87),
     ]
     grouped = group_text_regions_by_bubbles(
@@ -58,6 +81,7 @@ def test_merges_multiple_text_regions_assigned_to_the_same_bubble() -> None:
     assert merged.metadata["balloon_assignment"]["status"] == "assigned"
     assert merged.metadata["line_grouping"]["method"] == "balloon_instance"
     assert merged.metadata["line_grouping"]["source_count"] == 2
+    assert merged.metadata["line_grouping"]["source_orientations"] == ["horizontal", "vertical"]
 
 
 def test_does_not_merge_text_regions_assigned_to_different_bubbles() -> None:
@@ -174,3 +198,138 @@ def test_low_confidence_bubble_cannot_group_text_regions() -> None:
 
     assert len(grouped) == 2
     assert all(region.bubble_id is None for region in grouped)
+
+
+def test_splits_two_balloon_lobes_joined_by_a_narrow_mask_bridge() -> None:
+    mask = np.zeros((160, 260), dtype=np.uint8)
+    cv2.ellipse(mask, (65, 80), (55, 65), 0, 0, 360, 1, -1)
+    cv2.ellipse(mask, (195, 80), (55, 65), 0, 0, 360, 1, -1)
+    cv2.rectangle(mask, (116, 76), (144, 84), 1, -1)
+    regions = [
+        text_region([73, 55, 22, 90]),
+        text_region([204, 55, 22, 90]),
+    ]
+
+    grouped = group_text_regions_by_bubbles(
+        regions,
+        [masked_bubble("connected-lobes", [20, 20, 260, 160], mask)],
+        page_key="page-connected-lobes",
+    )
+
+    assert [region.bbox for region in grouped] == [region.bbox for region in regions]
+    assert len({region.bubble_id for region in grouped}) == 2
+    assert all(region.metadata["instance_split"]["method"] == "mask_neck" for region in grouped)
+    assert all(region.metadata["balloon_assignment"]["status"] == "assigned" for region in grouped)
+
+
+def test_keeps_multiple_vertical_columns_inside_one_wide_balloon() -> None:
+    mask = np.zeros((180, 220), dtype=np.uint8)
+    cv2.ellipse(mask, (110, 90), (105, 85), 0, 0, 360, 1, -1)
+    regions = [
+        text_region([210, 45, 22, 105]),
+        text_region([160, 55, 22, 110]),
+        text_region([110, 65, 22, 95]),
+    ]
+
+    grouped = group_text_regions_by_bubbles(
+        regions,
+        [masked_bubble("wide-balloon", [50, 20, 220, 180], mask)],
+        page_key="page-wide-balloon",
+    )
+
+    assert len(grouped) == 1
+    assert grouped[0].bbox == [110, 45, 122, 120]
+    assert grouped[0].metadata["line_grouping"]["source_count"] == 3
+    assert grouped[0].metadata["line_grouping"]["member_order"] == [0, 1, 2]
+    assert "instance_split" not in grouped[0].metadata
+
+
+def test_nearby_overlapping_text_outside_a_real_bubble_stays_independent() -> None:
+    mask = np.zeros((150, 100), dtype=np.uint8)
+    cv2.ellipse(mask, (50, 75), (45, 70), 0, 0, 360, 1, -1)
+    regions = [
+        text_region([125, 70, 75, 55], orientation="horizontal"),
+        text_region([165, 95, 85, 55], orientation="horizontal"),
+    ]
+
+    grouped = group_text_regions_by_bubbles(
+        regions,
+        [masked_bubble("nearby", [20, 30, 100, 150], mask)],
+        page_key="page-nearby-outside",
+    )
+
+    assert [region.bbox for region in grouped] == [region.bbox for region in regions]
+    assert all(region.bubble_id is None for region in grouped)
+    assert all(region.metadata["balloon_assignment"]["status"] == "outside" for region in grouped)
+
+
+def test_splits_solid_union_mask_with_an_anchored_internal_boundary_path(tmp_path: Path) -> None:
+    mask = np.ones((200, 220), dtype=np.uint8)
+    bubble = masked_bubble("wide-connected", [40, 20, 220, 200], mask)
+    regions = [
+        text_region([170, 40, 24, 120]),
+        text_region([198, 40, 24, 120]),
+        text_region([226, 40, 24, 120]),
+        text_region([90, 125, 24, 90]),
+        text_region([122, 126, 28, 88]),
+    ]
+    image = np.full(PAGE_SHAPE, 255, dtype=np.uint8)
+    cv2.line(image, (160, 20), (160, 126), 0, 2)
+    image_path = tmp_path / "connected.png"
+    assert cv2.imwrite(str(image_path), image)
+
+    grouped = group_text_regions_by_bubbles(
+        regions,
+        [bubble],
+        page_key="page-visible-boundary",
+        image_path=image_path,
+        split_max_neck_ratio=0,
+    )
+
+    assert len(grouped) == 2
+    assert [region.metadata["line_grouping"]["source_count"] for region in grouped] == [3, 2]
+    assert len({region.bubble_id for region in grouped}) == 2
+    assert all(
+        region.metadata["line_grouping"]["instance_split"]["method"] == "text_gap_boundary"
+        for region in grouped
+    )
+    assert all(
+        region.metadata["line_grouping"]["instance_split"]["cuts"][0]["boundary_source"]
+        == "anchored_internal_line"
+        for region in grouped
+    )
+
+    repeated = group_text_regions_by_bubbles(
+        regions,
+        [bubble],
+        page_key="page-visible-boundary",
+        image_path=image_path,
+        split_max_neck_ratio=0,
+    )
+    assert [region.bubble_id for region in repeated] == [region.bubble_id for region in grouped]
+
+
+def test_staggered_columns_without_a_boundary_path_stay_in_one_balloon(tmp_path: Path) -> None:
+    mask = np.ones((200, 220), dtype=np.uint8)
+    bubble = masked_bubble("wide-connected", [40, 20, 220, 200], mask)
+    regions = [
+        text_region([170, 40, 24, 120]),
+        text_region([198, 40, 24, 120]),
+        text_region([226, 40, 24, 120]),
+        text_region([90, 125, 24, 90]),
+        text_region([122, 126, 28, 88]),
+    ]
+    image_path = tmp_path / "plain.png"
+    assert cv2.imwrite(str(image_path), np.full(PAGE_SHAPE, 255, dtype=np.uint8))
+
+    grouped = group_text_regions_by_bubbles(
+        regions,
+        [bubble],
+        page_key="page-no-boundary",
+        image_path=image_path,
+        split_max_neck_ratio=0,
+    )
+
+    assert len(grouped) == 1
+    assert grouped[0].metadata["line_grouping"]["source_count"] == 5
+    assert "instance_split" not in grouped[0].metadata

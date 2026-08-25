@@ -3,10 +3,11 @@ from __future__ import annotations
 import threading
 import time
 from io import BytesIO
+from types import SimpleNamespace
 
 import cv2
 import numpy as np
-from app.pipeline.processor import PipelineProcessor
+from app.pipeline.processor import PipelineProcessor, _exclude_preserved_geometry
 from app.services.base import DetectionResult, OCRResult
 from app.services.inpainting.providers import SimpleLaMaInpainter
 from PIL import Image, ImageChops, ImageDraw
@@ -76,15 +77,39 @@ def test_forced_detection_preserves_manual_regions_and_replaces_detector_output(
 
         def detect(self, _image_path):
             self.calls += 1
-            x = 20 if self.calls == 1 else 220
-            bbox = [x, 30, 50, 100]
+            if self.calls == 1:
+                return [
+                    DetectionResult(
+                        polygon=[[20, 30], [70, 30], [70, 130], [20, 130]],
+                        bbox=[20, 30, 50, 100],
+                        confidence=0.95,
+                        bubble_id="bubble-stable",
+                        metadata={"pass": self.calls},
+                    )
+                ]
+            source_boxes = [[100, 70, 50, 70], [220, 70, 50, 70]]
             return [
                 DetectionResult(
-                    polygon=[[x, 30], [x + 50, 30], [x + 50, 130], [x, 130]],
-                    bbox=bbox,
+                    polygon=[[100, 70], [270, 70], [270, 140], [100, 140]],
+                    bbox=[100, 70, 170, 70],
                     confidence=0.95,
                     bubble_id="bubble-stable",
-                    metadata={"pass": self.calls},
+                    metadata={
+                        "pass": self.calls,
+                        "line_grouping": {
+                            "method": "balloon_instance",
+                            "source_count": 2,
+                            "source_boxes": source_boxes,
+                            "source_polygons": [
+                                [[x, y], [x + width, y], [x + width, y + height], [x, y + height]]
+                                for x, y, width, height in source_boxes
+                            ],
+                            "source_confidences": [0.92, 0.95],
+                            "source_orientations": ["horizontal", "vertical"],
+                            "member_order": [0, 1],
+                        },
+                    },
+                    orientation="horizontal",
                 )
             ]
 
@@ -135,6 +160,91 @@ def test_forced_detection_preserves_manual_regions_and_replaces_detector_output(
     assert replacement["bbox"][0] == 220
     assert replacement["bubble_id"] == "bubble-stable"
     assert replacement["layout_data"]["detection"]["pass"] == 2
+    assert len(regions) == 2
+    grouping = replacement["layout_data"]["detection"]["line_grouping"]
+    assert grouping["source_count"] == 1
+    assert grouping["source_boxes"] == [[220.0, 70.0, 50.0, 70.0]]
+    assert grouping["source_orientations"] == ["vertical"]
+    assert replacement["orientation"] == "vertical"
+
+
+def test_trimming_legacy_grouping_without_source_orientations_keeps_aggregate_orientation() -> None:
+    result = DetectionResult(
+        polygon=[[100, 70], [270, 70], [270, 140], [100, 140]],
+        bbox=[100, 70, 170, 70],
+        confidence=0.9,
+        orientation="horizontal",
+        metadata={
+            "line_grouping": {
+                "method": "balloon_instance",
+                "source_count": 2,
+                "source_boxes": [[100, 70, 50, 70], [220, 70, 50, 70]],
+                "source_confidences": [0.9, 0.8],
+                "member_order": [0, 1],
+            },
+        },
+    )
+
+    trimmed = _exclude_preserved_geometry(result, [SimpleNamespace(bbox=[100, 70, 50, 70])])
+
+    assert trimmed is not None
+    assert trimmed.orientation == "horizontal"
+    assert "source_orientations" not in trimmed.metadata["line_grouping"]
+
+
+def test_source_geometry_edit_becomes_manual_and_survives_forced_detection(client, monkeypatch) -> None:
+    class MovingDetector:
+        calls = 0
+
+        def detect(self, _image_path):
+            self.calls += 1
+            x = 20 if self.calls == 1 else 220
+            return [
+                DetectionResult(
+                    polygon=[[x, 30], [x + 50, 30], [x + 50, 130], [x, 130]],
+                    bbox=[x, 30, 50, 100],
+                    confidence=0.95,
+                    bubble_id="bubble-stable",
+                    metadata={
+                        "balloon_assignment": {"status": "assigned", "bubble_id": "bubble-stable"},
+                    },
+                )
+            ]
+
+    detector = MovingDetector()
+    original_provider = PipelineProcessor._provider
+
+    def use_moving_detector(processor, kind, requested):
+        if kind == "detection":
+            return detector, "moving-detector"
+        return original_provider(processor, kind, requested)
+
+    monkeypatch.setattr(PipelineProcessor, "_provider", use_moving_detector)
+    project = client.post("/api/projects", json={"name": "preserve-edited-detection"}).json()
+    page = client.post(
+        f"/api/projects/{project['id']}/images",
+        files={"files": ("edited.png", manga_page(), "image/png")},
+    ).json()[0]
+    first_task = client.post(
+        f"/api/images/{page['id']}/process",
+        json={"start_stage": "detection", "end_stage": "detection", "force": True},
+    ).json()
+    assert wait_for_task(client, first_task["id"])["status"] == "COMPLETED"
+    detected = client.get(f"/api/images/{page['id']}/regions").json()[0]
+
+    edited = client.patch(f"/api/regions/{detected['id']}", json={"bbox": [25, 30, 50, 100]}).json()
+    assert edited["layout_data"]["manual"] is True
+    assert edited["bubble_id"] is None
+    assert "balloon_assignment" not in edited["layout_data"]["detection"]
+
+    second_task = client.post(
+        f"/api/images/{page['id']}/process",
+        json={"start_stage": "detection", "end_stage": "detection", "force": True},
+    ).json()
+    assert wait_for_task(client, second_task["id"])["status"] == "COMPLETED"
+    regions = client.get(f"/api/images/{page['id']}/regions").json()
+    assert edited["id"] in {region["id"] for region in regions}
+    assert any(region["bbox"][0] == 220 for region in regions)
 
 
 def test_balloon_grouped_region_masks_only_its_source_text_polygons(client, monkeypatch) -> None:

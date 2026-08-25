@@ -11,7 +11,7 @@ import { CanvasZoomControls, EditorToolbar } from '../features/editor/components
 import { MangaCanvas } from '../features/editor/components/MangaCanvas'
 import { RegionProperties } from '../features/editor/components/RegionProperties'
 import {preloadImage} from '../features/editor/hooks/useImage'
-import {buildPageWorkflowRequest, pageWorkflowTargetView, type PageWorkflowStage} from '../features/editor/pageWorkflow'
+import {buildPageWorkflowRequest, canRunPageWorkflowStage, lockedLegacyOcrRegionCount, pageOcrGroupingUnavailable, pageOcrNeedsDetection, pageWorkflowTargetView, type PageWorkflowStage} from '../features/editor/pageWorkflow'
 import { useEditorStore } from '../features/editor/store'
 import {formatShortcut, shortcutForEvent, shortcutToAria, type ShortcutId, useShortcutStore} from '../features/shortcuts/store'
 import { ApiError, api } from '../services/api'
@@ -25,6 +25,23 @@ type PageContextMenu = {x: number, y: number, pageId: string}
 type PagePress = {pageId: string, fromIndex: number, overIndex: number, pointerId: number, startX: number, startY: number, active: boolean}
 type PageDrag = {pageId: string, fromIndex: number, overIndex: number}
 type ExportKind = 'project' | 'translated' | 'clean'
+
+function EditorToolbarFeedback({error, notice, onDismiss}: {error: string, notice: string, onDismiss: () => void}) {
+  const message = error || notice
+  if (!message) return null
+  const isError = Boolean(error)
+  return <div
+    className={cn(
+      'pointer-events-auto flex h-8 min-w-0 max-w-full items-center gap-1.5 rounded-lg border py-0 pl-3 pr-1.5 text-[12px] shadow-soft backdrop-blur-xl',
+      isError ? 'border-danger/20 bg-danger/20 text-danger-soft-ink' : 'border-success/20 bg-success/15 text-success-soft-ink',
+    )}
+    role={isError ? 'alert' : 'status'}
+    title={message}
+  >
+    <span className="min-w-0 truncate leading-none">{message}</span>
+    <button className="grid size-6 shrink-0 cursor-pointer place-items-center rounded-md border-0 bg-transparent p-0 text-base text-current opacity-70 hover:bg-ink/10 hover:opacity-100" type="button" aria-label="关闭提示" onClick={onDismiss}>×</button>
+  </div>
+}
 
 const EXPORT_OPTIONS: Array<{kind: ExportKind, label: string, detail: string, formats: string[]}> = [
   {kind: 'project', label: '导出源项目', detail: '完整工程包，可再次导入 MangaFlow 继续编辑', formats: ['project']},
@@ -680,7 +697,7 @@ export function EditorPage() {
     if (!task) return null
     const region = await reloadCurrent()
     if (task.status === 'FAILED') setError(task.error_message || '处理任务失败')
-    return {task, region}
+    return {task, region, regions: [...regionsRef.current]}
   }
 
   useEffect(() => {
@@ -1126,22 +1143,33 @@ export function EditorPage() {
     if (!page || editorBusy) return
     if (stage === 'inpainting' && requireSourceGeometryForFirstRepair(regionsRef.current)) return
     const rank = pageWorkflowRank(page, regionsRef.current)
-    const requiredRank: Record<PageWorkflowStage, number> = {ocr: 0, translation: 1, inpainting: 2, rendering: 3}
-    if (rank < requiredRank[stage]) return
+    if (!canRunPageWorkflowStage(stage, rank)) return
     const currentRegions = regionsRef.current
-    const startsWithDetection = stage === 'ocr' && currentRegions.length === 0
+    const lockedLegacyCount = stage === 'ocr' ? lockedLegacyOcrRegionCount(currentRegions) : 0
+    if (lockedLegacyCount > 0) {
+      setNotice('')
+      setError(`当前页有 ${lockedLegacyCount} 个锁定的旧版自动区域。请先解锁这些区域，再重新 OCR，系统才能安全地按气泡合并。`)
+      return
+    }
+    const startsWithDetection = stage === 'ocr' && pageOcrNeedsDetection(currentRegions)
+    if (startsWithDetection && currentRegions.length > 0 && !await confirmDialog({
+      title: '重新检测并合并旧文字区域？',
+      message: '这页包含尚未经过气泡归属的旧版自动检测区域。系统会替换未锁定的自动区域，并重新执行气泡合并与 OCR；这些区域已有的原文、译文、样式和编辑历史会被重建，当前净图与译图也会失效。手工区域和锁定区域不会删除，但锁定的旧区域不会参与合并。',
+      tone: 'info',
+      confirmLabel: '重新检测并 OCR',
+    })) return
     const targetView = pageWorkflowTargetView(stage)
     if (targetView) setView(targetView)
     const request = buildPageWorkflowRequest(stage, startsWithDetection)
     const startingNotices: Record<PageWorkflowStage, string> = {
-      ocr: startsWithDetection ? '正在检测文字区域并执行 OCR…' : '正在重新 OCR 当前页的文字区域…',
-      translation: '正在重新翻译当前页，完成后才能执行修复…',
+      ocr: startsWithDetection ? '正在重新检测文字区域、合并同气泡文本并执行 OCR…' : '正在重新 OCR 当前页的文字区域…',
+      translation: '正在重新翻译当前页…',
       inpainting: '正在重新生成文字 Mask、修复背景并自动重新排版…',
       rendering: '正在根据当前译文重新排版…',
     }
     const completedNotices: Record<PageWorkflowStage, string> = {
-      ocr: 'OCR 已完成，请核对文字区域和原文；确认无误后再执行重新翻译。',
-      translation: '翻译已完成，可以继续执行重新修复。',
+      ocr: startsWithDetection ? '重新检测与 OCR 已完成，请核对合并后的文字区域和原文；确认无误后再执行重新翻译。' : 'OCR 已完成，请核对文字区域和原文；确认无误后再执行重新翻译。',
+      translation: '当前页翻译已完成。',
       inpainting: '背景修复与重新排版已完成。',
       rendering: '当前页重新排版已完成。',
     }
@@ -1149,6 +1177,7 @@ export function EditorPage() {
     setSchedulingProcess(true)
     setRunningWorkflowStage(stage)
     setRunningPageTask(null)
+    setError('')
     setNotice(startingNotices[stage])
     try {
       await flushPendingRegions()
@@ -1157,7 +1186,12 @@ export function EditorPage() {
       const result = await refreshAfterTask(task.id, syncTaskProgress)
       if (result?.task.status === 'COMPLETED') {
         if (targetView) setView(targetView)
-        setNotice(completedNotices[stage])
+        if (stage === 'ocr' && startsWithDetection && pageOcrGroupingUnavailable(result.regions)) {
+          setNotice('')
+          setError('本次 OCR 已完成，但气泡合并未执行：气泡检测模型不可用或运行失败，文字区域仍保持分开。请检查文字检测模型后重新 OCR。')
+        } else {
+          setNotice(completedNotices[stage])
+        }
       }
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason))
@@ -1311,6 +1345,7 @@ export function EditorPage() {
 
   const headerButtonClass = `${buttonClass} !h-10 !min-h-10 px-3.5 py-0 text-[12px]`
   const workflowRank = page ? pageWorkflowRank(page, regions) : 0
+  const lockedLegacyCount = lockedLegacyOcrRegionCount(regions)
   const nextWorkflowStage: PageWorkflowStage | null = workflowRank < 1
     ? 'ocr'
     : workflowRank < 2
@@ -1320,11 +1355,11 @@ export function EditorPage() {
         : workflowRank < 4
           ? 'rendering'
           : null
-  const workflowButtons: Array<{stage: PageWorkflowStage, shortcutId: ShortcutId, label: string, requiredRank: number, title: string, icon: typeof ScanText}> = [
-    {stage: 'ocr', shortcutId:'page.workflowOcr', label: '重新 OCR', requiredRank: 0, title: regions.length ? '重新识别当前页已有文字区域' : '当前页没有文字区域，将先自动检测再执行 OCR', icon: ScanText},
-    {stage: 'translation', shortcutId:'page.workflowTranslate', label: '重新翻译', requiredRank: 1, title: workflowRank >= 1 ? '使用最新 OCR 原文重新翻译' : '请先完成重新 OCR', icon: Languages},
-    {stage: 'inpainting', shortcutId:'page.workflowInpaint', label: '重新修复', requiredRank: 2, title: workflowRank >= 2 ? '重新生成文字 Mask、修复背景并自动重新排版' : '请先依次完成重新 OCR 和重新翻译', icon: Eraser},
-    {stage: 'rendering', shortcutId:'page.workflowRender', label: '重新排版', requiredRank: 3, title: workflowRank >= 3 ? '使用当前译文和样式重新排版' : '请先依次完成 OCR、翻译和修复', icon: TextCursorInput},
+  const workflowButtons: Array<{stage: PageWorkflowStage, shortcutId: ShortcutId, label: string, title: string, icon: typeof ScanText}> = [
+    {stage: 'ocr', shortcutId:'page.workflowOcr', label: '重新 OCR', title: lockedLegacyCount ? `请先解锁 ${lockedLegacyCount} 个旧版自动区域，再重新检测并按气泡合并` : pageOcrNeedsDetection(regions) ? '重新检测当前页文字区域，按气泡合并后执行 OCR' : '重新识别当前页已有文字区域', icon: ScanText},
+    {stage: 'translation', shortcutId:'page.workflowTranslate', label: '重新翻译', title: canRunPageWorkflowStage('translation', workflowRank) ? '使用最新 OCR 原文重新翻译' : '请先完成重新 OCR', icon: Languages},
+    {stage: 'inpainting', shortcutId:'page.workflowInpaint', label: '重新修复', title: canRunPageWorkflowStage('inpainting', workflowRank) ? '重新生成文字 Mask、修复背景并自动重新排版' : '请先完成重新 OCR', icon: Eraser},
+    {stage: 'rendering', shortcutId:'page.workflowRender', label: '重新排版', title: canRunPageWorkflowStage('rendering', workflowRank) ? '使用当前译文和样式重新排版' : '请先依次完成 OCR、翻译和修复', icon: TextCursorInput},
   ]
 
   shortcutHandlerRef.current = event => {
@@ -1392,11 +1427,11 @@ export function EditorPage() {
     } else if (shortcutId === 'page.workflowOcr') {
       if (page) void processPageStage('ocr')
     } else if (shortcutId === 'page.workflowTranslate') {
-      if (page && workflowRank >= 1) void processPageStage('translation')
+      if (page && canRunPageWorkflowStage('translation', workflowRank)) void processPageStage('translation')
     } else if (shortcutId === 'page.workflowInpaint') {
-      if (page && workflowRank >= 2) void processPageStage('inpainting')
+      if (page && canRunPageWorkflowStage('inpainting', workflowRank)) void processPageStage('inpainting')
     } else if (shortcutId === 'page.workflowRender') {
-      if (page && workflowRank >= 3) void processPageStage('rendering')
+      if (page && canRunPageWorkflowStage('rendering', workflowRank)) void processPageStage('rendering')
     } else if (shortcutId === 'page.import') openImagePicker()
     else if (shortcutId === 'page.context') setShowContext(true)
     else if (shortcutId === 'page.export') {
@@ -1435,12 +1470,13 @@ export function EditorPage() {
       canUndo={!!undoStack.length}
       canRedo={!!redoStack.length}
       disabled={editorBusy}
+      centerContent={!blockingBusy ? <EditorToolbarFeedback error={error} notice={notice} onDismiss={() => {setError(''); setNotice('')}}/> : null}
       rightActions={<div className="flex items-center gap-1" aria-label="当前页处理流程">
-        {workflowButtons.map(({stage, shortcutId, label, requiredRank, title, icon: Icon}) => <button
+        {workflowButtons.map(({stage, shortcutId, label, title, icon: Icon}) => <button
           key={stage}
           className={cn(nextWorkflowStage === stage ? primaryButtonClass : buttonClass, '!h-8 !min-h-8 px-2.5 py-0 text-[11px]')}
           onClick={() => void processPageStage(stage)}
-          disabled={!page || editorBusy || workflowRank < requiredRank}
+          disabled={!page || editorBusy || !canRunPageWorkflowStage(stage, workflowRank)}
           title={`${title} (${formatShortcut(shortcuts[shortcutId])})`}
           aria-keyshortcuts={shortcutToAria(shortcuts[shortcutId])}
         >{schedulingProcess && runningWorkflowStage === stage ? <ButtonLoading label={`${label.replace('重新 ', '')} 中…`}/> : <><Icon size={14}/>{label}</>}</button>)}
@@ -1486,7 +1522,6 @@ export function EditorPage() {
     </div>, document.body)}
     {showContext && <div className="fixed inset-0 z-[90] grid place-items-center bg-overlay backdrop-blur-sm" role="dialog" aria-modal="true" aria-labelledby="translation-context-title"><div className="w-[min(680px,72vw)] overflow-hidden rounded-2xl border border-line-strong bg-surface shadow-dialog"><header className="flex items-center justify-between border-b border-line-subtle px-6 py-5"><div><span className={eyebrowClass}>PROJECT CONTEXT</span><h2 className="mb-0 mt-1.5 text-xl" id="translation-context-title">翻译上下文</h2></div><button className={cn(iconButtonClass, 'border-0 bg-transparent text-xl')} disabled={savingContext} aria-label="关闭翻译上下文" onClick={() => setShowContext(false)}>×</button></header><p className="px-6 text-[13px] leading-6 text-muted">以 JSON 保存人物名、术语、口癖、称谓和章节背景；整页翻译时会随 Region ID 一起发送。</p><textarea className={cn(textareaClass, 'mx-6 mb-6 min-h-[320px] w-[calc(100%-48px)] font-mono text-[12px] leading-relaxed')} disabled={savingContext} value={contextText} onChange={event => setContextText(event.target.value)} spellCheck={false}/><footer className="flex justify-end gap-2.5 border-t border-line-subtle px-6 py-4"><button className={buttonClass} disabled={savingContext} onClick={() => setShowContext(false)}>取消</button><button className={primaryButtonClass} disabled={savingContext} onClick={() => void saveTranslationContext()}>{savingContext ? <ButtonLoading label="保存中…"/> : '保存上下文'}</button></footer></div></div>}
     {blockingBusy && <BlockingLoader label={busyLabel} progress={busyProgress}/>}
-    {!blockingBusy && (error ? <div className="pointer-events-none fixed left-1/2 top-20 z-[120] flex w-max max-w-[min(600px,calc(100vw-36px))] -translate-x-1/2 items-center gap-3 rounded-[10px] border border-danger/20 bg-danger/20 py-3 pl-4 pr-2 text-danger-soft-ink shadow-panel backdrop-blur-xl" role="alert"><span className="min-w-0 text-[12px] leading-relaxed">{error}</span><button className="pointer-events-auto grid size-7 cursor-pointer place-items-center rounded-md border-0 bg-transparent p-0 text-lg text-current opacity-70 hover:bg-ink/10 hover:opacity-100" type="button" aria-label="关闭提示" onClick={() => {setError(''); setNotice('')}}>×</button></div> : notice && <div className="pointer-events-none fixed left-1/2 top-20 z-[120] flex w-max max-w-[min(600px,calc(100vw-36px))] -translate-x-1/2 items-center gap-3 rounded-[10px] border border-success/20 bg-success/15 py-3 pl-4 pr-2 text-success-soft-ink shadow-panel backdrop-blur-xl" role="status"><span className="min-w-0 text-[12px] leading-relaxed">{notice}</span><button className="pointer-events-auto grid size-7 cursor-pointer place-items-center rounded-md border-0 bg-transparent p-0 text-lg text-current opacity-70 hover:bg-ink/10 hover:opacity-100" type="button" aria-label="关闭提示" onClick={() => {setNotice(''); setError('')}}>×</button></div>)}
     <input ref={fileRef} disabled={editorBusy} hidden type="file" accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp" multiple onChange={event => void upload(event.currentTarget.files)}/>
   </div>
   </>

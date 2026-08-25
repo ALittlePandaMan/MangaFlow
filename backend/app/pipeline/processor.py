@@ -4,6 +4,7 @@ import logging
 import shutil
 import time
 from collections.abc import Callable
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +18,7 @@ from app.core.config import get_settings
 from app.core.secrets import get_secret_store
 from app.models import ImagePage, ModelConfig, ProcessingTask, TextRegion, Translation
 from app.models.enums import PageStatus, PipelineStage, TaskStatus
+from app.services.base import DetectionResult
 from app.services.infra.model_manifest import persist_model_settings
 from app.services.infra.model_provisioning import ensure_recommended_config
 from app.services.inpainting import create_text_mask, create_text_mask_union, load_text_mask_source
@@ -24,7 +26,7 @@ from app.services.quality import evaluate_page
 from app.services.regions import save_revision
 from app.services.registry import registry
 from app.storage import get_storage
-from app.utils.geometry import reading_order_japanese
+from app.utils.geometry import bbox_to_polygon, intersection_area, reading_order_japanese
 from app.utils.image_metadata import load_rgb_with_metadata, save_png_with_metadata
 
 logger = logging.getLogger(__name__)
@@ -45,6 +47,109 @@ PAGE_DONE_STATUS = {
     "inpainting": PageStatus.INPAINTED.value,
     "rendering": PageStatus.COMPLETED.value,
 }
+
+
+def _substantial_bbox_overlap(first: list[float], second: list[float], threshold: float = 0.65) -> bool:
+    first_area = max(0.0, first[2]) * max(0.0, first[3])
+    second_area = max(0.0, second[2]) * max(0.0, second[3])
+    smaller_area = min(first_area, second_area)
+    return smaller_area > 0 and intersection_area(first, second) / smaller_area >= threshold
+
+
+def _exclude_preserved_geometry(
+    result: DetectionResult,
+    preserved: list[TextRegion],
+) -> DetectionResult | None:
+    if not preserved:
+        return result
+    grouping = result.metadata.get("line_grouping")
+    source_boxes = grouping.get("source_boxes") if isinstance(grouping, dict) else None
+    if not isinstance(source_boxes, list) or not source_boxes:
+        return None if any(_substantial_bbox_overlap(result.bbox, region.bbox) for region in preserved) else result
+    try:
+        boxes = [[float(value) for value in box] for box in source_boxes if len(box) == 4]
+    except (TypeError, ValueError):
+        boxes = []
+    if len(boxes) != len(source_boxes):
+        return None if any(_substantial_bbox_overlap(result.bbox, region.bbox) for region in preserved) else result
+    kept_indices = [
+        index
+        for index, box in enumerate(boxes)
+        if not any(_substantial_bbox_overlap(box, region.bbox) for region in preserved)
+    ]
+    if len(kept_indices) == len(boxes):
+        return result
+    if not kept_indices:
+        return None
+
+    kept_boxes = [boxes[index] for index in kept_indices]
+    left = min(box[0] for box in kept_boxes)
+    top = min(box[1] for box in kept_boxes)
+    right = max(box[0] + box[2] for box in kept_boxes)
+    bottom = max(box[1] + box[3] for box in kept_boxes)
+    bbox = [left, top, right - left, bottom - top]
+
+    trimmed_grouping = deepcopy(grouping)
+    trimmed_grouping["source_count"] = len(kept_indices)
+    trimmed_grouping["source_boxes"] = kept_boxes
+    source_polygons = grouping.get("source_polygons")
+    trimmed_grouping["source_polygons"] = (
+        [source_polygons[index] for index in kept_indices]
+        if isinstance(source_polygons, list) and len(source_polygons) == len(boxes)
+        else [bbox_to_polygon(box) for box in kept_boxes]
+    )
+    source_confidences = grouping.get("source_confidences")
+    kept_confidences = (
+        [float(source_confidences[index]) for index in kept_indices]
+        if isinstance(source_confidences, list) and len(source_confidences) == len(boxes)
+        else [result.confidence] * len(kept_indices)
+    )
+    trimmed_grouping["source_confidences"] = kept_confidences
+    source_orientations = grouping.get("source_orientations")
+    has_source_orientations = (
+        isinstance(source_orientations, list)
+        and len(source_orientations) == len(boxes)
+        and all(isinstance(value, str) and value for value in source_orientations)
+    )
+    orientation = result.orientation
+    if has_source_orientations:
+        kept_orientations = [source_orientations[index] for index in kept_indices]
+        trimmed_grouping["source_orientations"] = kept_orientations
+        orientation_weights: dict[str, float] = {}
+        for box, confidence, source_orientation in zip(
+            kept_boxes,
+            kept_confidences,
+            kept_orientations,
+            strict=True,
+        ):
+            weight = max(1.0, box[2] * box[3]) * max(0.01, confidence)
+            orientation_weights[source_orientation] = orientation_weights.get(source_orientation, 0.0) + weight
+        orientation = max(orientation_weights, key=orientation_weights.get)
+    else:
+        # Grouping metadata written before source orientations were recorded
+        # remains valid; retain its aggregate direction as the safest fallback.
+        trimmed_grouping.pop("source_orientations", None)
+    index_map = {old_index: new_index for new_index, old_index in enumerate(kept_indices)}
+    member_order = grouping.get("member_order")
+    trimmed_order = (
+        [index_map[index] for index in member_order if isinstance(index, int) and index in index_map]
+        if isinstance(member_order, list)
+        else []
+    )
+    trimmed_grouping["member_order"] = trimmed_order if len(trimmed_order) == len(kept_indices) else list(range(len(kept_indices)))
+    metadata = deepcopy(result.metadata)
+    metadata["line_grouping"] = trimmed_grouping
+    return DetectionResult(
+        polygon=bbox_to_polygon(bbox),
+        bbox=bbox,
+        confidence=min(kept_confidences),
+        orientation=orientation,
+        region_type=result.region_type,
+        metadata=metadata,
+        bubble_id=result.bubble_id,
+    )
+
+
 STAGE_PREVIOUS_STATUS = {
     "detection": PageStatus.UPLOADED.value,
     "ocr": PageStatus.DETECTED.value,
@@ -214,6 +319,12 @@ class PipelineProcessor:
         used_keys = {region.region_key for region in preserved}
         next_number = 1
         for index, result in enumerate(detected):
+            # Manual and locked regions are authoritative. Forced re-detection
+            # excludes only overlapping source members from a grouped result,
+            # retaining any other text lines from that same bubble.
+            result = _exclude_preserved_geometry(result, preserved)
+            if result is None:
+                continue
             while f"R{next_number:03d}" in used_keys:
                 next_number += 1
             key = f"R{next_number:03d}"
