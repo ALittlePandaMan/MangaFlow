@@ -64,7 +64,7 @@ def reset_image(image_id: str, db: Session = Depends(get_db)) -> ImageRead:
     db.commit()
 
     page_directory = get_storage().page_dir(page.project_id, page.id)
-    for name in ("masks", "clean", "rendered", "layers", "versions"):
+    for name in ("masks", "bubbles", "clean", "rendered", "layers", "versions"):
         directory = page_directory / name
         if directory.exists():
             shutil.rmtree(directory)
@@ -156,7 +156,12 @@ def _stage_endpoint(stage: str):
 
 
 for _stage in ("detect", "ocr", "translate", "inpaint", "render"):
-    _internal = {"detect": "detection", "translate": "translation", "render": "rendering"}.get(_stage, _stage)
+    _internal = {
+        "detect": "detection",
+        "translate": "translation",
+        "inpaint": "inpainting",
+        "render": "rendering",
+    }.get(_stage, _stage)
     router.add_api_route(
         f"/images/{{image_id}}/{_stage}",
         _stage_endpoint(_internal),

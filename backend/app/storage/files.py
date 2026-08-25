@@ -27,7 +27,7 @@ class StorageManager:
 
     def page_dir(self, project_id: str, page_id: str) -> Path:
         path = self._inside(self.project_dir(project_id) / "pages" / page_id)
-        for child in ("original", "masks", "clean", "rendered", "layers", "versions"):
+        for child in ("original", "masks", "bubbles", "clean", "rendered", "layers", "versions"):
             (path / child).mkdir(parents=True, exist_ok=True)
         return path
 

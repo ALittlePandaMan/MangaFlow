@@ -4,8 +4,17 @@ import json
 import zipfile
 from io import BytesIO
 
+import cv2
+import numpy as np
 from app.core.database import SessionLocal
 from app.models import ImagePage, TextRegion
+from app.services.detection.artifacts import (
+    BUBBLE_GEOMETRY_KEY,
+    bubble_geometry_items,
+    load_balloon_mask,
+    persist_balloon_mask,
+)
+from app.services.regions import STALE_CLEAN_PATH_KEY
 from app.services.rendering.pillow_renderer import RENDER_OUTPUT_VERSION
 from app.storage import get_storage
 from PIL import Image
@@ -160,6 +169,67 @@ def test_clean_export_falls_back_to_original_for_unrepaired_page(client) -> None
     assert exported_image.getpixel((0, 0))[:3] == (238, 238, 238)
 
 
+def test_portable_export_does_not_leak_private_stale_clean_path(client) -> None:
+    project = client.post("/api/projects", json={"name": "stale-clean-metadata"}).json()
+    page = client.post(
+        f"/api/projects/{project['id']}/images",
+        files={"files": ("page.png", _page_image(), "image/png")},
+    ).json()[0]
+    with SessionLocal() as db:
+        persisted_page = db.get(ImagePage, page["id"])
+        assert persisted_page is not None
+        persisted_page.metadata_json = {
+            **(persisted_page.metadata_json or {}),
+            STALE_CLEAN_PATH_KEY: "projects/private/old-clean.png",
+        }
+        db.commit()
+
+    exported = client.post(f"/api/projects/{project['id']}/export", json={"formats": ["project"]})
+    assert exported.status_code == 200, exported.text
+    with zipfile.ZipFile(BytesIO(exported.content)) as archive:
+        manifest = json.loads(archive.read("project.json"))
+
+    assert STALE_CLEAN_PATH_KEY not in manifest["pages"][0]["metadata"]
+
+
+def test_project_import_discards_untrusted_stale_clean_path(client) -> None:
+    project = client.post("/api/projects", json={"name": "malicious-stale-clean"}).json()
+    client.post(
+        f"/api/projects/{project['id']}/images",
+        files={"files": ("page.png", _page_image(), "image/png")},
+    )
+    exported = client.post(f"/api/projects/{project['id']}/export", json={"formats": ["project"]})
+    assert exported.status_code == 200, exported.text
+
+    rewritten = BytesIO()
+    with zipfile.ZipFile(BytesIO(exported.content)) as source, zipfile.ZipFile(
+        rewritten,
+        "w",
+        compression=zipfile.ZIP_DEFLATED,
+    ) as target:
+        for member in source.infolist():
+            if member.filename == "project.json":
+                continue
+            target.writestr(member, source.read(member))
+        manifest = json.loads(source.read("project.json"))
+        manifest["pages"][0]["metadata"][STALE_CLEAN_PATH_KEY] = (
+            "projects/another-project/pages/another-page/clean/clean.png"
+        )
+        target.writestr("project.json", json.dumps(manifest))
+    rewritten.seek(0)
+
+    imported = client.post(
+        "/api/projects/import",
+        files={"file": ("untrusted.zip", rewritten, "application/zip")},
+    )
+    assert imported.status_code == 201, imported.text
+    imported_page = client.get(f"/api/projects/{imported.json()['id']}/images").json()[0]
+    with SessionLocal() as db:
+        persisted = db.get(ImagePage, imported_page["id"])
+        assert persisted is not None
+        assert STALE_CLEAN_PATH_KEY not in (persisted.metadata_json or {})
+
+
 def test_exported_page_names_use_dynamic_zero_padding(client) -> None:
     project = client.post("/api/projects", json={"name": "numbered-export"}).json()
     files = [
@@ -250,3 +320,88 @@ def test_source_project_archive_can_be_imported_for_further_editing(client) -> N
         "locked", "visible",
     ):
         assert restored[field] == created_region[field]
+
+
+def test_project_archive_round_trips_exact_balloon_constraint_assets(client) -> None:
+    project = client.post("/api/projects", json={"name": "balloon-artifact-roundtrip"}).json()
+    page = client.post(
+        f"/api/projects/{project['id']}/images",
+        files={"files": ("page.png", _page_image(), "image/png")},
+    ).json()[0]
+    region = client.post(
+        f"/api/images/{page['id']}/regions",
+        json={"bbox": [55, 25, 70, 90], "orientation": "vertical"},
+    ).json()
+    storage = get_storage()
+    compact = np.zeros((100, 80), dtype=np.uint8)
+    cv2.ellipse(compact, (40, 50), (35, 46), 0, 0, 360, 255, -1)
+    with SessionLocal() as db:
+        persisted_page = db.get(ImagePage, page["id"])
+        persisted_region = db.get(TextRegion, region["id"])
+        assert persisted_page is not None and persisted_region is not None
+        entry = persist_balloon_mask(
+            storage,
+            storage.page_dir(project["id"], page["id"]),
+            instance_id="bubble-portable",
+            mask=compact,
+            origin=(50, 20),
+            image_shape=(140, 220),
+            confidence=0.97,
+            parent_instance_id=None,
+        )
+        persisted_page.metadata_json = {
+            BUBBLE_GEOMETRY_KEY: {
+                "schema_version": 1,
+                "source": {
+                    "path": persisted_page.original_path,
+                    "width": persisted_page.width,
+                    "height": persisted_page.height,
+                },
+                "instances": {"bubble-portable": entry},
+            }
+        }
+        persisted_region.bubble_id = "bubble-portable"
+        persisted_region.layout_data = {
+            "detection": {
+                "balloon_assignment": {
+                    "status": "assigned",
+                    "bubble_id": "bubble-portable",
+                    "balloon_confidence": 0.97,
+                    "core_coverage": 1.0,
+                },
+                "balloon_constraint": {
+                    "schema_version": 1,
+                    "status": "available",
+                    "instance_id": "bubble-portable",
+                },
+            }
+        }
+        db.commit()
+
+    exported = client.post(f"/api/projects/{project['id']}/export", json={"formats": ["project"]})
+    assert exported.status_code == 200, exported.text
+    with zipfile.ZipFile(BytesIO(exported.content)) as archive:
+        manifest = json.loads(archive.read("project.json"))
+        member = manifest["pages"][0]["assets"]["bubble_constraints"]["bubble-portable"]
+        assert member in archive.namelist()
+
+    imported = client.post(
+        "/api/projects/import",
+        files={"file": ("balloons.zip", BytesIO(exported.content), "application/zip")},
+    )
+    assert imported.status_code == 201, imported.text
+    imported_project = imported.json()
+    imported_page = client.get(f"/api/projects/{imported_project['id']}/images").json()[0]
+    with SessionLocal() as db:
+        restored_page = db.get(ImagePage, imported_page["id"])
+        assert restored_page is not None
+        restored_items = bubble_geometry_items(restored_page.metadata_json)
+        restored_mask = load_balloon_mask(
+            storage,
+            storage.page_dir(imported_project["id"], imported_page["id"]),
+            restored_items["bubble-portable"],
+            image_shape=(140, 220),
+        )
+    expected = np.zeros((140, 220), dtype=np.uint8)
+    expected[20:120, 50:130] = compact
+    assert np.array_equal(restored_mask, expected)

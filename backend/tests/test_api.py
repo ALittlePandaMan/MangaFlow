@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 from app.core.database import SessionLocal
-from app.models import ImagePage, ProcessingTask
+from app.models import ImagePage, ProcessingTask, TextRegion
 from app.pipeline.processor import PipelineProcessor
 from PIL import Image
 
@@ -23,6 +23,23 @@ def installed_ttf() -> Path:
     if font is None:
         pytest.skip("No TrueType font available for upload test")
     return font
+
+
+def test_page_inpaint_endpoint_uses_internal_pipeline_stage(client, monkeypatch) -> None:
+    monkeypatch.setattr("app.application.task_commands.task_manager.dispatch", lambda _task_id: None)
+    project = client.post("/api/projects", json={"name": "page-inpaint-stage"}).json()
+    page = client.post(
+        f"/api/projects/{project['id']}/images",
+        files={"files": ("page.png", image_file(), "image/png")},
+    ).json()[0]
+
+    response = client.post(f"/api/images/{page['id']}/inpaint", json={"force": True})
+
+    assert response.status_code == 202, response.text
+    task = response.json()
+    assert task["task_type"] == "inpainting"
+    assert task["payload"]["start_stage"] == "inpainting"
+    assert task["payload"]["end_stage"] == "inpainting"
 
 
 def test_image_url_version_changes_only_with_the_artifact(client) -> None:
@@ -145,6 +162,66 @@ def test_project_page_and_region_crud(client) -> None:
     assert deleted_copy.json()["rebuild_task"] is None
     revisions = client.get(f"/api/regions/{region['id']}/revisions")
     assert revisions.status_code == 200 and len(revisions.json()) >= 2
+
+
+def test_only_changed_source_geometry_marks_detected_region_as_manual(client) -> None:
+    project = client.post("/api/projects", json={"name": "geometry-change-detection"}).json()
+    page = client.post(
+        f"/api/projects/{project['id']}/images",
+        files={"files": ("page.png", image_file(), "image/png")},
+    ).json()[0]
+    region = client.post(
+        f"/api/images/{page['id']}/regions",
+        json={"bbox": [40, 50, 80, 140], "source_text": "source"},
+    ).json()
+
+    with SessionLocal() as db:
+        persisted = db.get(TextRegion, region["id"])
+        assert persisted is not None
+        persisted.bubble_id = "bubble-1"
+        persisted.layout_data = {
+            "detection": {
+                "balloon_assignment": {"status": "assigned", "bubble_id": "bubble-1"},
+                "line_grouping": {"method": "balloon_instance", "source_count": 2},
+                "instance_split": {"method": "text_gap_boundary", "parent_bubble_id": "bubble-parent"},
+            }
+        }
+        db.commit()
+
+    unchanged = client.patch(
+        f"/api/regions/{region['id']}",
+        json={
+            "polygon": region["polygon"],
+            "bbox": region["bbox"],
+            "translated_polygon": region["translated_polygon"],
+            "translated_bbox": region["translated_bbox"],
+            "translated_text": "translated",
+        },
+    )
+    assert unchanged.status_code == 200, unchanged.text
+    unchanged_region = unchanged.json()
+    assert unchanged_region["translated_text"] == "translated"
+    assert unchanged_region["bubble_id"] == "bubble-1"
+    assert "manual" not in unchanged_region["layout_data"]
+    assert unchanged_region["layout_data"]["detection"]["balloon_assignment"]["status"] == "assigned"
+    assert unchanged_region["layout_data"]["detection"]["line_grouping"]["source_count"] == 2
+    assert unchanged_region["layout_data"]["detection"]["instance_split"]["method"] == "text_gap_boundary"
+
+    moved_bbox = [45.0, 50.0, 80.0, 140.0]
+    moved_polygon = [[45.0, 50.0], [125.0, 50.0], [125.0, 190.0], [45.0, 190.0]]
+    changed = client.patch(
+        f"/api/regions/{region['id']}",
+        json={"polygon": moved_polygon, "bbox": moved_bbox},
+    )
+    assert changed.status_code == 200, changed.text
+    changed_region = changed.json()
+    assert changed_region["bbox"] == moved_bbox
+    assert changed_region["polygon"] == moved_polygon
+    assert changed_region["bubble_id"] is None
+    assert changed_region["layout_data"]["manual"] is True
+    assert "balloon_assignment" not in changed_region["layout_data"]["detection"]
+    assert "line_grouping" not in changed_region["layout_data"]["detection"]
+    assert "instance_split" not in changed_region["layout_data"]["detection"]
 
 
 def test_batch_recognition_only_enqueues_pages_without_completed_ocr(client, monkeypatch) -> None:

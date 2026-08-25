@@ -5,6 +5,8 @@ from pathlib import Path
 
 import cv2
 from app.services.base import DetectionResult, ProviderCapabilities, ProviderError, TextDetector
+from app.services.detection.bubbles import OnnxBubbleSegmenter
+from app.services.detection.grouping import MIN_TRUSTED_BALLOON_CONFIDENCE, group_text_regions_by_bubbles
 from app.services.infra.device import is_accelerator_error, release_paddle_cuda, resolve_paddle_device
 from app.services.infra.paddle import extract_paddle_lines
 from app.utils.geometry import bbox_to_polygon, polygon_to_bbox
@@ -62,6 +64,13 @@ class OpenCVTextDetector(TextDetector):
                     confidence=max(0.35, density),
                     orientation=orientation,
                     region_type="background_complex",
+                    metadata={
+                        "balloon_assignment": {
+                            "status": "disabled",
+                            "bubble_id": None,
+                            "reason": "provider_unsupported",
+                        },
+                    },
                 )
             )
         # Reading order is assigned by the pipeline; large false-positive sets are capped.
@@ -76,13 +85,19 @@ class PaddleTextDetector(TextDetector):
         description="Optional PaddleOCR Japanese text detector with quadrilateral polygons",
         devices=["cpu", "cuda"],
         supports_batch=True,
-        extra={"polygon": True, "optional_dependency": "paddleocr"},
+        extra={
+            "polygon": True,
+            "bubble_instance_grouping": True,
+            "optional_dependency": "paddleocr",
+        },
     )
 
     def __init__(self, config: dict | None = None) -> None:
         super().__init__(config)
         self._model = None
         self._device = "cpu"
+        self._bubble_segmenter: OnnxBubbleSegmenter | None = None
+        self._bubble_unavailable_reason: str | None = None
 
     def load(self) -> None:
         try:
@@ -101,6 +116,27 @@ class PaddleTextDetector(TextDetector):
             self._device = "cpu"
             release_paddle_cuda()
             self._model = self._create_model(PaddleOCR, self._device)
+        bubble_config = _bubble_grouping_config(self.config)
+        self._bubble_unavailable_reason = None
+        if bool(bubble_config.get("enabled", True)):
+            self._bubble_segmenter = OnnxBubbleSegmenter(bubble_config)
+            try:
+                self._bubble_segmenter.ensure_loaded()
+            except Exception as exc:
+                # Text detection remains usable offline or when the optional
+                # balloon model cannot be loaded. Keep a circuit breaker for
+                # this provider session so every page does not repeat a long
+                # network timeout. Reconfiguration or restart creates a retry.
+                self._bubble_unavailable_reason = "model_unavailable"
+                logger.warning("Bubble segmentation is unavailable; text boxes will remain separate: %s", exc)
+
+    def unload(self) -> None:
+        if self._bubble_segmenter is not None:
+            self._bubble_segmenter.unload()
+        self._bubble_segmenter = None
+        self._bubble_unavailable_reason = None
+        self._model = None
+        super().unload()
 
     def _create_model(self, model_class: type, device: str):
         return model_class(
@@ -152,4 +188,79 @@ class PaddleTextDetector(TextDetector):
                     region_type="background_complex",
                 )
             )
-        return output
+        bubble_config = _bubble_grouping_config(self.config)
+        if not output:
+            return output
+        if not bool(bubble_config.get("enabled", True)):
+            return _mark_bubble_grouping_disabled(output)
+        if self._bubble_unavailable_reason is not None:
+            return _mark_bubble_grouping_unavailable(output, self._bubble_unavailable_reason)
+        try:
+            if self._bubble_segmenter is None:
+                self._bubble_segmenter = OnnxBubbleSegmenter(bubble_config)
+            bubbles = self._bubble_segmenter.segment(image_path)
+            return group_text_regions_by_bubbles(
+                output,
+                bubbles,
+                page_key=str(image_path.resolve()),
+                image_path=image_path,
+                min_bubble_confidence=max(
+                    MIN_TRUSTED_BALLOON_CONFIDENCE,
+                    float(bubble_config.get("min_bubble_confidence", MIN_TRUSTED_BALLOON_CONFIDENCE)),
+                ),
+                min_containment=float(bubble_config.get("min_containment", 0.55)),
+                min_core_containment=float(bubble_config.get("min_core_containment", 0.8)),
+                ambiguity_margin=float(bubble_config.get("ambiguity_margin", 0.12)),
+                max_second_containment=float(bubble_config.get("max_second_containment", 0.45)),
+                mask_padding=int(bubble_config.get("mask_padding", 3)),
+                split_connected_instances=bool(bubble_config.get("split_connected_instances", True)),
+                split_max_neck_ratio=float(bubble_config.get("split_max_neck_ratio", 0.22)),
+                split_min_boundary_coverage=float(
+                    bubble_config.get("split_min_boundary_coverage", 0.7)
+                ),
+                split_min_boundary_run=float(bubble_config.get("split_min_boundary_run", 0.65)),
+            )
+        except Exception as exc:
+            self._bubble_unavailable_reason = "segmentation_failed"
+            logger.warning("Bubble segmentation failed; keeping %d text boxes separate: %s", len(output), exc)
+            return _mark_bubble_grouping_unavailable(output, self._bubble_unavailable_reason)
+
+
+def _bubble_grouping_config(config: dict) -> dict:
+    value = config.get("bubble_grouping")
+    if value is False:
+        return {"enabled": False}
+    if isinstance(value, dict):
+        return {"enabled": True, **value}
+    # Existing recommended configurations predate this key. Treat omission as
+    # enabled while preserving an explicit opt-out.
+    return {"enabled": True}
+
+
+def _mark_bubble_grouping_unavailable(
+    output: list[DetectionResult],
+    reason: str,
+) -> list[DetectionResult]:
+    for result in output:
+        result.metadata = {
+            **result.metadata,
+            "balloon_assignment": {
+                "status": "unavailable",
+                "bubble_id": None,
+                "reason": reason,
+            },
+        }
+    return output
+
+
+def _mark_bubble_grouping_disabled(output: list[DetectionResult]) -> list[DetectionResult]:
+    for result in output:
+        result.metadata = {
+            **result.metadata,
+            "balloon_assignment": {
+                "status": "disabled",
+                "bubble_id": None,
+                "reason": "configuration_disabled",
+            },
+        }
+    return output

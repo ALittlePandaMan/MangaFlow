@@ -1,4 +1,4 @@
-import {fireEvent, render, screen} from '@testing-library/react'
+import {fireEvent, render, screen, within} from '@testing-library/react'
 import {beforeEach, describe, expect, it, vi} from 'vitest'
 
 import type {TextRegion} from '../../../types'
@@ -68,6 +68,26 @@ describe('RegionProperties coordinate rotation', () => {
     renderProperties()
 
     expect(screen.getByText(region.region_key).closest('section')).toHaveClass('h-12')
+  })
+
+  it('shows color swatches without inline hex text and still updates both colors', () => {
+    const onUpdate = renderProperties()
+    const textColor = screen.getByRole('button', {name: `文字颜色，当前 ${region.text_color.toUpperCase()}`})
+    const strokeColor = screen.getByRole('button', {name: `描边颜色，当前 ${region.stroke_color.toUpperCase()}`})
+
+    expect(textColor.querySelector('span[style]')).toHaveStyle({background: region.text_color})
+    expect(strokeColor.querySelector('span[style]')).toHaveStyle({background: region.stroke_color})
+    expect(within(textColor).queryByText(region.text_color.toUpperCase())).not.toBeInTheDocument()
+    expect(within(strokeColor).queryByText(region.stroke_color.toUpperCase())).not.toBeInTheDocument()
+
+    fireEvent.click(textColor)
+    fireEvent.click(within(screen.getByRole('dialog', {name: '文字颜色'})).getByRole('button', {name: '#ff6258'}))
+    fireEvent.click(textColor)
+    fireEvent.click(strokeColor)
+    fireEvent.click(within(screen.getByRole('dialog', {name: '描边颜色'})).getByRole('button', {name: '#3a9cff'}))
+
+    expect(onUpdate).toHaveBeenNthCalledWith(1, region.id, {text_color: '#ff6258'})
+    expect(onUpdate).toHaveBeenNthCalledWith(2, region.id, {stroke_color: '#3a9cff'})
   })
 
   it('rotates the source polygon without changing translated text rotation', () => {

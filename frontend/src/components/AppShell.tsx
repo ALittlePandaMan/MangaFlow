@@ -123,7 +123,14 @@ function SetupLoadingScreen() {
 }
 
 function SetupFailureScreen({message, onRetry}: {message: string, onRetry: () => void}) {
-  return <div className="grid h-full min-h-[620px] place-items-center bg-app p-8"><div className="w-[min(480px,100%)] rounded-2xl bg-surface p-8 text-center shadow-dialog"><CircleAlert className="mx-auto text-danger" size={30}/><h1 className="mb-2 mt-4 text-lg">无法检查工作台配置</h1><p className="mb-5 mt-0 text-xs leading-relaxed text-muted">{message}</p><button type="button" className={buttonClass} onClick={onRetry}><RefreshCw size={15}/>重新检测</button></div></div>
+  return <div className="grid h-full min-h-[620px] place-items-center bg-app px-6" role="alert">
+    <div className="flex w-[min(480px,100%)] flex-col items-center text-center">
+      <CircleAlert className="text-danger" size={30}/>
+      <h1 className="mb-2 mt-4 text-lg">无法检查工作台配置</h1>
+      <p className="mb-5 mt-0 text-xs leading-relaxed text-muted">{message}</p>
+      <button type="button" className={buttonClass} onClick={onRetry}><RefreshCw size={15}/>重新检测</button>
+    </div>
+  </div>
 }
 
 function setupStageLabel(kind: string): string {

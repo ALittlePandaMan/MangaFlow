@@ -4,6 +4,7 @@ import json
 import uuid
 import zipfile
 from collections.abc import Iterable
+from copy import deepcopy
 from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
@@ -11,6 +12,8 @@ from typing import Any, BinaryIO
 
 from app.models import ImagePage, Project, TextRegion
 from app.schemas.domain import RegionCreate
+from app.services.detection.artifacts import BUBBLE_GEOMETRY_KEY, bubble_geometry_items
+from app.services.regions import STALE_CLEAN_PATH_KEY
 from app.storage import StorageError, StorageManager
 from app.storage.files import SAFE_FILENAME
 from sqlalchemy.orm import Session
@@ -46,6 +49,8 @@ def export_project(project: Project, formats: Iterable[str], storage: StorageMan
         for page_number, page in enumerate(ordered_pages, start=1):
             export_stem = f"{page_number:0{page_number_width}d}"
             project_page_root = f"project/pages/{page.order_index:04d}-{page.id}"
+            portable_metadata = deepcopy(page.metadata_json or {})
+            portable_metadata.pop(STALE_CLEAN_PATH_KEY, None)
             page_data: dict[str, Any] = {
                 "id": page.id,
                 "filename": page.filename,
@@ -55,7 +60,7 @@ def export_project(project: Project, formats: Iterable[str], storage: StorageMan
                 "status": page.status,
                 "current_stage": page.current_stage,
                 "error_message": page.error_message,
-                "metadata": page.metadata_json,
+                "metadata": portable_metadata,
                 "assets": {},
                 "regions": [],
             }
@@ -71,6 +76,13 @@ def export_project(project: Project, formats: Iterable[str], storage: StorageMan
                     asset_name = f"{project_page_root}/{folder}/{fallback}"
                     if _write_file(archive, storage, relative_path, asset_name):
                         page_data["assets"][field] = asset_name
+                bubble_assets: dict[str, str] = {}
+                for instance_id, entry in bubble_geometry_items(page.metadata_json).items():
+                    member = f"{project_page_root}/bubbles/{_safe_filename(instance_id, 'bubble')}.png"
+                    if _write_file(archive, storage, entry.get("path"), member):
+                        bubble_assets[instance_id] = member
+                if bubble_assets:
+                    page_data["assets"]["bubble_constraints"] = bubble_assets
             for region in page.regions:
                 region_data: dict[str, Any] = {
                     "region_id": region.region_key,
@@ -214,6 +226,21 @@ def _import_page(
     original_member = assets.get("original") or f"project/original/{filename}"
     original_payload = _read_member(archive, original_member, "页面原图")
     original_path, width, height = storage.save_upload(project.id, page_id, filename, BytesIO(original_payload))
+    metadata = _dictionary(page_data.get("metadata"))
+    # This runtime-only pointer is never portable. Trusting an imported value
+    # could make incremental repair read another page's clean composite.
+    metadata.pop(STALE_CLEAN_PATH_KEY, None)
+    _restore_bubble_geometry(
+        archive,
+        assets.get("bubble_constraints"),
+        metadata,
+        storage,
+        project.id,
+        page_id,
+        original_path,
+        width,
+        height,
+    )
     page = ImagePage(
         id=page_id,
         project=project,
@@ -225,7 +252,7 @@ def _import_page(
         status=_bounded_text(page_data.get("status"), "UPLOADED", 32),
         current_stage=_optional_text(page_data.get("current_stage"), 32),
         error_message=_optional_text(page_data.get("error_message"), 4000),
-        metadata_json=_dictionary(page_data.get("metadata")),
+        metadata_json=metadata,
     )
     page.clean_path = _restore_page_asset(archive, assets.get("clean"), storage, project.id, page_id, "clean", "clean.png")
     page.rendered_path = _restore_page_asset(archive, assets.get("translated"), storage, project.id, page_id, "rendered", "translated.png")
@@ -348,6 +375,48 @@ def _restore_page_asset(
     destination = storage.page_dir(project_id, page_id) / folder / filename
     destination.write_bytes(archive.read(member))
     return storage.relative(destination)
+
+
+def _restore_bubble_geometry(
+    archive: zipfile.ZipFile,
+    asset_value: Any,
+    metadata: dict[str, Any],
+    storage: StorageManager,
+    project_id: str,
+    page_id: str,
+    original_path: str,
+    width: int,
+    height: int,
+) -> None:
+    manifest = metadata.get(BUBBLE_GEOMETRY_KEY)
+    if not isinstance(manifest, dict):
+        return
+    items = manifest.get("instances")
+    assets = _dictionary(asset_value)
+    if not isinstance(items, dict) or not assets:
+        metadata.pop(BUBBLE_GEOMETRY_KEY, None)
+        return
+    restored: dict[str, dict[str, Any]] = {}
+    directory = storage.page_dir(project_id, page_id) / "bubbles"
+    for instance_id, entry_value in items.items():
+        if not isinstance(instance_id, str) or not isinstance(entry_value, dict):
+            continue
+        member = assets.get(instance_id)
+        if not isinstance(member, str) or member not in archive.namelist():
+            continue
+        destination = directory / f"{_safe_filename(instance_id, 'bubble')}.png"
+        destination.write_bytes(archive.read(member))
+        entry = dict(entry_value)
+        entry["path"] = storage.relative(destination)
+        restored[instance_id] = entry
+    if not restored:
+        metadata.pop(BUBBLE_GEOMETRY_KEY, None)
+        return
+    metadata[BUBBLE_GEOMETRY_KEY] = {
+        **manifest,
+        "source": {"path": original_path, "width": width, "height": height},
+        "instances": restored,
+    }
 
 
 def _restore_region_asset(

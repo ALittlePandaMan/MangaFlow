@@ -3,10 +3,11 @@ from __future__ import annotations
 import threading
 import time
 from io import BytesIO
+from types import SimpleNamespace
 
 import cv2
 import numpy as np
-from app.pipeline.processor import PipelineProcessor
+from app.pipeline.processor import PipelineProcessor, _exclude_preserved_geometry
 from app.services.base import DetectionResult, OCRResult
 from app.services.inpainting.providers import SimpleLaMaInpainter
 from PIL import Image, ImageChops, ImageDraw
@@ -76,14 +77,39 @@ def test_forced_detection_preserves_manual_regions_and_replaces_detector_output(
 
         def detect(self, _image_path):
             self.calls += 1
-            x = 20 if self.calls == 1 else 220
-            bbox = [x, 30, 50, 100]
+            if self.calls == 1:
+                return [
+                    DetectionResult(
+                        polygon=[[20, 30], [70, 30], [70, 130], [20, 130]],
+                        bbox=[20, 30, 50, 100],
+                        confidence=0.95,
+                        bubble_id="bubble-stable",
+                        metadata={"pass": self.calls},
+                    )
+                ]
+            source_boxes = [[100, 70, 50, 70], [220, 70, 50, 70]]
             return [
                 DetectionResult(
-                    polygon=[[x, 30], [x + 50, 30], [x + 50, 130], [x, 130]],
-                    bbox=bbox,
+                    polygon=[[100, 70], [270, 70], [270, 140], [100, 140]],
+                    bbox=[100, 70, 170, 70],
                     confidence=0.95,
-                    metadata={"pass": self.calls},
+                    bubble_id="bubble-stable",
+                    metadata={
+                        "pass": self.calls,
+                        "line_grouping": {
+                            "method": "balloon_instance",
+                            "source_count": 2,
+                            "source_boxes": source_boxes,
+                            "source_polygons": [
+                                [[x, y], [x + width, y], [x + width, y + height], [x, y + height]]
+                                for x, y, width, height in source_boxes
+                            ],
+                            "source_confidences": [0.92, 0.95],
+                            "source_orientations": ["horizontal", "vertical"],
+                            "member_order": [0, 1],
+                        },
+                    },
+                    orientation="horizontal",
                 )
             ]
 
@@ -132,7 +158,375 @@ def test_forced_detection_preserves_manual_regions_and_replaces_detector_output(
     assert first_detected["id"] not in {region["id"] for region in regions}
     replacement = next(region for region in regions if "detection" in region["layout_data"])
     assert replacement["bbox"][0] == 220
+    assert replacement["bubble_id"] == "bubble-stable"
     assert replacement["layout_data"]["detection"]["pass"] == 2
+    assert len(regions) == 2
+    grouping = replacement["layout_data"]["detection"]["line_grouping"]
+    assert grouping["source_count"] == 1
+    assert grouping["source_boxes"] == [[220.0, 70.0, 50.0, 70.0]]
+    assert grouping["source_orientations"] == ["vertical"]
+    assert replacement["orientation"] == "vertical"
+
+
+def test_failed_forced_detection_keeps_last_good_regions_masks_and_clean_page(client, monkeypatch) -> None:
+    class FailingSecondDetector:
+        calls = 0
+
+        def detect(self, _image_path):
+            self.calls += 1
+            if self.calls == 2:
+                raise RuntimeError("intentional detection failure")
+            return [
+                DetectionResult(
+                    polygon=[[30, 20], [80, 20], [80, 80], [30, 80]],
+                    bbox=[30, 20, 50, 60],
+                    confidence=0.94,
+                    metadata={
+                        "balloon_assignment": {
+                            "status": "outside",
+                            "bubble_id": None,
+                            "reason": "no_matching_balloon",
+                        }
+                    },
+                )
+            ]
+
+    detector = FailingSecondDetector()
+    inpainter = RecordingColorInpainter([(30, 170, 80)])
+    original_provider = PipelineProcessor._provider
+
+    def use_test_providers(processor, kind, requested):
+        if kind == "detection":
+            return detector, "failing-detector"
+        if kind == "inpainting":
+            return inpainter, "recording-inpainter"
+        return original_provider(processor, kind, requested)
+
+    monkeypatch.setattr(PipelineProcessor, "_provider", use_test_providers)
+    project = client.post("/api/projects", json={"name": "atomic-forced-detection"}).json()
+    page = client.post(
+        f"/api/projects/{project['id']}/images",
+        files={"files": ("page.png", solid_page(120, 100), "image/png")},
+    ).json()[0]
+    first = client.post(
+        f"/api/images/{page['id']}/process",
+        json={"start_stage": "detection", "end_stage": "detection", "force": True},
+    ).json()
+    assert wait_for_task(client, first["id"])["status"] == "COMPLETED"
+    region = client.get(f"/api/images/{page['id']}/regions").json()[0]
+    uploaded = client.put(
+        f"/api/regions/{region['id']}/mask",
+        files={"file": ("mask.png", rectangular_mask(120, 100, (35, 25, 70, 75)), "image/png")},
+    )
+    assert uploaded.status_code == 200, uploaded.text
+    repaired = client.post(
+        f"/api/images/{page['id']}/process",
+        json={"start_stage": "inpainting", "end_stage": "inpainting", "force": True},
+    ).json()
+    assert wait_for_task(client, repaired["id"])["status"] == "COMPLETED"
+    before_page = client.get(f"/api/images/{page['id']}").json()
+    before_region = client.get(f"/api/images/{page['id']}/regions").json()[0]
+    assert before_page["clean_url"]
+
+    failed = client.post(
+        f"/api/images/{page['id']}/process",
+        json={"start_stage": "detection", "end_stage": "detection", "force": True},
+    ).json()
+    assert wait_for_task(client, failed["id"])["status"] == "FAILED"
+
+    after_page = client.get(f"/api/images/{page['id']}").json()
+    after_region = client.get(f"/api/images/{page['id']}/regions").json()[0]
+    assert after_page["clean_url"] == before_page["clean_url"]
+    assert after_region["id"] == before_region["id"]
+    assert after_region["bbox"] == before_region["bbox"]
+    assert after_region["mask_url"] == before_region["mask_url"]
+
+
+def test_trimming_legacy_grouping_without_source_orientations_keeps_aggregate_orientation() -> None:
+    result = DetectionResult(
+        polygon=[[100, 70], [270, 70], [270, 140], [100, 140]],
+        bbox=[100, 70, 170, 70],
+        confidence=0.9,
+        orientation="horizontal",
+        metadata={
+            "line_grouping": {
+                "method": "balloon_instance",
+                "source_count": 2,
+                "source_boxes": [[100, 70, 50, 70], [220, 70, 50, 70]],
+                "source_confidences": [0.9, 0.8],
+                "member_order": [0, 1],
+            },
+        },
+    )
+
+    trimmed = _exclude_preserved_geometry(result, [SimpleNamespace(bbox=[100, 70, 50, 70])])
+
+    assert trimmed is not None
+    assert trimmed.orientation == "horizontal"
+    assert "source_orientations" not in trimmed.metadata["line_grouping"]
+
+
+def test_source_geometry_edit_becomes_manual_and_survives_forced_detection(client, monkeypatch) -> None:
+    class MovingDetector:
+        calls = 0
+
+        def detect(self, _image_path):
+            self.calls += 1
+            x = 20 if self.calls == 1 else 220
+            return [
+                DetectionResult(
+                    polygon=[[x + 5, 30], [x + 45, 30], [x + 50, 130], [x, 130]],
+                    bbox=[x, 30, 50, 100],
+                    confidence=0.95,
+                    bubble_id="bubble-stable",
+                    metadata={
+                        "balloon_assignment": {"status": "assigned", "bubble_id": "bubble-stable"},
+                    },
+                )
+            ]
+
+    detector = MovingDetector()
+    original_provider = PipelineProcessor._provider
+
+    def use_moving_detector(processor, kind, requested):
+        if kind == "detection":
+            return detector, "moving-detector"
+        return original_provider(processor, kind, requested)
+
+    monkeypatch.setattr(PipelineProcessor, "_provider", use_moving_detector)
+    project = client.post("/api/projects", json={"name": "preserve-edited-detection"}).json()
+    page = client.post(
+        f"/api/projects/{project['id']}/images",
+        files={"files": ("edited.png", manga_page(), "image/png")},
+    ).json()[0]
+    first_task = client.post(
+        f"/api/images/{page['id']}/process",
+        json={"start_stage": "detection", "end_stage": "detection", "force": True},
+    ).json()
+    assert wait_for_task(client, first_task["id"])["status"] == "COMPLETED"
+    detected = client.get(f"/api/images/{page['id']}/regions").json()[0]
+
+    # Even though the bbox value is unchanged, setting it normalizes the
+    # detector's trapezoid to a rectangle and is therefore a real source edit.
+    edited = client.patch(f"/api/regions/{detected['id']}", json={"bbox": [20, 30, 50, 100]}).json()
+    assert edited["layout_data"]["manual"] is True
+    assert edited["bubble_id"] is None
+    assert "balloon_assignment" not in edited["layout_data"]["detection"]
+
+    second_task = client.post(
+        f"/api/images/{page['id']}/process",
+        json={"start_stage": "detection", "end_stage": "detection", "force": True},
+    ).json()
+    assert wait_for_task(client, second_task["id"])["status"] == "COMPLETED"
+    regions = client.get(f"/api/images/{page['id']}/regions").json()
+    assert edited["id"] in {region["id"] for region in regions}
+    assert any(region["bbox"][0] == 220 for region in regions)
+
+
+def test_balloon_grouped_region_masks_only_its_source_text_polygons(client, monkeypatch) -> None:
+    source_polygons = [
+        [[20, 20], [52, 20], [52, 80], [20, 80]],
+        [[108, 20], [140, 20], [140, 80], [108, 80]],
+    ]
+
+    class GroupedDetector:
+        def detect(self, _image_path):
+            bbox = [20, 20, 120, 60]
+            bubble_mask = np.zeros((90, 150), dtype=np.uint8)
+            cv2.ellipse(bubble_mask, (75, 45), (70, 40), 0, 0, 360, 1, -1)
+            return [
+                DetectionResult(
+                    polygon=[[20, 20], [140, 20], [140, 80], [20, 80]],
+                    bbox=bbox,
+                    confidence=0.91,
+                    bubble_id="bubble-safe-mask",
+                    metadata={
+                        "balloon_assignment": {
+                            "status": "assigned",
+                            "bubble_id": "bubble-safe-mask",
+                            "coverage": 0.95,
+                            "core_coverage": 0.99,
+                            "score": 0.96,
+                            "balloon_confidence": 0.97,
+                        },
+                        "line_grouping": {
+                            "method": "balloon_instance",
+                            "source_count": 2,
+                            "source_polygons": source_polygons,
+                        }
+                    },
+                    balloon_mask=bubble_mask,
+                    balloon_mask_origin=(10, 5),
+                    balloon_mask_id="bubble-safe-mask",
+                    balloon_mask_confidence=0.97,
+                )
+            ]
+
+    detector = GroupedDetector()
+    original_provider = PipelineProcessor._provider
+
+    def use_grouped_detector(processor, kind, requested):
+        if kind == "detection":
+            return detector, "grouped-detector"
+        return original_provider(processor, kind, requested)
+
+    monkeypatch.setattr(PipelineProcessor, "_provider", use_grouped_detector)
+    project = client.post("/api/projects", json={"name": "safe-grouped-mask"}).json()
+    page = client.post(
+        f"/api/projects/{project['id']}/images",
+        files={"files": ("grouped.png", solid_page(), "image/png")},
+    ).json()[0]
+    detection_task = client.post(
+        f"/api/images/{page['id']}/process",
+        json={"start_stage": "detection", "end_stage": "detection", "force": True},
+    ).json()
+    detection_task = wait_for_task(client, detection_task["id"])
+    assert detection_task["status"] == "COMPLETED", detection_task
+
+    mask_task = client.post(
+        f"/api/images/{page['id']}/process",
+        json={"start_stage": "mask", "end_stage": "mask", "force": True, "options": {"expand": 1}},
+    ).json()
+    mask_task = wait_for_task(client, mask_task["id"])
+    assert mask_task["status"] == "COMPLETED", mask_task
+    region = client.get(f"/api/images/{page['id']}/regions").json()[0]
+    response = client.get(region["mask_url"])
+    mask = cv2.imdecode(np.frombuffer(response.content, dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
+
+    assert region["bubble_id"] == "bubble-safe-mask"
+    assert region["layout_data"]["detection"]["balloon_constraint"]["status"] == "available"
+    assert region["layout_data"]["mask_generation"]["method"] == "source_polygon_union"
+    assert region["layout_data"]["mask_generation"]["constraint"]["status"] in {
+        "applied",
+        "relaxed",
+    }
+    assert region["layout_data"]["mask_generation"]["constraint"]["outside_pixels_after"] == 0
+    assert mask[50, 30] == 255
+    assert mask[50, 120] == 255
+    assert mask[50, 80] == 0
+    assert mask[20, 20] == 0
+
+    edited = client.patch(
+        f"/api/regions/{region['id']}",
+        json={"bbox": [18, 18, 124, 64]},
+    ).json()
+    assert edited["bubble_id"] is None
+    assert "line_grouping" not in edited["layout_data"]["detection"]
+    assert "balloon_constraint" not in edited["layout_data"]["detection"]
+    assert edited["mask_url"] is None
+
+
+def test_outside_balloon_region_uses_conservative_glyph_mask(client, monkeypatch) -> None:
+    class OutsideDetector:
+        def detect(self, _image_path):
+            return [
+                DetectionResult(
+                    polygon=[[25, 15], [85, 15], [85, 85], [25, 85]],
+                    bbox=[25, 15, 60, 70],
+                    confidence=0.93,
+                    metadata={
+                        "balloon_assignment": {
+                            "status": "outside",
+                            "bubble_id": None,
+                            "reason": "no_matching_balloon",
+                        }
+                    },
+                )
+            ]
+
+    original_provider = PipelineProcessor._provider
+
+    def use_outside_detector(processor, kind, requested):
+        if kind == "detection":
+            return OutsideDetector(), "outside-detector"
+        return original_provider(processor, kind, requested)
+
+    monkeypatch.setattr(PipelineProcessor, "_provider", use_outside_detector)
+    image = Image.new("RGB", (120, 100), "#ebebeb")
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((38, 25, 44, 75), fill="#141414")
+    draw.rectangle((58, 25, 64, 75), fill="#141414")
+    upload = BytesIO()
+    image.save(upload, "PNG")
+    upload.seek(0)
+
+    project = client.post("/api/projects", json={"name": "outside-safe-mask"}).json()
+    page = client.post(
+        f"/api/projects/{project['id']}/images",
+        files={"files": ("outside.png", upload, "image/png")},
+    ).json()[0]
+    detection_task = client.post(
+        f"/api/images/{page['id']}/process",
+        json={"start_stage": "detection", "end_stage": "detection", "force": True},
+    ).json()
+    assert wait_for_task(client, detection_task["id"])["status"] == "COMPLETED"
+    mask_task = client.post(
+        f"/api/images/{page['id']}/process",
+        json={"start_stage": "mask", "end_stage": "mask", "force": True, "options": {"expand": 1}},
+    ).json()
+    assert wait_for_task(client, mask_task["id"])["status"] == "COMPLETED"
+
+    region = client.get(f"/api/images/{page['id']}/regions").json()[0]
+    mask_response = client.get(region["mask_url"])
+    mask = cv2.imdecode(np.frombuffer(mask_response.content, dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
+    metadata = region["layout_data"]["mask_generation"]
+
+    assert metadata["method"] == "conservative_glyph"
+    assert metadata["constraint"] == {
+        "version": 1,
+        "status": "conservative",
+        "reason": "outside_balloon",
+    }
+    assert 0 < cv2.countNonZero(mask) < 3000
+    assert mask[50, 40] == 255
+    assert mask[50, 30] == 0
+
+
+def test_manual_mask_edit_invalidates_clean_page_and_automatic_constraint(client, monkeypatch) -> None:
+    inpainter = RecordingColorInpainter([(20, 180, 60)])
+    original_provider = PipelineProcessor._provider
+
+    def use_recording_inpainter(processor, kind, requested):
+        if kind == "inpainting":
+            return inpainter, "recording-inpainter"
+        return original_provider(processor, kind, requested)
+
+    monkeypatch.setattr(PipelineProcessor, "_provider", use_recording_inpainter)
+    project = client.post("/api/projects", json={"name": "manual-mask-invalidation"}).json()
+    page = client.post(
+        f"/api/projects/{project['id']}/images",
+        files={"files": ("page.png", solid_page(120, 100), "image/png")},
+    ).json()[0]
+    region = client.post(
+        f"/api/images/{page['id']}/regions",
+        json={"polygon": [[25, 20], [75, 20], [75, 80], [25, 80]]},
+    ).json()
+    uploaded = client.put(
+        f"/api/regions/{region['id']}/mask",
+        files={"file": ("mask.png", rectangular_mask(120, 100, (35, 30, 65, 70)), "image/png")},
+    )
+    assert uploaded.status_code == 200, uploaded.text
+    repaired = client.post(
+        f"/api/images/{page['id']}/process",
+        json={"start_stage": "inpainting", "end_stage": "inpainting", "force": True},
+    ).json()
+    assert wait_for_task(client, repaired["id"])["status"] == "COMPLETED"
+    assert client.get(f"/api/images/{page['id']}").json()["clean_url"]
+
+    edited = client.post(
+        f"/api/regions/{region['id']}/mask/operation",
+        json={"operation": "dilate", "amount": 3},
+    )
+    assert edited.status_code == 200, edited.text
+    edited_region = edited.json()
+
+    assert client.get(f"/api/images/{page['id']}").json()["clean_url"] is None
+    assert edited_region["layout_data"]["mask_generation"]["method"] == "manual_mask"
+    assert edited_region["layout_data"]["mask_generation"]["constraint"] == {
+        "version": 1,
+        "status": "manual",
+        "reason": "manual_mask_edit",
+    }
 
 
 def test_ocr_commits_incremental_region_progress(client, monkeypatch) -> None:
@@ -545,9 +939,14 @@ def test_region_inpaint_only_reprocesses_selected_mask_and_clears_its_old_area(c
     with Image.open(BytesIO(client.get(initial_page["clean_url"]).content)) as image:
         clean_before = np.asarray(image.convert("RGB")).copy()
 
+    unchanged = client.patch(f"/api/regions/{regions[0]['id']}", json={"polygon": polygons[0]})
+    assert unchanged.status_code == 200, unchanged.text
+    assert client.get(f"/api/images/{page['id']}").json()["clean_url"] == initial_page["clean_url"]
+
     moved_polygon = [[60, 20], [90, 20], [90, 60], [60, 60]]
     moved = client.patch(f"/api/regions/{regions[0]['id']}", json={"polygon": moved_polygon})
     assert moved.status_code == 200, moved.text
+    assert client.get(f"/api/images/{page['id']}").json()["clean_url"] is None
     rerun = client.post(f"/api/regions/{regions[0]['id']}/inpaint", json={"force": True}).json()
     rerun = wait_for_task(client, rerun["id"])
     assert rerun["status"] == "COMPLETED", rerun
