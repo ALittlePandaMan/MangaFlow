@@ -1,4 +1,5 @@
 from app.services.inpainting.masking import (
+    apply_balloon_constraint,
     create_region_mask,
     create_text_mask,
     create_text_mask_union,
@@ -12,6 +13,7 @@ __all__ = [
     "OpenCVInpainter",
     "HybridInpainter",
     "SimpleLaMaInpainter",
+    "apply_balloon_constraint",
     "create_region_mask",
     "create_text_mask",
     "create_text_mask_union",

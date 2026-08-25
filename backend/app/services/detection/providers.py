@@ -6,7 +6,7 @@ from pathlib import Path
 import cv2
 from app.services.base import DetectionResult, ProviderCapabilities, ProviderError, TextDetector
 from app.services.detection.bubbles import OnnxBubbleSegmenter
-from app.services.detection.grouping import group_text_regions_by_bubbles
+from app.services.detection.grouping import MIN_TRUSTED_BALLOON_CONFIDENCE, group_text_regions_by_bubbles
 from app.services.infra.device import is_accelerator_error, release_paddle_cuda, resolve_paddle_device
 from app.services.infra.paddle import extract_paddle_lines
 from app.utils.geometry import bbox_to_polygon, polygon_to_bbox
@@ -204,7 +204,10 @@ class PaddleTextDetector(TextDetector):
                 bubbles,
                 page_key=str(image_path.resolve()),
                 image_path=image_path,
-                min_bubble_confidence=float(bubble_config.get("min_bubble_confidence", 0.35)),
+                min_bubble_confidence=max(
+                    MIN_TRUSTED_BALLOON_CONFIDENCE,
+                    float(bubble_config.get("min_bubble_confidence", MIN_TRUSTED_BALLOON_CONFIDENCE)),
+                ),
                 min_containment=float(bubble_config.get("min_containment", 0.55)),
                 min_core_containment=float(bubble_config.get("min_core_containment", 0.8)),
                 ambiguity_margin=float(bubble_config.get("ambiguity_margin", 0.12)),

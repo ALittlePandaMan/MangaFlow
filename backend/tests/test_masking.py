@@ -3,7 +3,9 @@ from pathlib import Path
 import cv2
 import numpy as np
 from app.services.base import ProviderState
+from app.services.inpainting import masking as masking_module
 from app.services.inpainting.masking import (
+    apply_balloon_constraint,
     create_region_mask,
     create_text_mask,
     create_text_mask_union,
@@ -54,6 +56,29 @@ def test_text_mask_fills_tight_polygon_on_uniform_background(tmp_path: Path) -> 
     assert mask[50, 30] == 255
     assert metadata["method"] == "uniform_background_polygon"
     assert metadata["suggested_region_type"] == "background_complex"
+
+
+def test_conservative_text_mask_never_fills_uniform_ocr_rectangle(tmp_path: Path) -> None:
+    image_path = tmp_path / "page.png"
+    mask_path = tmp_path / "text-mask.png"
+    image = np.full((100, 100, 3), 235, dtype=np.uint8)
+    cv2.rectangle(image, (38, 25), (43, 75), (20, 20, 20), -1)
+    cv2.rectangle(image, (55, 25), (60, 75), (20, 20, 20), -1)
+    cv2.imwrite(str(image_path), image)
+
+    metadata = create_text_mask(
+        image_path,
+        [[25, 15], [75, 15], [75, 85], [25, 85]],
+        mask_path,
+        expand=1,
+        conservative=True,
+    )
+    mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+
+    assert metadata["method"] == "conservative_glyph"
+    assert 0 < cv2.countNonZero(mask) < 1800
+    assert mask[50, 40] == 255
+    assert mask[50, 30] == 0
 
 
 def test_text_masks_reuse_one_decoded_page(tmp_path: Path, monkeypatch) -> None:
@@ -115,6 +140,42 @@ def test_text_mask_union_preserves_space_between_grouped_lines(tmp_path: Path) -
     assert mask[50, 75] == 0
 
 
+def test_text_mask_union_applies_shared_balloon_constraint_once(tmp_path: Path, monkeypatch) -> None:
+    image_path = tmp_path / "page.png"
+    mask_path = tmp_path / "grouped-mask.png"
+    image = np.full((110, 160, 3), 235, dtype=np.uint8)
+    cv2.rectangle(image, (30, 35), (38, 70), (20, 20, 20), -1)
+    cv2.rectangle(image, (112, 35), (120, 70), (20, 20, 20), -1)
+    cv2.imwrite(str(image_path), image)
+    balloon = np.zeros((110, 160), dtype=np.uint8)
+    cv2.ellipse(balloon, (80, 55), (72, 48), 0, 0, 360, 255, -1)
+    polygons = [
+        [[20, 20], [52, 20], [52, 85], [20, 85]],
+        [[100, 20], [132, 20], [132, 85], [100, 85]],
+    ]
+    calls = 0
+    original = masking_module.apply_balloon_constraint
+
+    def counted(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(masking_module, "apply_balloon_constraint", counted)
+    metadata = create_text_mask_union(
+        image_path,
+        polygons,
+        mask_path,
+        expand=1,
+        balloon_mask=balloon,
+    )
+
+    assert calls == 1
+    assert metadata["constraint"]["outside_pixels_after"] == 0
+    assert metadata["constraint"]["status"] in {"applied", "relaxed"}
+    assert metadata["constraint"]["glyph_balloon_retention"] >= 0.9
+
+
 def test_text_mask_preserves_enclosed_label_background(tmp_path: Path) -> None:
     image_path = tmp_path / "label.png"
     mask_path = tmp_path / "label-mask.png"
@@ -153,6 +214,210 @@ def test_text_mask_uses_expanded_polygon_for_large_stylized_text(tmp_path: Path)
     assert metadata["coverage"] == 1.0
     assert metadata["mask_expansion"] > 1.0
     assert mask[32, 110] == 255
+
+
+def test_balloon_constraint_clips_ellipse_to_resolution_adaptive_safe_interior() -> None:
+    shape = (1000, 1000)
+    balloon = np.zeros(shape, dtype=np.uint8)
+    cv2.ellipse(balloon, (500, 500), (230, 360), 13, 0, 360, 255, -1)
+    repair = np.zeros(shape, dtype=np.uint8)
+    cv2.rectangle(repair, (250, 120), (750, 880), 255, -1)
+    glyphs = np.zeros(shape, dtype=np.uint8)
+    cv2.rectangle(glyphs, (470, 360), (530, 640), 255, -1)
+
+    constrained, metadata = apply_balloon_constraint(
+        repair,
+        balloon,
+        glyph_evidence=glyphs,
+    )
+
+    distance = cv2.distanceTransform((balloon > 0).astype(np.uint8), cv2.DIST_L2, 5)
+    safe_interior = distance > metadata["safe_margin_px"]
+    assert metadata["status"] == "applied"
+    assert metadata["base_margin_px"] == 2
+    assert metadata["requested_margin_px"] == 2
+    assert metadata["safe_margin_px"] == 2
+    assert cv2.countNonZero(constrained) > 0
+    assert np.count_nonzero(constrained[~safe_interior]) == 0
+    assert metadata["outside_pixels_before"] > 0
+    assert metadata["outside_pixels_after"] == 0
+
+
+def test_empty_balloon_constraint_fails_closed() -> None:
+    repair = np.full((80, 120), 255, dtype=np.uint8)
+    constrained, metadata = apply_balloon_constraint(repair, np.zeros_like(repair))
+
+    assert cv2.countNonZero(constrained) == 0
+    assert metadata["status"] == "fallback"
+    assert metadata["reason"] == "empty_balloon_mask"
+    assert metadata["final_mask_area"] == 0
+
+
+def test_balloon_constraint_surfaces_partial_glyph_coverage_for_review() -> None:
+    balloon = np.zeros((160, 200), dtype=np.uint8)
+    cv2.rectangle(balloon, (20, 20), (100, 140), 255, -1)
+    repair = np.zeros_like(balloon)
+    glyphs = np.zeros_like(balloon)
+    cv2.rectangle(repair, (60, 50), (140, 110), 255, -1)
+    cv2.rectangle(glyphs, (60, 50), (140, 110), 255, -1)
+
+    source_polygon = [[60.0, 50.0], [140.0, 50.0], [140.0, 110.0], [60.0, 110.0]]
+    constrained, metadata = apply_balloon_constraint(
+        repair,
+        balloon,
+        glyph_evidence=glyphs,
+        source_polygons=[source_polygon],
+    )
+
+    assert metadata["status"] == "partial"
+    assert metadata["reason"] == "core_glyph_evidence_outside_balloon"
+    assert metadata["glyph_balloon_retention"] < 0.6
+    assert np.count_nonzero(constrained[balloon == 0]) == 0
+
+
+def test_balloon_constraint_handles_concave_instance_shape() -> None:
+    shape = (300, 300)
+    balloon = np.zeros(shape, dtype=np.uint8)
+    concave = np.asarray(
+        [[35, 35], [265, 35], [265, 265], [180, 265], [180, 120], [120, 120], [120, 265], [35, 265]],
+        dtype=np.int32,
+    )
+    cv2.fillPoly(balloon, [concave], 255)
+    repair = np.zeros(shape, dtype=np.uint8)
+    cv2.rectangle(repair, (25, 25), (275, 275), 255, -1)
+    glyphs = np.zeros(shape, dtype=np.uint8)
+    cv2.rectangle(glyphs, (55, 70), (95, 230), 255, -1)
+
+    constrained, metadata = apply_balloon_constraint(
+        repair,
+        balloon,
+        glyph_evidence=glyphs,
+    )
+
+    distance = cv2.distanceTransform((balloon > 0).astype(np.uint8), cv2.DIST_L2, 5)
+    safe_interior = distance > metadata["safe_margin_px"]
+    assert metadata["status"] == "applied"
+    assert cv2.countNonZero(constrained) > 0
+    assert np.count_nonzero(constrained[~safe_interior]) == 0
+    assert constrained[200, 150] == 0  # The inward notch is not repaired.
+
+
+def test_balloon_constraint_handles_spiky_cloud_and_tailed_shapes() -> None:
+    shape = (240, 240)
+    star = np.zeros(shape, dtype=np.uint8)
+    angles = np.linspace(0, 2 * np.pi, 24, endpoint=False)
+    radii = np.where(np.arange(24) % 2 == 0, 102, 72)
+    points = np.column_stack((120 + np.cos(angles) * radii, 120 + np.sin(angles) * radii))
+    cv2.fillPoly(star, [np.rint(points).astype(np.int32)], 255)
+
+    cloud = np.zeros(shape, dtype=np.uint8)
+    for center in ((72, 84), (112, 65), (158, 78), (176, 120), (151, 165), (95, 174), (61, 139)):
+        cv2.circle(cloud, center, 48, 255, -1)
+
+    tailed = np.zeros(shape, dtype=np.uint8)
+    cv2.ellipse(tailed, (118, 105), (82, 72), -8, 0, 360, 255, -1)
+    cv2.fillPoly(tailed, [np.asarray([[145, 160], [187, 220], [166, 148]], dtype=np.int32)], 255)
+
+    repair = np.full(shape, 255, dtype=np.uint8)
+    glyphs = np.zeros(shape, dtype=np.uint8)
+    cv2.rectangle(glyphs, (100, 78), (140, 150), 255, -1)
+
+    for balloon in (star, cloud, tailed):
+        constrained, metadata = apply_balloon_constraint(repair, balloon, glyph_evidence=glyphs)
+        distance = cv2.distanceTransform((balloon > 0).astype(np.uint8), cv2.DIST_L2, 5)
+
+        assert metadata["status"] in {"applied", "relaxed", "partial"}
+        assert cv2.countNonZero(constrained) > 0
+        assert np.count_nonzero(constrained[distance <= metadata["safe_margin_px"]]) == 0
+        assert np.count_nonzero(constrained[balloon == 0]) == 0
+
+
+def test_balloon_constraint_preserves_each_grouped_text_component(monkeypatch) -> None:
+    shape = (1000, 1000)
+    balloon = np.zeros(shape, dtype=np.uint8)
+    cv2.circle(balloon, (500, 500), 350, 255, -1)
+    large = np.zeros(shape, dtype=np.uint8)
+    small = np.zeros(shape, dtype=np.uint8)
+    cv2.rectangle(large, (350, 300), (650, 700), 255, -1)
+    cv2.rectangle(small, (841, 470), (845, 530), 255, -1)
+    repair = cv2.bitwise_or(large, small)
+    monkeypatch.setattr(
+        masking_module,
+        "_estimate_balloon_outline_width",
+        lambda *_args, **_kwargs: (12, True),
+    )
+
+    constrained, metadata = apply_balloon_constraint(
+        repair,
+        balloon,
+        glyph_evidence=repair,
+        source_polygons=[
+            [[350, 300], [650, 300], [650, 700], [350, 700]],
+            [[841, 470], [845, 470], [845, 530], [841, 530]],
+        ],
+    )
+    retained_small = cv2.countNonZero(cv2.bitwise_and(constrained, small)) / cv2.countNonZero(small)
+
+    assert metadata["requested_margin_px"] == 12
+    assert metadata["safe_margin_px"] < 12
+    assert retained_small >= 0.9
+    assert min(metadata["component_glyph_retentions"]) >= 0.9
+
+
+def test_balloon_constraint_never_sacrifices_base_margin_for_boundary_evidence() -> None:
+    shape = (180, 180)
+    balloon = np.zeros(shape, dtype=np.uint8)
+    cv2.ellipse(balloon, (90, 90), (60, 72), 0, 0, 360, 255, -1)
+    repair = balloon.copy()
+    distance = cv2.distanceTransform((balloon > 0).astype(np.uint8), cv2.DIST_L2, 5)
+    boundary_glyphs = np.where((distance > 0) & (distance <= 1), 255, 0).astype(np.uint8)
+
+    constrained, metadata = apply_balloon_constraint(
+        repair,
+        balloon,
+        glyph_evidence=boundary_glyphs,
+    )
+
+    assert metadata["requested_margin_px"] == 1
+    assert metadata["safe_margin_px"] == 1
+    assert metadata["status"] == "applied"
+    assert "reason" not in metadata
+    assert metadata["interior_glyph_area"] == 0
+    assert np.count_nonzero(constrained[balloon == 0]) == 0
+    assert np.count_nonzero(constrained[distance <= 1]) == 0
+
+
+def test_text_mask_rectangle_corners_are_clipped_to_ellipse_safe_interior(tmp_path: Path) -> None:
+    image_path = tmp_path / "ellipse-balloon.png"
+    mask_path = tmp_path / "ellipse-text-mask.png"
+    image = np.full((140, 140, 3), 238, dtype=np.uint8)
+    cv2.rectangle(image, (60, 35), (66, 105), (15, 15, 15), -1)
+    cv2.rectangle(image, (77, 35), (83, 105), (15, 15, 15), -1)
+    cv2.imwrite(str(image_path), image)
+    balloon = np.zeros((140, 140), dtype=np.uint8)
+    cv2.ellipse(balloon, (70, 70), (42, 58), 0, 0, 360, 255, -1)
+    polygon = [[24, 8], [116, 8], [116, 132], [24, 132]]
+
+    metadata = create_text_mask(
+        image_path,
+        polygon,
+        mask_path,
+        expand=2,
+        balloon_mask=balloon,
+        balloon_context={"bubble_id": "bubble-ellipse", "bubble_confidence": 0.98},
+    )
+    mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+    constraint = metadata["constraint"]
+    distance = cv2.distanceTransform((balloon > 0).astype(np.uint8), cv2.DIST_L2, 5)
+    safe_interior = distance > constraint["safe_margin_px"]
+
+    assert metadata["method"] == "uniform_background_polygon"
+    assert constraint["status"] in {"applied", "relaxed"}
+    assert constraint["bubble_id"] == "bubble-ellipse"
+    assert np.count_nonzero(mask[~safe_interior]) == 0
+    assert mask[70, 63] == 255
+    assert mask[8, 24] == 0
+    assert mask[132, 116] == 0
 
 
 def test_uniform_fill_uses_unmasked_background_inside_label() -> None:

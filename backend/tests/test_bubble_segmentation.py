@@ -83,6 +83,26 @@ def test_decodes_nms_cropped_masks_and_maps_instances_to_source_page() -> None:
     assert np.count_nonzero(instances[1].full_mask()[:, :105]) == 0
 
 
+def test_mask_aware_nms_keeps_distinct_instances_with_identical_proposal_boxes() -> None:
+    image = np.zeros((100, 200, 3), dtype=np.uint8)
+    _, transform = prepare_bubble_input(image)
+    proposals = np.zeros((1, 37, 21_504), dtype=np.float32)
+    prototypes = np.zeros((1, 32, 256, 256), dtype=np.float32)
+    prototypes[0, 0, :, :128] = 1
+    prototypes[0, 1, :, 128:] = 1
+    model_box = _model_box([20, 10, 160, 80], transform)
+    for index, (channel, score) in enumerate(((0, 0.92), (1, 0.88))):
+        proposals[0, :4, index] = model_box
+        proposals[0, 4, index] = score
+        proposals[0, 5 + channel, index] = 20
+
+    instances = decode_bubble_outputs(proposals, prototypes, transform)
+
+    assert len(instances) == 2
+    assert instances[0].bbox == pytest.approx(instances[1].bbox)
+    assert np.count_nonzero(instances[0].full_mask() & instances[1].full_mask()) == 0
+
+
 def test_optional_mask_padding_expands_assignment_without_mutating_mask() -> None:
     image = np.zeros((100, 200, 3), dtype=np.uint8)
     _, transform = prepare_bubble_input(image)

@@ -220,8 +220,18 @@ def decode_bubble_outputs(
     if not len(boxes):
         return []
 
-    keep = _nms(boxes, scores, nms_threshold, max_detections=max_detections)
     flattened_prototypes = prototype_maps.reshape(prototype_maps.shape[0], -1)
+    keep = _mask_aware_nms(
+        boxes,
+        scores,
+        coefficients,
+        flattened_prototypes,
+        prototype_maps.shape[1:],
+        nms_threshold,
+        mask_threshold=mask_threshold,
+        input_size=transform.input_size,
+        max_detections=max_detections,
+    )
     instances: list[BubbleInstance] = []
     for index in keep:
         model_box = boxes[index]
@@ -422,24 +432,64 @@ def _cxcywh_to_xyxy(boxes: np.ndarray) -> np.ndarray:
     return converted
 
 
-def _nms(boxes: np.ndarray, scores: np.ndarray, threshold: float, *, max_detections: int) -> list[int]:
+def _mask_aware_nms(
+    boxes: np.ndarray,
+    scores: np.ndarray,
+    coefficients: np.ndarray,
+    flattened_prototypes: np.ndarray,
+    prototype_shape: tuple[int, int],
+    threshold: float,
+    *,
+    mask_threshold: float,
+    input_size: int,
+    max_detections: int,
+) -> list[int]:
+    """Suppress duplicate instances without discarding distinct overlapping masks."""
+
     areas = np.maximum(0, boxes[:, 2] - boxes[:, 0]) * np.maximum(0, boxes[:, 3] - boxes[:, 1])
     order = np.argsort(scores)[::-1]
     keep: list[int] = []
-    while len(order) and len(keep) < max_detections:
-        current = int(order[0])
-        keep.append(current)
-        if len(order) == 1:
+    mask_cache: dict[int, np.ndarray] = {}
+
+    def candidate_mask(index: int) -> np.ndarray:
+        cached = mask_cache.get(index)
+        if cached is not None:
+            return cached
+        probabilities = _sigmoid(coefficients[index] @ flattened_prototypes).reshape(prototype_shape)
+        cropped = _crop_mask_to_box(probabilities, boxes[index], input_size)
+        binary = cropped > mask_threshold
+        mask_cache[index] = binary
+        return binary
+
+    for current_value in order:
+        if len(keep) >= max_detections:
             break
-        remaining = order[1:]
-        left = np.maximum(boxes[current, 0], boxes[remaining, 0])
-        top = np.maximum(boxes[current, 1], boxes[remaining, 1])
-        right = np.minimum(boxes[current, 2], boxes[remaining, 2])
-        bottom = np.minimum(boxes[current, 3], boxes[remaining, 3])
+        current = int(current_value)
+        if not np.any(candidate_mask(current)):
+            continue
+        if not keep:
+            keep.append(current)
+            continue
+        kept = np.asarray(keep, dtype=np.int64)
+        left = np.maximum(boxes[current, 0], boxes[kept, 0])
+        top = np.maximum(boxes[current, 1], boxes[kept, 1])
+        right = np.minimum(boxes[current, 2], boxes[kept, 2])
+        bottom = np.minimum(boxes[current, 3], boxes[kept, 3])
         intersection = np.maximum(0, right - left) * np.maximum(0, bottom - top)
-        union = areas[current] + areas[remaining] - intersection
+        union = areas[current] + areas[kept] - intersection
         iou = np.divide(intersection, union, out=np.zeros_like(intersection), where=union > 0)
-        order = remaining[iou <= threshold]
+        possible_duplicates = kept[iou > threshold]
+        current_mask = candidate_mask(current)
+        suppress = False
+        for previous in possible_duplicates:
+            previous_mask = candidate_mask(int(previous))
+            mask_intersection = int(np.count_nonzero(current_mask & previous_mask))
+            mask_union = int(np.count_nonzero(current_mask | previous_mask))
+            if mask_union and mask_intersection / mask_union > threshold:
+                suppress = True
+                break
+        if not suppress:
+            keep.append(current)
     return keep
 
 

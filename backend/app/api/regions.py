@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from copy import deepcopy
+
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from PIL import Image
 from sqlalchemy import select
@@ -8,10 +10,11 @@ from sqlalchemy.orm import Session
 from app.api.helpers import region_read, require_page, require_region
 from app.application import enqueue_page_task
 from app.core.database import get_db
-from app.models import RegionRevision, TextRegion
+from app.models import ImagePage, RegionRevision, TextRegion
 from app.schemas.domain import MaskOperation, ProcessRequest, RegionCreate, RegionRead, RegionUpdate, TaskRead
 from app.services.inpainting import process_mask
 from app.services.regions import (
+    STALE_CLEAN_PATH_KEY,
     copy_region,
     create_region,
     merge_regions,
@@ -43,6 +46,46 @@ RENDER_AFFECTING_FIELDS = {
     "opacity",
     "visible",
 }
+SOURCE_GEOMETRY_FIELDS = {"polygon", "bbox"}
+
+
+def _invalidate_rendered_artifacts(page: ImagePage, *, clean: bool = False) -> None:
+    metadata = dict(page.metadata_json or {})
+    versions = dict(metadata.get("artifact_versions", {}))
+    if clean:
+        # Do not expose an old clean composite after its source geometry has
+        # moved. Keep its private path only so selected-region repair can copy
+        # back unaffected repairs without rerunning the full page.
+        if page.clean_path:
+            metadata[STALE_CLEAN_PATH_KEY] = page.clean_path
+        page.clean_path = None
+        versions.pop("clean", None)
+    page.rendered_path = None
+    page.text_layer_path = None
+    versions.pop("rendered", None)
+    versions.pop("text_layer", None)
+    if versions:
+        metadata["artifact_versions"] = versions
+    else:
+        metadata.pop("artifact_versions", None)
+    page.metadata_json = metadata
+
+
+def _mark_manual_mask_edit(region: TextRegion) -> None:
+    layout_data = dict(region.layout_data or {})
+    mask_generation = dict(layout_data.get("mask_generation", {}))
+    mask_generation.update(
+        {
+            "method": "manual_mask",
+            "constraint": {
+                "version": 1,
+                "status": "manual",
+                "reason": "manual_mask_edit",
+            },
+        }
+    )
+    region.layout_data = {**layout_data, "mask_generation": mask_generation}
+    region.inpainted_path = None
 
 
 @router.get("/images/{image_id}/regions", response_model=list[RegionRead])
@@ -70,14 +113,22 @@ def add_region(image_id: str, payload: RegionCreate, db: Session = Depends(get_d
 def patch_region(region_id: str, payload: RegionUpdate, db: Session = Depends(get_db)) -> RegionRead:
     region = require_region(db, region_id)
     try:
-        rendered_output_changed = bool(payload.model_fields_set & RENDER_AFFECTING_FIELDS)
+        rendered_fields = payload.model_fields_set & RENDER_AFFECTING_FIELDS
+        source_fields = payload.model_fields_set & SOURCE_GEOMETRY_FIELDS
+        rendered_before = {field: deepcopy(getattr(region, field)) for field in RENDER_AFFECTING_FIELDS}
+        source_before = {field: deepcopy(getattr(region, field)) for field in SOURCE_GEOMETRY_FIELDS}
         update_region(db, region, payload)
-        if rendered_output_changed:
+        rendered_output_changed = bool(rendered_fields) and any(
+            getattr(region, field) != value for field, value in rendered_before.items()
+        )
+        source_geometry_changed = bool(source_fields) and any(
+            getattr(region, field) != value for field, value in source_before.items()
+        )
+        if source_geometry_changed or rendered_output_changed:
             # Never allow export to reuse a cached translated image whose
             # geometry, content or style no longer matches the region.
             page = require_page(db, region.image_id)
-            page.rendered_path = None
-            page.text_layer_path = None
+            _invalidate_rendered_artifacts(page, clean=source_geometry_changed)
         db.commit()
         db.refresh(region)
         return region_read(region)
@@ -212,6 +263,8 @@ def upload_mask(region_id: str, file: UploadFile = File(...), db: Session = Depe
         save_revision(db, region, "mask_edited")
         mask.save(output, "PNG")
         region.pixel_mask_path = get_storage().relative(output)
+        _mark_manual_mask_edit(region)
+        _invalidate_rendered_artifacts(page, clean=True)
         db.commit()
         db.refresh(region)
         return region_read(region)
@@ -224,11 +277,14 @@ def upload_mask(region_id: str, file: UploadFile = File(...), db: Session = Depe
 @router.post("/regions/{region_id}/mask/operation", response_model=RegionRead)
 def mask_operation(region_id: str, payload: MaskOperation, db: Session = Depends(get_db)) -> RegionRead:
     region = require_region(db, region_id)
+    page = require_page(db, region.image_id)
     if not region.pixel_mask_path:
         raise HTTPException(409, "Region does not have a mask")
     path = get_storage().absolute(region.pixel_mask_path)
     save_revision(db, region, f"mask_{payload.operation}")
     process_mask(path, path, payload.operation, payload.amount)
+    _mark_manual_mask_edit(region)
+    _invalidate_rendered_artifacts(page, clean=True)
     db.commit()
     db.refresh(region)
     return region_read(region)

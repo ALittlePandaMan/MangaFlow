@@ -74,6 +74,15 @@ class DetectionResult:
     region_type: str = "background_complex"
     metadata: dict[str, Any] = field(default_factory=dict)
     bubble_id: str | None = None
+    # Transient, detector-owned geometry used by the pipeline to persist an
+    # exact speech-balloon repair constraint.  It intentionally does not live
+    # in ``metadata``: numpy arrays are not JSON serializable and duplicating a
+    # complete mask in every TextRegion would make API/database payloads huge.
+    balloon_mask: Any | None = field(default=None, repr=False, compare=False)
+    balloon_mask_origin: tuple[int, int] | None = None
+    balloon_mask_id: str | None = None
+    balloon_mask_parent_id: str | None = None
+    balloon_mask_confidence: float | None = None
 
 
 class TextDetector(ModelProvider[list[DetectionResult]], ABC):

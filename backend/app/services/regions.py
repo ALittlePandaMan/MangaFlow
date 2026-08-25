@@ -9,6 +9,8 @@ from app.utils.geometry import bbox_to_polygon, polygon_to_bbox
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+STALE_CLEAN_PATH_KEY = "_stale_clean_path"
+
 SNAPSHOT_FIELDS = (
     "polygon",
     "bbox",
@@ -58,8 +60,10 @@ def _without_automatic_grouping(layout_data: dict[str, Any] | None) -> dict[str,
     detection = output.get("detection")
     if isinstance(detection, dict):
         detection.pop("balloon_assignment", None)
+        detection.pop("balloon_constraint", None)
         detection.pop("line_grouping", None)
         detection.pop("instance_split", None)
+    output.pop("mask_generation", None)
     return output
 
 
@@ -101,11 +105,11 @@ def update_region(db: Session, region: TextRegion, data: RegionUpdate, action: s
         # Manual editing remains possible, but pipeline callers enforce locks before reaching this service.
         pass
     save_revision(db, region, action)
+    source_geometry_before = {
+        "polygon": deepcopy(region.polygon),
+        "bbox": deepcopy(region.bbox),
+    }
     changes = data.model_dump(exclude_unset=True, mode="json")
-    source_geometry_changed = any(
-        field in changes and changes[field] != getattr(region, field)
-        for field in ("polygon", "bbox")
-    )
     for field, value in changes.items():
         setattr(region, field, value)
     if "region_type" in changes:
@@ -116,11 +120,17 @@ def update_region(db: Session, region: TextRegion, data: RegionUpdate, action: s
         region.bbox = polygon_to_bbox(region.polygon)
     elif "bbox" in changes and "polygon" not in changes and region.bbox:
         region.polygon = bbox_to_polygon(region.bbox)
+    source_geometry_changed = any(
+        getattr(region, field) != value
+        for field, value in source_geometry_before.items()
+    )
     if source_geometry_changed:
         # Once source geometry is edited, its original model assignment and
         # per-line polygons are stale and must not drive later mask creation.
         # It is now user-authored geometry and must survive forced detection.
         region.bubble_id = None
+        region.pixel_mask_path = None
+        region.inpainted_path = None
         region.layout_data = {**_without_automatic_grouping(region.layout_data), "manual": True}
     if "translated_polygon" in changes and "translated_bbox" not in changes and region.translated_polygon:
         region.translated_bbox = polygon_to_bbox(region.translated_polygon)

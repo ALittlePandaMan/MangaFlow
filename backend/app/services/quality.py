@@ -54,6 +54,26 @@ def evaluate_page(page: ImagePage, failed_tasks: list[ProcessingTask] | None = N
         if region.pixel_mask_path is None or mask_is_empty(storage.absolute(region.pixel_mask_path)):
             reasons.append("empty_mask")
             add("empty_mask", "Text mask is missing or empty", region)
+        mask_generation = (region.layout_data or {}).get("mask_generation")
+        constraint = mask_generation.get("constraint") if isinstance(mask_generation, dict) else None
+        if isinstance(constraint, dict):
+            constraint_status = constraint.get("status")
+            if constraint_status in {"fallback", "skipped", "partial"}:
+                reasons.append("repair_constraint_uncertain")
+                add(
+                    "repair_constraint_uncertain",
+                    "Speech-balloon geometry could not safely constrain this repair mask",
+                    region,
+                )
+            outside_value = constraint.get("outside_pixels_after", 0)
+            if isinstance(outside_value, (int, float)) and outside_value > 0:
+                reasons.append("repair_outside_balloon")
+                add(
+                    "repair_outside_balloon",
+                    "Repair mask extends outside the protected speech-balloon interior",
+                    region,
+                    "error",
+                )
         if not page.clean_path:
             reasons.append("inpainting_missing")
             add("inpainting_missing", "Inpainting has not been run", region)

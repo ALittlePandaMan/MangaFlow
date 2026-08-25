@@ -19,11 +19,19 @@ from app.core.secrets import get_secret_store
 from app.models import ImagePage, ModelConfig, ProcessingTask, TextRegion, Translation
 from app.models.enums import PageStatus, PipelineStage, TaskStatus
 from app.services.base import DetectionResult
+from app.services.detection.artifacts import (
+    BUBBLE_GEOMETRY_KEY,
+    BUBBLE_GEOMETRY_SCHEMA_VERSION,
+    bubble_geometry_items,
+    load_balloon_mask,
+    persist_balloon_mask,
+)
+from app.services.detection.grouping import MIN_TRUSTED_BALLOON_CONFIDENCE
 from app.services.infra.model_manifest import persist_model_settings
 from app.services.infra.model_provisioning import ensure_recommended_config
 from app.services.inpainting import create_text_mask, create_text_mask_union, load_text_mask_source
 from app.services.quality import evaluate_page
-from app.services.regions import save_revision
+from app.services.regions import STALE_CLEAN_PATH_KEY, save_revision
 from app.services.registry import registry
 from app.storage import get_storage
 from app.utils.geometry import bbox_to_polygon, intersection_area, reading_order_japanese
@@ -54,6 +62,15 @@ def _substantial_bbox_overlap(first: list[float], second: list[float], threshold
     second_area = max(0.0, second[2]) * max(0.0, second[3])
     smaller_area = min(first_area, second_area)
     return smaller_area > 0 and intersection_area(first, second) / smaller_area >= threshold
+
+
+def _region_balloon_constraint_id(region: TextRegion) -> str | None:
+    detection = (region.layout_data or {}).get("detection")
+    if isinstance(detection, dict):
+        reference = detection.get("balloon_constraint")
+        if isinstance(reference, dict) and isinstance(reference.get("instance_id"), str):
+            return str(reference["instance_id"])
+    return region.bubble_id
 
 
 def _exclude_preserved_geometry(
@@ -147,6 +164,11 @@ def _exclude_preserved_geometry(
         region_type=result.region_type,
         metadata=metadata,
         bubble_id=result.bubble_id,
+        balloon_mask=result.balloon_mask,
+        balloon_mask_origin=result.balloon_mask_origin,
+        balloon_mask_id=result.balloon_mask_id,
+        balloon_mask_parent_id=result.balloon_mask_parent_id,
+        balloon_mask_confidence=result.balloon_mask_confidence,
     )
 
 
@@ -294,10 +316,25 @@ class PipelineProcessor:
         self.db.commit()
 
     def detect(self, page: ImagePage, provider_name: str | None, *, force: bool) -> None:
+        if not force:
+            existing = list(page.regions)
+            if existing:
+                return
+        page_directory = self.storage.page_dir(page.project_id, page.id)
+        provider, _ = self._provider("detection", provider_name)
+        source = self.storage.absolute(page.original_path)
+        # Run fallible model loading/inference before touching the last known
+        # good regions or page artifacts. A failed forced detection must leave
+        # the user's current page completely intact.
+        detected = provider.detect(source)
+
+        # Inference may take seconds and region edits are allowed concurrently.
+        # Reload the relationship now so force detection preserves the latest
+        # locked/manual regions rather than a pre-inference snapshot.
+        self.db.expire(page, ["regions"])
         existing = list(page.regions)
-        if existing and not force:
-            return
         self._invalidate_outputs(page, clean=True)
+        previous_geometry = bubble_geometry_items(page.metadata_json)
         preserved: list[TextRegion] = []
         for region in existing:
             layout_data = region.layout_data or {}
@@ -310,9 +347,11 @@ class PipelineProcessor:
             else:
                 self.db.delete(region)
         self.db.flush()
-        provider, _ = self._provider("detection", provider_name)
-        source = self.storage.absolute(page.original_path)
-        detected = provider.detect(source)
+        geometry_items = {
+            instance_id: previous_geometry[instance_id]
+            for region in preserved
+            if (instance_id := _region_balloon_constraint_id(region)) in previous_geometry
+        }
         raw = [{"bbox": result.bbox} for result in detected]
         order = reading_order_japanese(raw)
         rank = {source_index: position + 1 for position, source_index in enumerate(order)}
@@ -330,6 +369,35 @@ class PipelineProcessor:
             key = f"R{next_number:03d}"
             used_keys.add(key)
             next_number += 1
+            detection_metadata = deepcopy(result.metadata)
+            if (
+                result.balloon_mask is not None
+                and result.balloon_mask_origin is not None
+                and result.balloon_mask_id is not None
+            ):
+                try:
+                    geometry_items[result.balloon_mask_id] = persist_balloon_mask(
+                        self.storage,
+                        page_directory,
+                        instance_id=result.balloon_mask_id,
+                        mask=result.balloon_mask,
+                        origin=result.balloon_mask_origin,
+                        image_shape=(page.height, page.width),
+                        confidence=result.balloon_mask_confidence,
+                        parent_instance_id=result.balloon_mask_parent_id,
+                    )
+                    detection_metadata["balloon_constraint"] = {
+                        "schema_version": BUBBLE_GEOMETRY_SCHEMA_VERSION,
+                        "status": "available",
+                        "instance_id": result.balloon_mask_id,
+                    }
+                except (OSError, ValueError) as exc:
+                    logger.warning("Cannot persist balloon constraint for %s: %s", key, exc)
+                    detection_metadata["balloon_constraint"] = {
+                        "schema_version": BUBBLE_GEOMETRY_SCHEMA_VERSION,
+                        "status": "unavailable",
+                        "reason": "artifact_write_failed",
+                    }
             self.db.add(
                 TextRegion(
                     image_id=page.id,
@@ -345,9 +413,28 @@ class PipelineProcessor:
                     # Keep detector boxes independent and use complex repair
                     # for every region instead of classifying flat bubbles.
                     region_type="background_complex",
-                    layout_data={"source_orientation": result.orientation, "detection": result.metadata},
+                    layout_data={"source_orientation": result.orientation, "detection": detection_metadata},
                 )
             )
+        page_metadata = dict(page.metadata_json or {})
+        if geometry_items:
+            page_metadata[BUBBLE_GEOMETRY_KEY] = {
+                "schema_version": BUBBLE_GEOMETRY_SCHEMA_VERSION,
+                "source": {
+                    "path": page.original_path,
+                    "width": page.width,
+                    "height": page.height,
+                },
+                "instances": geometry_items,
+            }
+        else:
+            page_metadata.pop(BUBBLE_GEOMETRY_KEY, None)
+        page.metadata_json = page_metadata
+
+        # Geometry files are content-addressed and intentionally retained until
+        # page reset/deletion. Deleting the previous generation here would make
+        # a later DB rollback leave the restored manifest pointing at missing
+        # files. Portable export includes only the current manifest entries.
         self.db.flush()
         self.db.expire(page, ["regions"])
         list(page.regions)
@@ -544,10 +631,21 @@ class PipelineProcessor:
         if not regions:
             return
         source_image, source_lab = load_text_mask_source(source)
+        geometry_manifest = (page.metadata_json or {}).get(BUBBLE_GEOMETRY_KEY)
+        geometry_items = bubble_geometry_items(page.metadata_json)
+        geometry_source = geometry_manifest.get("source") if isinstance(geometry_manifest, dict) else None
+        geometry_matches_source = bool(
+            isinstance(geometry_source, dict)
+            and geometry_source.get("path") == page.original_path
+            and geometry_source.get("width") == page.width
+            and geometry_source.get("height") == page.height
+        )
         for region in regions:
             self._check_interruption()
             output = page_directory / "masks" / f"{region.id}.png"
-            detection = (region.layout_data or {}).get("detection", {})
+            layout_data = region.layout_data or {}
+            detection = layout_data.get("detection", {})
+            is_manual = bool(layout_data.get("manual")) or "detection" not in layout_data
             line_grouping = detection.get("line_grouping", {}) if isinstance(detection, dict) else {}
             source_polygons = (
                 line_grouping.get("source_polygons", [])
@@ -570,11 +668,109 @@ class PipelineProcessor:
                     for point in polygon
                 )
             ]
+            assignment = detection.get("balloon_assignment") if isinstance(detection, dict) else None
+            balloon_mask: np.ndarray | None = None
+            balloon_context: dict[str, Any] | None = None
+            constraint_note: dict[str, Any] | None = None
+            conservative_mask = False
+            if isinstance(assignment, dict) and assignment.get("status") == "assigned":
+                confidence = float(assignment.get("balloon_confidence", 0.0) or 0.0)
+                core_coverage = float(assignment.get("core_coverage", 0.0) or 0.0)
+                coverage = float(assignment.get("coverage", 0.0) or 0.0)
+                reference = detection.get("balloon_constraint")
+                instance_id = (
+                    str(reference["instance_id"])
+                    if isinstance(reference, dict) and isinstance(reference.get("instance_id"), str)
+                    else None
+                )
+                if confidence < MIN_TRUSTED_BALLOON_CONFIDENCE or core_coverage < 0.85:
+                    conservative_mask = True
+                    constraint_note = {
+                        "version": 1,
+                        "status": "skipped",
+                        "reason": "assignment_confidence_too_low",
+                        "bubble_confidence": round(confidence, 4),
+                        "core_coverage": round(core_coverage, 4),
+                    }
+                elif not geometry_matches_source:
+                    conservative_mask = True
+                    constraint_note = {
+                        "version": 1,
+                        "status": "fallback",
+                        "reason": "geometry_source_mismatch",
+                    }
+                elif instance_id is None or instance_id not in geometry_items:
+                    conservative_mask = True
+                    constraint_note = {
+                        "version": 1,
+                        "status": "fallback",
+                        "reason": "geometry_artifact_missing",
+                    }
+                else:
+                    try:
+                        balloon_mask = load_balloon_mask(
+                            self.storage,
+                            page_directory,
+                            geometry_items[instance_id],
+                            image_shape=(page.height, page.width),
+                        )
+                        balloon_context = {
+                            "bubble_id": instance_id,
+                            "bubble_confidence": round(confidence, 4),
+                            "assignment_coverage": round(coverage, 4),
+                            "core_coverage": round(core_coverage, 4),
+                        }
+                    except (OSError, ValueError) as exc:
+                        logger.warning("Cannot load balloon constraint for %s: %s", region.region_key, exc)
+                        conservative_mask = True
+                        constraint_note = {
+                            "version": 1,
+                            "status": "fallback",
+                            "reason": "geometry_artifact_invalid",
+                        }
+            elif isinstance(assignment, dict) and assignment.get("status") == "ambiguous":
+                conservative_mask = True
+                constraint_note = {
+                    "version": 1,
+                    "status": "skipped",
+                    "reason": "ambiguous_balloon_assignment",
+                }
+            elif isinstance(assignment, dict):
+                assignment_status = str(assignment.get("status") or "unknown")
+                conservative_mask = assignment_status != "disabled"
+                constraint_note = {
+                    "version": 1,
+                    "status": (
+                        "disabled"
+                        if assignment_status == "disabled"
+                        else "conservative"
+                        if assignment_status == "outside"
+                        else "skipped"
+                    ),
+                    "reason": (
+                        "outside_balloon"
+                        if assignment_status == "outside"
+                        else f"balloon_assignment_{assignment_status}"
+                    ),
+                }
+            elif not isinstance(assignment, dict) and not is_manual:
+                # Legacy detector output has no trustworthy balloon boundary.
+                # Select glyph pixels only instead of falling back to the full
+                # rectangular OCR polygon, which can cut through curved walls.
+                conservative_mask = True
+                constraint_note = {
+                    "version": 1,
+                    "status": "fallback",
+                    "reason": "geometry_unavailable",
+                }
             mask_arguments = {
                 "expand": int(options.get("expand", 2)),
                 "color_threshold": float(options.get("color_threshold", 18.0)),
                 "source_image": source_image,
                 "source_lab": source_lab,
+                "balloon_mask": balloon_mask,
+                "balloon_context": balloon_context,
+                "conservative": conservative_mask,
             }
             if valid_source_polygons:
                 metadata = create_text_mask_union(
@@ -590,6 +786,8 @@ class PipelineProcessor:
                     output,
                     **mask_arguments,
                 )
+            if constraint_note is not None:
+                metadata["constraint"] = constraint_note
             save_revision(self.db, region, "mask_generated")
             region.pixel_mask_path = self.storage.relative(output)
             region.region_type = "background_complex"
@@ -682,9 +880,20 @@ class PipelineProcessor:
             raise ValueError("Unselected masks must match the original page dimensions")
 
         source = original
-        if page.clean_path and unselected_mask is not None:
-            clean_path = self.storage.absolute(page.clean_path)
-            if clean_path.exists():
+        cached_clean_path = page.clean_path
+        if not cached_clean_path:
+            stale_path = (page.metadata_json or {}).get(STALE_CLEAN_PATH_KEY)
+            cached_clean_path = stale_path if isinstance(stale_path, str) else None
+        if cached_clean_path and unselected_mask is not None:
+            clean_path = self.storage.absolute(cached_clean_path)
+            clean_root = (page_directory / "clean").resolve()
+            try:
+                clean_path.relative_to(clean_root)
+                clean_path_is_local = True
+            except ValueError:
+                clean_path_is_local = False
+                logger.warning("Ignoring stale clean path outside page directory for %s", page.id)
+            if clean_path_is_local and clean_path.is_file():
                 clean, _ = load_rgb_with_metadata(clean_path)
                 if clean.size != original.size:
                     raise ValueError("Clean image dimensions must match the original page")
@@ -802,6 +1011,7 @@ class PipelineProcessor:
         if clean:
             page.clean_path = None
             versions.pop("clean", None)
+            metadata.pop(STALE_CLEAN_PATH_KEY, None)
         page.rendered_path = None
         page.text_layer_path = None
         versions.pop("rendered", None)
@@ -817,6 +1027,8 @@ class PipelineProcessor:
         metadata = dict(page.metadata_json or {})
         versions = dict(metadata.get("artifact_versions", {}))
         versions[artifact] = path.stat().st_mtime_ns
+        if artifact == "clean":
+            metadata.pop(STALE_CLEAN_PATH_KEY, None)
         page.metadata_json = {**metadata, "artifact_versions": versions}
 
     def _check_interruption(self) -> None:

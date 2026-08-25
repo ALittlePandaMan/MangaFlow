@@ -10,6 +10,8 @@ from app.services.base import DetectionResult
 from app.services.detection.bubbles import BubbleInstance
 from app.utils.geometry import bbox_to_polygon
 
+MIN_TRUSTED_BALLOON_CONFIDENCE = 0.75
+
 
 def group_text_regions_by_bubbles(
     regions: list[DetectionResult],
@@ -17,7 +19,7 @@ def group_text_regions_by_bubbles(
     *,
     page_key: str = "",
     image_path: Path | None = None,
-    min_bubble_confidence: float = 0.35,
+    min_bubble_confidence: float = MIN_TRUSTED_BALLOON_CONFIDENCE,
     min_containment: float = 0.55,
     min_core_containment: float = 0.8,
     ambiguity_margin: float = 0.12,
@@ -88,14 +90,16 @@ def assign_text_to_bubbles(
     bubbles: list[BubbleInstance],
     *,
     page_key: str = "",
-    min_bubble_confidence: float = 0.35,
+    min_bubble_confidence: float = MIN_TRUSTED_BALLOON_CONFIDENCE,
     min_containment: float = 0.55,
     min_core_containment: float = 0.8,
     ambiguity_margin: float = 0.12,
     max_second_containment: float = 0.45,
     mask_padding: int = 3,
 ) -> list[DetectionResult]:
+    min_bubble_confidence = max(MIN_TRUSTED_BALLOON_CONFIDENCE, min_bubble_confidence)
     bubble_ids = {bubble.instance_id: _stable_bubble_id(page_key, bubble) for bubble in bubbles}
+    bubbles_by_instance_id = {bubble.instance_id: bubble for bubble in bubbles}
     output: list[DetectionResult] = []
     for region in regions:
         if not _valid_polygon(region.polygon):
@@ -156,6 +160,7 @@ def assign_text_to_bubbles(
                 bubble_ids[instance_id],
                 candidate=best,
                 second_score=float(second["score"]) if second else None,
+                bubble=bubbles_by_instance_id[instance_id],
             )
         )
     return output
@@ -178,9 +183,19 @@ def _stable_bubble_id(page_key: str, bubble: BubbleInstance) -> str:
     """Build a stable, page-scoped ID without persisting model-local indexes."""
 
     quantized_bbox = [round(float(value) / 4) * 4 for value in bubble.bbox]
-    payload = f"{page_key}|{','.join(str(value) for value in quantized_bbox)}"
+    payload = (
+        f"{page_key}|{','.join(str(value) for value in quantized_bbox)}|"
+        f"{bubble.mask_origin[0]},{bubble.mask_origin[1]}|{_mask_fingerprint(bubble.mask)}"
+    )
     digest = hashlib.blake2s(payload.encode("utf-8"), digest_size=6).hexdigest()
     return f"bubble-{digest}"
+
+
+def _mask_fingerprint(mask: np.ndarray) -> str:
+    binary = np.ascontiguousarray(np.asarray(mask) > 0, dtype=np.uint8)
+    shape = np.asarray(binary.shape, dtype="<i8").tobytes()
+    packed = np.packbits(binary, bitorder="little").tobytes()
+    return hashlib.blake2s(shape + packed, digest_size=8).hexdigest()
 
 
 def _polygon_centroid(polygon: list[list[float]]) -> tuple[float, float]:
@@ -215,6 +230,7 @@ def _with_balloon_assignment(
     candidate: dict[str, float | str] | None = None,
     second_score: float | None = None,
     reason: str | None = None,
+    bubble: BubbleInstance | None = None,
 ) -> DetectionResult:
     assignment: dict[str, object] = {"status": status, "bubble_id": bubble_id}
     if candidate is not None:
@@ -234,6 +250,11 @@ def _with_balloon_assignment(
         region,
         bubble_id=bubble_id,
         metadata={**region.metadata, "balloon_assignment": assignment},
+        balloon_mask=bubble.mask.copy() if bubble is not None else None,
+        balloon_mask_origin=bubble.mask_origin if bubble is not None else None,
+        balloon_mask_id=bubble_id if bubble is not None else None,
+        balloon_mask_parent_id=None,
+        balloon_mask_confidence=bubble.confidence if bubble is not None else None,
     )
 
 
@@ -255,9 +276,11 @@ def _split_connected_balloon_group(
 
     neck_split = _split_group_at_mask_neck(group, bubble, max_neck_ratio=max_neck_ratio)
     if neck_split is not None:
-        groups, details = neck_split
+        groups, details, child_masks = neck_split
         return _tag_balloon_subgroups(
             groups,
+            bubble=bubble,
+            child_masks=child_masks,
             page_key=page_key,
             parent_bubble_id=parent_bubble_id,
             method="mask_neck",
@@ -273,9 +296,11 @@ def _split_connected_balloon_group(
     )
     if boundary_split is None:
         return [group]
-    groups, details = boundary_split
+    groups, details, child_masks = boundary_split
     return _tag_balloon_subgroups(
         groups,
+        bubble=bubble,
+        child_masks=child_masks,
         page_key=page_key,
         parent_bubble_id=parent_bubble_id,
         method="text_gap_boundary",
@@ -288,7 +313,11 @@ def _split_group_at_mask_neck(
     bubble: BubbleInstance,
     *,
     max_neck_ratio: float,
-) -> tuple[list[list[tuple[int, DetectionResult]]], dict[str, object]] | None:
+) -> tuple[
+    list[list[tuple[int, DetectionResult]]],
+    dict[str, object],
+    list[np.ndarray],
+] | None:
     """Find narrow bridges while ignoring mask lobes that contain no detected text."""
 
     if max_neck_ratio <= 0 or bubble.mask.size == 0:
@@ -344,11 +373,21 @@ def _split_group_at_mask_neck(
         if uncertain or len(members_by_label) < 2:
             continue
 
-        groups = sorted(members_by_label.values(), key=lambda members: min(index for index, _ in members))
-        return groups, {
-            "erosion_radius": radius,
-            "neck_ratio": round(radius / peak_radius, 4),
-        }
+        ordered = sorted(
+            members_by_label.items(),
+            key=lambda item: min(index for index, _ in item[1]),
+        )
+        groups = [members for _, members in ordered]
+        seeds = [(labels == label).astype(np.uint8) for label, _ in ordered]
+        child_masks = _partition_mask_from_seeds(mask, seeds)
+        return (
+            groups,
+            {
+                "erosion_radius": radius,
+                "neck_ratio": round(radius / peak_radius, 4),
+            },
+            child_masks,
+        )
     return None
 
 
@@ -359,7 +398,11 @@ def _split_group_at_visible_boundary(
     image: np.ndarray | None,
     min_boundary_coverage: float,
     min_boundary_run: float,
-) -> tuple[list[list[tuple[int, DetectionResult]]], dict[str, object]] | None:
+) -> tuple[
+    list[list[tuple[int, DetectionResult]]],
+    dict[str, object],
+    list[np.ndarray],
+] | None:
     """Confirm a text-layout cut with a dark path aligned to the instance outline."""
 
     if image is None or len(group) < 2:
@@ -462,8 +505,67 @@ def _split_group_at_visible_boundary(
         groups_by_bucket.setdefault(bucket, []).append(item)
     if len(groups_by_bucket) < 2:
         return None
-    groups = sorted(groups_by_bucket.values(), key=lambda members: min(index for index, _ in members))
-    return groups, {"orientation": orientation, "cuts": accepted}
+    ordered_buckets = sorted(
+        groups_by_bucket.items(),
+        key=lambda item: min(index for index, _ in item[1]),
+    )
+    groups = [members for _, members in ordered_buckets]
+    present_buckets = [bucket for bucket, _ in ordered_buckets]
+    child_masks = _partition_mask_at_axis_cuts(
+        (bubble.mask > 0).astype(np.uint8),
+        bubble.mask_origin,
+        orientation=orientation,
+        cuts=cuts,
+        present_buckets=present_buckets,
+    )
+    return groups, {"orientation": orientation, "cuts": accepted}, child_masks
+
+
+def _partition_mask_from_seeds(mask: np.ndarray, seeds: list[np.ndarray]) -> list[np.ndarray]:
+    """Return mutually exclusive children whose union is the parent mask."""
+
+    if len(seeds) < 2 or any(seed.shape != mask.shape or not np.any(seed) for seed in seeds):
+        raise ValueError("Balloon split seeds must be non-empty and match the parent mask")
+    distances = np.stack(
+        [
+            cv2.distanceTransform(np.where(seed > 0, 0, 1).astype(np.uint8), cv2.DIST_L2, 5)
+            for seed in seeds
+        ],
+        axis=0,
+    )
+    owners = np.argmin(distances, axis=0)
+    parent = mask > 0
+    return [((owners == index) & parent).astype(np.uint8) for index in range(len(seeds))]
+
+
+def _partition_mask_at_axis_cuts(
+    mask: np.ndarray,
+    origin: tuple[int, int],
+    *,
+    orientation: str,
+    cuts: list[float],
+    present_buckets: list[int],
+) -> list[np.ndarray]:
+    """Partition a connected instance at confirmed visible boundary cuts."""
+
+    height, width = mask.shape
+    if orientation == "vertical":
+        coordinates = np.arange(width, dtype=np.float32) + origin[0] + 0.5
+        raw_buckets = np.searchsorted(np.asarray(cuts), coordinates, side="left")
+        bucket_map = np.broadcast_to(raw_buckets[None, :], (height, width))
+    elif orientation == "horizontal":
+        coordinates = np.arange(height, dtype=np.float32) + origin[1] + 0.5
+        raw_buckets = np.searchsorted(np.asarray(cuts), coordinates, side="left")
+        bucket_map = np.broadcast_to(raw_buckets[:, None], (height, width))
+    else:
+        raise ValueError(f"Unsupported balloon split orientation: {orientation}")
+
+    # A cut can create an empty text bucket. Assign its pixels to the nearest
+    # populated bucket so the child masks remain a lossless parent partition.
+    present = np.asarray(present_buckets, dtype=np.int32)
+    nearest = present[np.argmin(np.abs(bucket_map[..., None] - present), axis=2)]
+    parent = mask > 0
+    return [((nearest == bucket) & parent).astype(np.uint8) for bucket in present_buckets]
 
 
 def _bubble_boundary_evidence(
@@ -661,21 +763,33 @@ def _maximum_path_coverage(path_map: np.ndarray) -> tuple[float, float]:
 def _tag_balloon_subgroups(
     groups: list[list[tuple[int, DetectionResult]]],
     *,
+    bubble: BubbleInstance,
+    child_masks: list[np.ndarray],
     page_key: str,
     parent_bubble_id: str,
     method: str,
     details: dict[str, object],
 ) -> list[list[tuple[int, DetectionResult]]]:
-    ordered_groups = sorted(groups, key=lambda members: min(index for index, _ in members))
+    if len(groups) != len(child_masks):
+        raise ValueError("Every split balloon group needs one child mask")
+    paired = sorted(
+        zip(groups, child_masks, strict=True),
+        key=lambda item: min(index for index, _ in item[0]),
+    )
     output: list[list[tuple[int, DetectionResult]]] = []
-    for child_index, members in enumerate(ordered_groups):
-        child_bbox = _member_union_bbox([region for _, region in members])
-        child_bubble_id = _stable_child_bubble_id(page_key, parent_bubble_id, child_bbox)
+    for child_index, (members, child_mask) in enumerate(paired):
+        compact_mask, child_origin, child_bbox = _compact_child_mask(child_mask, bubble.mask_origin)
+        child_bubble_id = _stable_child_bubble_id(
+            page_key,
+            parent_bubble_id,
+            child_bbox,
+            compact_mask,
+        )
         split_info = {
             "method": method,
             "parent_bubble_id": parent_bubble_id,
             "child_index": child_index,
-            "child_count": len(ordered_groups),
+            "child_count": len(paired),
             "child_bbox": child_bbox,
             **details,
         }
@@ -695,16 +809,47 @@ def _tag_balloon_subgroups(
             tagged.append(
                 (
                     original_index,
-                    replace(region, bubble_id=child_bubble_id, metadata=metadata),
+                    replace(
+                        region,
+                        bubble_id=child_bubble_id,
+                        metadata=metadata,
+                        balloon_mask=compact_mask.copy(),
+                        balloon_mask_origin=child_origin,
+                        balloon_mask_id=child_bubble_id,
+                        balloon_mask_parent_id=parent_bubble_id,
+                        balloon_mask_confidence=bubble.confidence,
+                    ),
                 )
             )
         output.append(tagged)
     return output
 
 
-def _stable_child_bubble_id(page_key: str, parent_bubble_id: str, bbox: list[float]) -> str:
+def _compact_child_mask(
+    mask: np.ndarray,
+    parent_origin: tuple[int, int],
+) -> tuple[np.ndarray, tuple[int, int], list[float]]:
+    rows, columns = np.nonzero(mask)
+    if not len(rows):
+        raise ValueError("Split balloon child mask cannot be empty")
+    left, right = int(columns.min()), int(columns.max()) + 1
+    top, bottom = int(rows.min()), int(rows.max()) + 1
+    origin = (parent_origin[0] + left, parent_origin[1] + top)
+    compact = (mask[top:bottom, left:right] > 0).astype(np.uint8)
+    return compact, origin, [float(origin[0]), float(origin[1]), float(right - left), float(bottom - top)]
+
+
+def _stable_child_bubble_id(
+    page_key: str,
+    parent_bubble_id: str,
+    bbox: list[float],
+    mask: np.ndarray,
+) -> str:
     quantized_bbox = [round(float(value) / 4) * 4 for value in bbox]
-    payload = f"{page_key}|{parent_bubble_id}|{','.join(str(value) for value in quantized_bbox)}"
+    payload = (
+        f"{page_key}|{parent_bubble_id}|{','.join(str(value) for value in quantized_bbox)}|"
+        f"{_mask_fingerprint(mask)}"
+    )
     digest = hashlib.blake2s(payload.encode("utf-8"), digest_size=6).hexdigest()
     return f"bubble-{digest}"
 
@@ -790,6 +935,11 @@ def _merge_balloon_group(group: list[tuple[int, DetectionResult]]) -> DetectionR
         region_type=members[0].region_type,
         bubble_id=bubble_id,
         metadata=metadata,
+        balloon_mask=members[0].balloon_mask,
+        balloon_mask_origin=members[0].balloon_mask_origin,
+        balloon_mask_id=members[0].balloon_mask_id,
+        balloon_mask_parent_id=members[0].balloon_mask_parent_id,
+        balloon_mask_confidence=members[0].balloon_mask_confidence,
     )
 
 

@@ -62,6 +62,16 @@ def masked_bubble(
     )
 
 
+def full_constraint(region: DetectionResult) -> np.ndarray:
+    assert region.balloon_mask is not None
+    assert region.balloon_mask_origin is not None
+    output = np.zeros(PAGE_SHAPE, dtype=np.uint8)
+    x, y = region.balloon_mask_origin
+    height, width = region.balloon_mask.shape
+    output[y : y + height, x : x + width] = region.balloon_mask
+    return output
+
+
 def test_merges_multiple_text_regions_assigned_to_the_same_bubble() -> None:
     regions = [
         text_region([132, 45, 20, 70], orientation="horizontal", confidence=0.94),
@@ -102,6 +112,28 @@ def test_does_not_merge_text_regions_assigned_to_different_bubbles() -> None:
     assert all(region.bubble_id is not None for region in grouped)
     assert grouped[0].bubble_id != grouped[1].bubble_id
     assert [region.bbox for region in grouped] == [region.bbox for region in regions]
+
+
+def test_distinct_instance_masks_with_same_proposal_bbox_never_share_stable_id() -> None:
+    left_mask = np.zeros((160, 160), dtype=np.uint8)
+    right_mask = np.zeros_like(left_mask)
+    cv2.ellipse(left_mask, (48, 80), (42, 68), 0, 0, 360, 1, -1)
+    cv2.ellipse(right_mask, (112, 80), (42, 68), 0, 0, 360, 1, -1)
+    bubbles = [
+        masked_bubble("proposal-left", [70, 30, 160, 160], left_mask),
+        masked_bubble("proposal-right", [70, 30, 160, 160], right_mask),
+    ]
+    regions = [
+        text_region([94, 70, 18, 70]),
+        text_region([188, 70, 18, 70]),
+    ]
+
+    grouped = group_text_regions_by_bubbles(regions, bubbles, page_key="same-proposal-bbox")
+
+    assert len(grouped) == 2
+    assert all(region.metadata["balloon_assignment"]["status"] == "assigned" for region in grouped)
+    assert grouped[0].bubble_id != grouped[1].bubble_id
+    assert all("line_grouping" not in region.metadata for region in grouped)
 
 
 def test_does_not_merge_overlapping_text_regions_outside_all_bubbles() -> None:
@@ -200,6 +232,20 @@ def test_low_confidence_bubble_cannot_group_text_regions() -> None:
     assert all(region.bubble_id is None for region in grouped)
 
 
+def test_medium_confidence_bubble_cannot_merge_text_before_it_is_safe_for_repair() -> None:
+    regions = [text_region([80, 40, 20, 60]), text_region([115, 40, 20, 60])]
+    grouped = group_text_regions_by_bubbles(
+        regions,
+        [rectangular_bubble("uncertain", [50, 20, 120, 120], confidence=0.5)],
+        page_key="medium-confidence-bubble",
+        min_bubble_confidence=0.35,
+    )
+
+    assert len(grouped) == 2
+    assert all(region.bubble_id is None for region in grouped)
+    assert all(region.metadata["balloon_assignment"]["status"] == "outside" for region in grouped)
+
+
 def test_splits_two_balloon_lobes_joined_by_a_narrow_mask_bridge() -> None:
     mask = np.zeros((160, 260), dtype=np.uint8)
     cv2.ellipse(mask, (65, 80), (55, 65), 0, 0, 360, 1, -1)
@@ -220,6 +266,12 @@ def test_splits_two_balloon_lobes_joined_by_a_narrow_mask_bridge() -> None:
     assert len({region.bubble_id for region in grouped}) == 2
     assert all(region.metadata["instance_split"]["method"] == "mask_neck" for region in grouped)
     assert all(region.metadata["balloon_assignment"]["status"] == "assigned" for region in grouped)
+    child_masks = [full_constraint(region) for region in grouped]
+    parent = np.zeros(PAGE_SHAPE, dtype=np.uint8)
+    parent[20:180, 20:280] = mask
+    assert cv2.countNonZero(cv2.bitwise_and(child_masks[0], child_masks[1])) == 0
+    assert np.array_equal(cv2.bitwise_or(child_masks[0], child_masks[1]), parent)
+    assert all(region.balloon_mask_id == region.bubble_id for region in grouped)
 
 
 def test_keeps_multiple_vertical_columns_inside_one_wide_balloon() -> None:
@@ -293,6 +345,11 @@ def test_splits_solid_union_mask_with_an_anchored_internal_boundary_path(tmp_pat
         region.metadata["line_grouping"]["instance_split"]["method"] == "text_gap_boundary"
         for region in grouped
     )
+    child_masks = [full_constraint(region) for region in grouped]
+    parent = np.zeros(PAGE_SHAPE, dtype=np.uint8)
+    parent[20:220, 40:260] = mask
+    assert cv2.countNonZero(cv2.bitwise_and(child_masks[0], child_masks[1])) == 0
+    assert np.array_equal(cv2.bitwise_or(child_masks[0], child_masks[1]), parent)
     assert all(
         region.metadata["line_grouping"]["instance_split"]["cuts"][0]["boundary_source"]
         == "anchored_internal_line"

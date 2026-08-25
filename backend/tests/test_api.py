@@ -25,6 +25,23 @@ def installed_ttf() -> Path:
     return font
 
 
+def test_page_inpaint_endpoint_uses_internal_pipeline_stage(client, monkeypatch) -> None:
+    monkeypatch.setattr("app.application.task_commands.task_manager.dispatch", lambda _task_id: None)
+    project = client.post("/api/projects", json={"name": "page-inpaint-stage"}).json()
+    page = client.post(
+        f"/api/projects/{project['id']}/images",
+        files={"files": ("page.png", image_file(), "image/png")},
+    ).json()[0]
+
+    response = client.post(f"/api/images/{page['id']}/inpaint", json={"force": True})
+
+    assert response.status_code == 202, response.text
+    task = response.json()
+    assert task["task_type"] == "inpainting"
+    assert task["payload"]["start_stage"] == "inpainting"
+    assert task["payload"]["end_stage"] == "inpainting"
+
+
 def test_image_url_version_changes_only_with_the_artifact(client) -> None:
     project = client.post("/api/projects", json={"name": "stable-artifact-url"}).json()
     page = client.post(
