@@ -274,7 +274,7 @@ def test_splits_two_balloon_lobes_joined_by_a_narrow_mask_bridge() -> None:
     assert all(region.balloon_mask_id == region.bubble_id for region in grouped)
 
 
-def test_keeps_multiple_vertical_columns_inside_one_wide_balloon() -> None:
+def test_keeps_multiple_vertical_columns_inside_one_wide_balloon(tmp_path: Path) -> None:
     mask = np.zeros((180, 220), dtype=np.uint8)
     cv2.ellipse(mask, (110, 90), (105, 85), 0, 0, 360, 1, -1)
     regions = [
@@ -282,11 +282,16 @@ def test_keeps_multiple_vertical_columns_inside_one_wide_balloon() -> None:
         text_region([160, 55, 22, 110]),
         text_region([110, 65, 22, 95]),
     ]
+    image = np.full(PAGE_SHAPE, 255, dtype=np.uint8)
+    cv2.ellipse(image, (160, 110), (105, 85), 0, 0, 360, 0, 2)
+    image_path = tmp_path / "wide-balloon.png"
+    assert cv2.imwrite(str(image_path), image)
 
     grouped = group_text_regions_by_bubbles(
         regions,
         [masked_bubble("wide-balloon", [50, 20, 220, 180], mask)],
         page_key="page-wide-balloon",
+        image_path=image_path,
     )
 
     assert len(grouped) == 1
@@ -364,6 +369,70 @@ def test_splits_solid_union_mask_with_an_anchored_internal_boundary_path(tmp_pat
         split_max_neck_ratio=0,
     )
     assert [region.bubble_id for region in repeated] == [region.bubble_id for region in grouped]
+
+
+def test_splits_overlapping_expanded_columns_at_the_shorter_visible_cap(tmp_path: Path) -> None:
+    mask = np.ones((200, 160), dtype=np.uint8)
+    bubble = masked_bubble("overlapping-columns", [40, 20, 160, 200], mask)
+    regions = [
+        text_region([90, 40, 32, 60]),
+        text_region([65, 75, 32, 115]),
+        text_region([40, 75, 32, 100]),
+    ]
+    image = np.full(PAGE_SHAPE, 255, dtype=np.uint8)
+    # The expanded source boxes overlap around x=94, but their 70% text
+    # cores leave a real gap. Only the shorter leading cap contains a seam.
+    cv2.line(image, (94, 20), (94, 75), 0, 2)
+    image_path = tmp_path / "overlapping-columns.png"
+    assert cv2.imwrite(str(image_path), image)
+
+    grouped = group_text_regions_by_bubbles(
+        regions,
+        [bubble],
+        page_key="page-overlapping-columns",
+        image_path=image_path,
+        split_max_neck_ratio=0,
+    )
+
+    assert len(grouped) == 2
+    assert [
+        region.metadata.get("line_grouping", {}).get("source_count", 1) for region in grouped
+    ] == [1, 2]
+    assert len({region.bubble_id for region in grouped}) == 2
+    split = grouped[0].metadata["instance_split"]
+    assert split["orientation"] == "vertical"
+    assert split["cuts"][0]["cap_kind"] == "leading"
+
+
+def test_splits_stacked_balloons_even_when_their_text_is_vertical(tmp_path: Path) -> None:
+    mask = np.ones((200, 220), dtype=np.uint8)
+    bubble = masked_bubble("stacked-balloons", [40, 20, 220, 200], mask)
+    regions = [
+        text_region([100, 40, 24, 80]),
+        text_region([128, 45, 24, 75]),
+        text_region([70, 145, 24, 70]),
+        text_region([98, 145, 24, 70]),
+    ]
+    image = np.full(PAGE_SHAPE, 255, dtype=np.uint8)
+    cv2.line(image, (40, 132), (114, 132), 0, 2)
+    image_path = tmp_path / "stacked-balloons.png"
+    assert cv2.imwrite(str(image_path), image)
+
+    grouped = group_text_regions_by_bubbles(
+        regions,
+        [bubble],
+        page_key="page-stacked-balloons",
+        image_path=image_path,
+        split_max_neck_ratio=0,
+    )
+
+    assert len(grouped) == 2
+    assert [region.metadata["line_grouping"]["source_count"] for region in grouped] == [2, 2]
+    assert len({region.bubble_id for region in grouped}) == 2
+    assert all(
+        region.metadata["line_grouping"]["instance_split"]["orientation"] == "horizontal"
+        for region in grouped
+    )
 
 
 def test_staggered_columns_without_a_boundary_path_stay_in_one_balloon(tmp_path: Path) -> None:

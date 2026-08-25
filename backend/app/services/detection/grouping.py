@@ -403,16 +403,23 @@ def _split_group_at_visible_boundary(
     dict[str, object],
     list[np.ndarray],
 ] | None:
-    """Confirm a text-layout cut with a dark path aligned to the instance outline."""
+    """Confirm a two-dimensional text-layout cut with a visible balloon seam.
+
+    OCR orientation describes how glyphs are read, not how two touching
+    balloons are arranged. Two vertical text blocks can be side-by-side or
+    stacked, so candidate cuts must be tested on both page axes. Candidate
+    gaps use shrunken text cores because Paddle's expanded polygons often
+    overlap across the real seam even when their glyphs do not.
+    """
 
     if image is None or len(group) < 2:
         return None
     orientation_counts: dict[str, int] = {}
     for _, region in group:
         orientation_counts[region.orientation] = orientation_counts.get(region.orientation, 0) + 1
-    orientation = max(orientation_counts, key=orientation_counts.get)
-    dominant = [item for item in group if item[1].orientation == orientation]
-    if orientation not in {"vertical", "horizontal"} or len(dominant) / len(group) < 0.8:
+    text_orientation = max(orientation_counts, key=orientation_counts.get)
+    dominant = [item for item in group if item[1].orientation == text_orientation]
+    if text_orientation not in {"vertical", "horizontal"} or len(dominant) / len(group) < 0.8:
         return None
 
     evidence_maps = _bubble_boundary_evidence(image, bubble, [region for _, region in group])
@@ -420,105 +427,174 @@ def _split_group_at_visible_boundary(
         return None
     boundary_evidence, internal_evidence, boundary_support, mask_support = evidence_maps
 
-    def geometry(region: DetectionResult) -> tuple[float, float, float, float, float, float]:
+    def geometry(
+        region: DetectionResult,
+        split_orientation: str,
+    ) -> tuple[float, float, float, float, float, float]:
         x, y, width, height = region.bbox
-        if orientation == "vertical":
-            return x, x + width, y, y + height, width, height
-        return y, y + height, x, x + width, height, width
-
-    ordered = sorted(dominant, key=lambda item: sum(geometry(item[1])[:2]) / 2)
-    short_side = float(np.median([geometry(region)[4] for _, region in ordered]))
-    long_side = float(np.median([geometry(region)[5] for _, region in ordered]))
-    minimum_gap = max(2.0, short_side * 0.04)
-    minimum_cap = max(12.0, long_side * 0.2)
-    half_width = max(4.0, short_side * 0.2)
-    accepted: list[dict[str, object]] = []
-
-    for cut_index in range(1, len(ordered)):
-        first, second = ordered[:cut_index], ordered[cut_index:]
-        first_edge = max(geometry(region)[1] for _, region in first)
-        second_edge = min(geometry(region)[0] for _, region in second)
-        gap = second_edge - first_edge
-        if gap < minimum_gap:
-            continue
-
-        first_lead = float(np.median([geometry(region)[2] for _, region in first]))
-        second_lead = float(np.median([geometry(region)[2] for _, region in second]))
-        first_trail = float(np.median([geometry(region)[3] for _, region in first]))
-        second_trail = float(np.median([geometry(region)[3] for _, region in second]))
-        leading_cap = (min(first_lead, second_lead), max(first_lead, second_lead))
-        trailing_cap = (min(first_trail, second_trail), max(first_trail, second_trail))
-        if leading_cap[1] - leading_cap[0] >= trailing_cap[1] - trailing_cap[0]:
-            cap_kind, cap = "leading", leading_cap
-        else:
-            cap_kind, cap = "trailing", trailing_cap
-        cap_length = cap[1] - cap[0]
-        if cap_length < minimum_cap:
-            continue
-
-        cut = (first_edge + second_edge) / 2
-        coverage, run = _boundary_path_metrics(
-            boundary_evidence,
-            bubble,
-            orientation=orientation,
-            cut=cut,
-            cap=cap,
-            half_width=half_width,
-        )
-        boundary_source = "mask_boundary"
-        if coverage < min_boundary_coverage or run < min_boundary_run:
-            coverage, run = _anchored_internal_path_metrics(
-                internal_evidence,
-                boundary_support,
-                mask_support,
-                bubble,
-                orientation=orientation,
-                cut=cut,
-                cap=cap,
-                cap_kind=cap_kind,
-                half_width=half_width,
+        center = _polygon_centroid(region.polygon)
+        core = np.asarray(_scale_polygon(region.polygon, center, 0.7), dtype=np.float64)
+        core_x0, core_y0 = np.min(core, axis=0)
+        core_x1, core_y1 = np.max(core, axis=0)
+        if split_orientation == "vertical":
+            return (
+                float(core_x0),
+                float(core_x1),
+                y,
+                y + height,
+                float(core_x1 - core_x0),
+                height,
             )
-            boundary_source = "anchored_internal_line"
-            if coverage < max(0.9, min_boundary_coverage) or run < max(0.85, min_boundary_run):
-                continue
-        accepted.append(
-            {
-                "cut": round(cut, 3),
-                "gap": round(gap, 3),
-                "cap_length": round(cap_length, 3),
-                "boundary_coverage": round(coverage, 4),
-                "boundary_run": round(run, 4),
-                "boundary_source": boundary_source,
-            }
+        return (
+            float(core_y0),
+            float(core_y1),
+            x,
+            x + width,
+            float(core_y1 - core_y0),
+            width,
         )
 
-    if not accepted:
-        return None
+    candidates: list[
+        tuple[
+            float,
+            str,
+            list[list[tuple[int, DetectionResult]]],
+            list[dict[str, object]],
+            list[np.ndarray],
+        ]
+    ] = []
+    orientations = [text_orientation, "horizontal" if text_orientation == "vertical" else "vertical"]
+    for split_orientation in orientations:
+        ordered = sorted(
+            dominant,
+            key=lambda item: sum(geometry(item[1], split_orientation)[:2]) / 2,
+        )
+        short_side = float(
+            np.median([geometry(region, split_orientation)[4] for _, region in ordered])
+        )
+        long_side = float(
+            np.median([geometry(region, split_orientation)[5] for _, region in ordered])
+        )
+        minimum_gap = max(2.0, short_side * 0.04)
+        minimum_cap = max(12.0, long_side * 0.15)
+        half_width = max(4.0, short_side * 0.2)
+        accepted: list[dict[str, object]] = []
 
-    cuts = sorted(float(item["cut"]) for item in accepted)
-    groups_by_bucket: dict[int, list[tuple[int, DetectionResult]]] = {}
-    for item in group:
-        region = item[1]
-        axis_start, axis_end = geometry(region)[:2]
-        axis_center = (axis_start + axis_end) / 2
-        bucket = sum(axis_center > cut for cut in cuts)
-        groups_by_bucket.setdefault(bucket, []).append(item)
-    if len(groups_by_bucket) < 2:
+        for cut_index in range(1, len(ordered)):
+            first, second = ordered[:cut_index], ordered[cut_index:]
+            first_edge = max(geometry(region, split_orientation)[1] for _, region in first)
+            second_edge = min(geometry(region, split_orientation)[0] for _, region in second)
+            gap = second_edge - first_edge
+            if gap < minimum_gap:
+                continue
+
+            first_lead = float(
+                np.median([geometry(region, split_orientation)[2] for _, region in first])
+            )
+            second_lead = float(
+                np.median([geometry(region, split_orientation)[2] for _, region in second])
+            )
+            first_trail = float(
+                np.median([geometry(region, split_orientation)[3] for _, region in first])
+            )
+            second_trail = float(
+                np.median([geometry(region, split_orientation)[3] for _, region in second])
+            )
+            leading_cap = (min(first_lead, second_lead), max(first_lead, second_lead))
+            trailing_cap = (min(first_trail, second_trail), max(first_trail, second_trail))
+            cut = (first_edge + second_edge) / 2
+            cap_candidates: list[dict[str, object]] = []
+            for cap_kind, cap in (("leading", leading_cap), ("trailing", trailing_cap)):
+                cap_length = cap[1] - cap[0]
+                if cap_length < minimum_cap:
+                    continue
+                coverage, run = _boundary_path_metrics(
+                    boundary_evidence,
+                    bubble,
+                    orientation=split_orientation,
+                    cut=cut,
+                    cap=cap,
+                    half_width=half_width,
+                )
+                boundary_source = "mask_boundary"
+                if coverage < min_boundary_coverage or run < min_boundary_run:
+                    coverage, run = _anchored_internal_path_metrics(
+                        internal_evidence,
+                        boundary_support,
+                        mask_support,
+                        bubble,
+                        orientation=split_orientation,
+                        cut=cut,
+                        cap=cap,
+                        cap_kind=cap_kind,
+                        half_width=half_width,
+                    )
+                    boundary_source = "anchored_internal_line"
+                    if coverage < max(0.9, min_boundary_coverage) or run < max(
+                        0.85, min_boundary_run
+                    ):
+                        continue
+                cap_candidates.append(
+                    {
+                        "cut": round(cut, 3),
+                        "gap": round(gap, 3),
+                        "cap_kind": cap_kind,
+                        "cap_length": round(cap_length, 3),
+                        "boundary_coverage": round(coverage, 4),
+                        "boundary_run": round(run, 4),
+                        "boundary_source": boundary_source,
+                    }
+                )
+            if cap_candidates:
+                accepted.append(
+                    max(
+                        cap_candidates,
+                        key=lambda item: min(
+                            float(item["boundary_coverage"]),
+                            float(item["boundary_run"]),
+                        ),
+                    )
+                )
+
+        if not accepted:
+            continue
+
+        cuts = sorted(float(item["cut"]) for item in accepted)
+        groups_by_bucket: dict[int, list[tuple[int, DetectionResult]]] = {}
+        for item in group:
+            region = item[1]
+            axis_start, axis_end = geometry(region, split_orientation)[:2]
+            axis_center = (axis_start + axis_end) / 2
+            bucket = sum(axis_center > cut for cut in cuts)
+            groups_by_bucket.setdefault(bucket, []).append(item)
+        if len(groups_by_bucket) < 2:
+            continue
+        ordered_buckets = sorted(
+            groups_by_bucket.items(),
+            key=lambda item: min(index for index, _ in item[1]),
+        )
+        groups = [members for _, members in ordered_buckets]
+        present_buckets = [bucket for bucket, _ in ordered_buckets]
+        child_masks = _partition_mask_at_axis_cuts(
+            (bubble.mask > 0).astype(np.uint8),
+            bubble.mask_origin,
+            orientation=split_orientation,
+            cuts=cuts,
+            present_buckets=present_buckets,
+        )
+        strength = min(
+            min(float(item["boundary_coverage"]), float(item["boundary_run"]))
+            for item in accepted
+        )
+        candidates.append((strength, split_orientation, groups, accepted, child_masks))
+
+    if not candidates:
         return None
-    ordered_buckets = sorted(
-        groups_by_bucket.items(),
-        key=lambda item: min(index for index, _ in item[1]),
+    _, split_orientation, groups, accepted, child_masks = max(
+        candidates,
+        key=lambda item: (item[0], len(item[2])),
     )
-    groups = [members for _, members in ordered_buckets]
-    present_buckets = [bucket for bucket, _ in ordered_buckets]
-    child_masks = _partition_mask_at_axis_cuts(
-        (bubble.mask > 0).astype(np.uint8),
-        bubble.mask_origin,
-        orientation=orientation,
-        cuts=cuts,
-        present_buckets=present_buckets,
-    )
-    return groups, {"orientation": orientation, "cuts": accepted}, child_masks
+    return groups, {"orientation": split_orientation, "cuts": accepted}, child_masks
 
 
 def _partition_mask_from_seeds(mask: np.ndarray, seeds: list[np.ndarray]) -> list[np.ndarray]:
