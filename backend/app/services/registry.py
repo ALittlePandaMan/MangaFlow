@@ -9,7 +9,14 @@ from typing import Any
 from app.services.base import Inpainter, OCRProvider, Renderer, TextDetector, Translator
 from app.services.detection import OpenCVTextDetector, PaddleTextDetector
 from app.services.inpainting import HybridInpainter, OpenCVInpainter, SimpleLaMaInpainter
-from app.services.ocr import MangaOCRProvider, NullOCRProvider, PaddleOCRProvider, TesseractOCRProvider
+from app.services.ocr import (
+    CloudMultimodalOCRProvider,
+    GenericCloudOCRProvider,
+    MangaOCRProvider,
+    NullOCRProvider,
+    PaddleOCRProvider,
+    TesseractOCRProvider,
+)
 from app.services.rendering import PillowRenderer
 from app.services.translation import OpenAICompatibleTranslator, PassthroughTranslator
 
@@ -23,6 +30,8 @@ class ProviderRegistry:
         "manga-ocr": MangaOCRProvider,
         "paddleocr": PaddleOCRProvider,
         "tesseract": TesseractOCRProvider,
+        "cloud-multimodal": CloudMultimodalOCRProvider,
+        "cloud-ocr": GenericCloudOCRProvider,
     }
     translators: dict[str, type[Translator]] = {
         "passthrough": PassthroughTranslator,

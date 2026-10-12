@@ -140,6 +140,23 @@ describe('EditorPage page snapshot revalidation', () => {
     vi.spyOn(api.tasks, 'list').mockResolvedValue([])
   })
 
+  it('opens project context above the app shell and restores focus when dismissed', async () => {
+    const currentPage = page('page-a')
+    vi.spyOn(api.projects, 'images').mockResolvedValue([currentPage])
+    vi.spyOn(api.images, 'get').mockResolvedValue(currentPage)
+    renderEditor()
+    await screen.findByTestId('current-page')
+    const toolbarButton = screen.getByRole('button', {name: '原图'})
+    toolbarButton.focus()
+    await userEvent.keyboard('{Control>}{Shift>}c{/Shift}{/Control}')
+    const dialog = screen.getByRole('dialog', {name: '翻译上下文'})
+    expect(dialog.parentElement).toBe(document.body)
+    expect(within(dialog).getByRole('button', {name: '关闭翻译上下文'})).toHaveFocus()
+    await userEvent.keyboard('{Escape}')
+    expect(screen.queryByRole('dialog', {name: '翻译上下文'})).not.toBeInTheDocument()
+    expect(toolbarButton).toHaveFocus()
+  })
+
   it('shows the list snapshot immediately, then preloads and commits the authoritative page everywhere', async () => {
     const snapshot = page('page-a')
     const neighbor = page('page-b')
@@ -284,7 +301,7 @@ describe('EditorPage page snapshot revalidation', () => {
 
     const toolbar = screen.getByRole('toolbar', {name:'编辑器顶部工具栏'})
     const warning = await within(toolbar).findByRole('alert')
-    expect(toolbar).toHaveClass('h-12')
+    expect(toolbar).toHaveClass('editor-toolbar')
     expect(warning).not.toHaveClass('fixed')
     expect(warning).toHaveTextContent('本次 OCR 已完成，但气泡合并未执行')
     expect(warning).toHaveTextContent('气泡检测模型不可用或运行失败')

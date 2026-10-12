@@ -12,11 +12,13 @@ interface EditorState {
   view: ViewMode
   tool: Tool
   zoom: number
+  viewReset: number
   selectedIds: string[]
   layers: LayerVisibility
   setView: (view: ViewMode) => void
   setTool: (tool: Tool) => void
   setZoom: (zoom: number) => void
+  resetView: () => void
   select: (id: string | null, additive?: boolean) => void
   selectMany: (ids: string[]) => void
   toggleLayer: (name: keyof LayerVisibility) => void
@@ -33,6 +35,7 @@ export const useEditorStore = create<EditorState>((set) => ({
   view: 'translated',
   tool: 'select',
   zoom: 1,
+  viewReset: 0,
   selectedIds: [],
   layers: viewLayers.translated,
   setView: view => set({ view, layers: { ...viewLayers[view] } }),
@@ -49,6 +52,7 @@ export const useEditorStore = create<EditorState>((set) => ({
     }
   }),
   setZoom: zoom => set({ zoom: Math.min(6, Math.max(0.05, zoom)) }),
+  resetView: () => set(state => ({zoom: 1, viewReset: state.viewReset + 1})),
   select: (id, additive = false) => set(state => {
     if (!id) return { selectedIds: [] }
     if (additive) return { selectedIds: state.selectedIds.includes(id) ? state.selectedIds.filter(item => item !== id) : [...state.selectedIds, id] }

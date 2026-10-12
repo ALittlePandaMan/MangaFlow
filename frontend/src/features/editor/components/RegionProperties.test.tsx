@@ -93,6 +93,7 @@ describe('RegionProperties coordinate rotation', () => {
   it('rotates the source polygon without changing translated text rotation', () => {
     const onUpdate = renderProperties()
 
+    fireEvent.click(screen.getByText('位置与旋转 · 原文框坐标'))
     fireEvent.click(screen.getByRole('button', {name: '原文框旋转角度（度）增大'}))
 
     expect(onUpdate).toHaveBeenCalledOnce()
@@ -107,6 +108,7 @@ describe('RegionProperties coordinate rotation', () => {
     useEditorStore.setState({view: 'translated'})
     const onUpdate = renderProperties()
 
+    fireEvent.click(screen.getByText('位置与旋转 · 译文框坐标'))
     fireEvent.click(screen.getByRole('button', {name: '译文框旋转角度（度）增大'}))
 
     expect(onUpdate).toHaveBeenCalledOnce()

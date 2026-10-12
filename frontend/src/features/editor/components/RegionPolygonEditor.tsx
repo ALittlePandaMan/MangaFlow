@@ -1,6 +1,8 @@
 import Konva from 'konva'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Circle, Group, Line, Rect, Text } from 'react-konva'
+import { Circle, Group, Line, Rect } from 'react-konva'
+import {RegionLabel} from './RegionLabel'
+import {canvasPalette} from '../lib/canvasPalette'
 
 type Point = [number, number]
 
@@ -415,7 +417,7 @@ export function RegionPolygonEditor({polygon, pageWidth, pageHeight, scale, labe
 
   return <Group ref={editorRef} draggable onDragStart={beginWholeDrag} onDragMove={moveWholeRegion} onDragEnd={endWholeDrag} onContextMenu={onContextMenu}>
     <Line
-      points={flatPoints(points)} closed fill="rgba(0,215,170,.08)" stroke="#00d7aa"
+      points={flatPoints(points)} closed fill={canvasPalette.selectionFill} stroke={canvasPalette.selected}
       strokeWidth={2 / scale} hitStrokeWidth={12 / scale}
       dash={visible ? undefined : [6 / scale, 4 / scale]} opacity={visible ? 1 : .7}
       onClick={event => {
@@ -428,11 +430,11 @@ export function RegionPolygonEditor({polygon, pageWidth, pageHeight, scale, labe
       onMouseEnter={event => setCursor(event, 'grab')}
       onMouseLeave={event => setCursor(event, 'default')}
     />
-    <Text x={bounds.x} y={bounds.y - 17 * labelScale} text={label} fill={labelColor} fontSize={12 * labelScale} listening={false}/>
+    <RegionLabel x={bounds.x} y={bounds.y} text={label} color={labelColor} scale={labelScale}/>
     {supportsPolygonReshape && rotationControl && <Group>
       <Line
         points={[...rotationControl.anchor, ...rotationControl.handle]}
-        stroke="#00d7aa" strokeWidth={2 / scale} hitStrokeWidth={ROTATION_HIT_WIDTH / scale}
+        stroke={canvasPalette.selected} strokeWidth={2 / scale} hitStrokeWidth={ROTATION_HIT_WIDTH / scale}
         lineCap="round"
         onMouseDown={beginRotation} onTouchStart={beginRotation}
         onContextMenu={onContextMenu}
@@ -441,7 +443,7 @@ export function RegionPolygonEditor({polygon, pageWidth, pageHeight, scale, labe
       <Circle
         x={rotationControl.handle[0]} y={rotationControl.handle[1]}
         radius={ROTATION_HANDLE_RADIUS / scale}
-        fill="#00d7aa" stroke="#052f27" strokeWidth={1.5 / scale}
+        fill={canvasPalette.selected} stroke={canvasPalette.handleBorder} strokeWidth={1.5 / scale}
         onMouseDown={beginRotation} onTouchStart={beginRotation}
         onContextMenu={onContextMenu}
         onMouseEnter={event => setCursor(event, 'grab')} onMouseLeave={event => setCursor(event, 'default')}
@@ -459,7 +461,7 @@ export function RegionPolygonEditor({polygon, pageWidth, pageHeight, scale, labe
           x={center[0]} y={center[1]}
           width={hitLength} height={EDGE_HIT_THICKNESS / scale}
           offsetX={hitLength / 2} offsetY={EDGE_HIT_THICKNESS / scale / 2}
-          rotation={angle} fill="rgba(0,215,170,.001)"
+          rotation={angle} fill="rgba(0,0,0,.001)"
           draggable
           onContextMenu={onContextMenu}
           onDragStart={event => beginEdgeDrag(event, index)} onDragMove={moveEdge} onDragEnd={endEdgeDrag}
@@ -470,7 +472,7 @@ export function RegionPolygonEditor({polygon, pageWidth, pageHeight, scale, labe
           width={EDGE_HANDLE_LENGTH / scale} height={EDGE_HANDLE_THICKNESS / scale}
           offsetX={EDGE_HANDLE_LENGTH / scale / 2} offsetY={EDGE_HANDLE_THICKNESS / scale / 2}
           rotation={angle} cornerRadius={EDGE_HANDLE_THICKNESS / scale / 2}
-          fill="#00d7aa" stroke="#052f27" strokeWidth={1 / scale} listening={false}
+          fill={canvasPalette.selected} stroke={canvasPalette.handleBorder} strokeWidth={1 / scale} listening={false}
         />
       </Group>
     })}
@@ -478,7 +480,7 @@ export function RegionPolygonEditor({polygon, pageWidth, pageHeight, scale, labe
       key={`corner-${index}`} x={point[0]} y={point[1]}
       width={CORNER_SIZE / scale} height={CORNER_SIZE / scale}
       offsetX={CORNER_SIZE / scale / 2} offsetY={CORNER_SIZE / scale / 2}
-      cornerRadius={CORNER_SIZE / scale / 2} fill="#f8fffc" stroke="#00b991" strokeWidth={1.5 / scale}
+      cornerRadius={CORNER_SIZE / scale / 2} fill={canvasPalette.handleFill} stroke={canvasPalette.handleBorder} strokeWidth={1.5 / scale}
       draggable
       onContextMenu={onContextMenu}
       onDragStart={event => beginCornerDrag(event, index)} onDragMove={moveCorner} onDragEnd={endCornerDrag}

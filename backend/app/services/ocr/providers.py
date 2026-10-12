@@ -112,7 +112,8 @@ class MangaOCRProvider(OCRProvider):
 
             self._model = self._create_model(MangaOcr, self._device)
             text = str(self._model(crop)).strip()
-        # MangaOCR does not expose token confidence; non-empty inference gets a conservative score.
+        # Keep the legacy numeric field for compatibility, but never present it
+        # as a measured token confidence to quality checks or API consumers.
         return OCRResult(
             text=text,
             confidence=0.8 if text else 0.0,
@@ -120,6 +121,7 @@ class MangaOCRProvider(OCRProvider):
             metadata={
                 "model": str(self.config.get("model", "kha-white/manga-ocr-base")),
                 "device": self._device,
+                "confidence_available": False,
             },
         )
 

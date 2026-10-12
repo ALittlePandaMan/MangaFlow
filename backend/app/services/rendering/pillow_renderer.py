@@ -8,11 +8,13 @@ import numpy as np
 from app.core.config import get_settings
 from app.services.base import ProviderCapabilities, Renderer
 from app.services.layout import FontResolver, MangaLayoutEngine
+from app.services.layout.shape import inscribed_text_box
+from app.services.rendering.snapshot import render_input
 from app.utils.geometry import order_quadrilateral, perspective_coefficients
 from app.utils.image_metadata import load_rgb_with_metadata, save_png_with_metadata
 from PIL import Image, ImageChops, ImageColor, ImageDraw
 
-RENDER_OUTPUT_VERSION = 2
+RENDER_OUTPUT_VERSION = 4
 
 
 class PillowRenderer(Renderer):
@@ -40,6 +42,8 @@ class PillowRenderer(Renderer):
         regions: list[Any],
         output_path: Path,
         text_layer_path: Path,
+        *,
+        shape_masks: dict[str, np.ndarray] | None = None,
     ) -> dict[str, Any]:
         self.ensure_loaded()
         background_rgb, metadata = load_rgb_with_metadata(background_path)
@@ -51,6 +55,23 @@ class PillowRenderer(Renderer):
                 continue
             translated_bbox = getattr(region, "translated_bbox", None) or region.bbox
             translated_polygon = getattr(region, "translated_polygon", None) or region.polygon
+            shape_applied = False
+            shape_warning = False
+            use_shape = (shape_masks and region.id in shape_masks
+                         and not getattr(region, "rotation", 0)
+                         and not getattr(region, "perspective_warp", False)
+                         and translated_bbox == region.bbox
+                         and translated_polygon == region.polygon)
+            if use_shape:
+                safe_box = inscribed_text_box(shape_masks[region.id], translated_bbox,
+                                              margin=max(2, int(np.ceil(region.stroke_width)) + 2))
+                if safe_box:
+                    translated_bbox = safe_box
+                    translated_polygon = [[safe_box[0],safe_box[1]], [safe_box[0]+safe_box[2],safe_box[1]],
+                                          [safe_box[0]+safe_box[2],safe_box[1]+safe_box[3]], [safe_box[0],safe_box[1]+safe_box[3]]]
+                    shape_applied = True
+                else:
+                    shape_warning = True
             warp_quad = (
                 order_quadrilateral(translated_polygon) if getattr(region, "perspective_warp", False) else None
             )
@@ -71,6 +92,15 @@ class PillowRenderer(Renderer):
                 # bbox first; the complete transparent tile is warped below.
                 polygon=None if warp_quad else translated_polygon,
             )
+            if shape_warning:
+                layout.overflow = True
+                layout.warnings.append("balloon_has_no_safe_text_area")
+                region_layouts[region.id] = {
+                    **layout.to_dict(), "render_output_version": RENDER_OUTPUT_VERSION,
+                    "shape_layout_applied": False, "render_skipped": True,
+                    "effective_text_bbox": None, "shape_layout_source": {"bbox": region.bbox, "polygon": region.polygon},
+                }
+                continue
             render_style = self._draw_region(
                 layer,
                 background,
@@ -85,13 +115,19 @@ class PillowRenderer(Renderer):
                 "render_output_version": RENDER_OUTPUT_VERSION,
                 "perspective_warp_applied": render_style["perspective_warp_applied"],
                 "render_style": render_style,
+                "shape_layout_applied": shape_applied,
+                "effective_text_bbox": translated_bbox,
+                "render_skipped": False,
+                "shape_layout_source": {"bbox": region.bbox, "polygon": region.polygon} if shape_applied else None,
             }
         composite = Image.alpha_composite(background, layer)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         text_layer_path.parent.mkdir(parents=True, exist_ok=True)
         layer.save(text_layer_path, "PNG")
         save_png_with_metadata(composite.convert("RGB"), output_path, metadata)
-        return {"layouts": region_layouts, "output_path": output_path, "text_layer_path": text_layer_path}
+        inputs = {region.id: render_input(region, font_size=region_layouts.get(region.id, {}).get("font_size"))
+                  for region in regions}
+        return {"layouts": region_layouts, "inputs": inputs, "output_path": output_path, "text_layer_path": text_layer_path}
 
     @staticmethod
     def _draw_region(
@@ -123,7 +159,7 @@ class PillowRenderer(Renderer):
         tile_height = max(1, round(height * raster_scale))
         tile = Image.new("RGBA", (tile_width, tile_height), (0, 0, 0, 0))
         draw = ImageDraw.Draw(tile)
-        offset_x = max(0.0, (width - layout.width) / 2)
+        offset_x = max(0.0, (width - (getattr(layout, "coordinate_width", None) or layout.width)) / 2)
         offset_y = max(0.0, (height - layout.height) / 2)
         render_style = PillowRenderer._resolve_render_style(
             background,

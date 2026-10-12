@@ -1,3 +1,6 @@
+import {EditorWorkspace} from '../features/editor/components/EditorWorkspace'
+import {EditorHeaderActions} from '../features/editor/components/EditorHeaderActions'
+import {MobilePageWorkflow} from '../features/editor/components/MobilePageWorkflow'
 import { Archive, BookOpenText, CheckCircle2, ChevronDown, Download, Eraser, Image as ImageIcon, ImagePlus, Languages, Layers3, RotateCcw, ScanText, TextCursorInput, Trash2, Upload } from 'lucide-react'
 import { memo, useCallback, useEffect, useRef, useState } from 'react'
 import type { MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from 'react'
@@ -16,7 +19,7 @@ import { useEditorStore } from '../features/editor/store'
 import {formatShortcut, shortcutForEvent, shortcutToAria, type ShortcutId, useShortcutStore} from '../features/shortcuts/store'
 import { ApiError, api } from '../services/api'
 import type { FontResource, ImagePage, ProcessingTask, Project, TextRegion, ViewMode } from '../types'
-import {buttonClass, cn, dangerButtonClass, eyebrowClass, iconButtonClass, primaryButtonClass, scrollbarClass, textareaClass} from '../ui'
+import {buttonClass, ghostButtonClass, cn, dangerButtonClass, eyebrowClass, iconButtonClass, primaryButtonClass, scrollbarClass, textareaClass} from '../ui'
 
 type HistoryEntry = {id: string, before: TextRegion, after: TextRegion}
 type PendingChange = {pageId: string, before: TextRegion, patch: Partial<TextRegion>, timer: number, version: number}
@@ -117,17 +120,17 @@ const PageListItem = memo(function PageListItem({
     className={cn(
       'relative mb-2.5 block w-full cursor-grab touch-pan-y rounded-xl border p-2.5 text-left outline-none transition-[background-color,border-color,opacity,transform,box-shadow,filter] [content-visibility:auto] [contain-intrinsic-size:auto_280px] focus-visible:border-accent/70 focus-visible:ring-2 focus-visible:ring-accent/25 active:cursor-grabbing',
       selected
-        ? 'border-accent !bg-accent !text-accent-ink [box-shadow:var(--shadow-card-hover)] hover:brightness-105'
+        ? 'border-accent-line !bg-accent-soft !text-accent-soft-ink hover:!bg-accent-soft-hover'
         : 'border-transparent bg-transparent hover:bg-raised',
       dragged && 'z-10 scale-[1.015] cursor-grabbing bg-raised opacity-70 shadow-panel',
-      dropDirection === 'after' && 'after:absolute after:-bottom-1 after:inset-x-1 after:h-0.5 after:rounded-full after:bg-accent after:shadow-[0_0_8px_var(--color-accent)]',
-      dropDirection === 'before' && 'before:absolute before:-top-1 before:inset-x-1 before:h-0.5 before:rounded-full before:bg-accent before:shadow-[0_0_8px_var(--color-accent)]',
+      dropDirection === 'after' && 'after:absolute after:-bottom-1 after:inset-x-1 after:h-0.5 after:rounded-full after:bg-accent',
+      dropDirection === 'before' && 'before:absolute before:-top-1 before:inset-x-1 before:h-0.5 before:rounded-full before:bg-accent',
     )}
     onPointerDown={event => onPointerDown(event, item, index)}
     onContextMenu={event => onContextMenu(event, item)}
     onClick={event => onActivate(event, item.id)}
   >
-    <div className={cn('relative flex aspect-[3/4] w-full justify-center overflow-hidden bg-transparent transition-shadow', selected && 'ring-1 ring-inset ring-canvas/50')} style={item.width > 0 && item.height > 0 ? {aspectRatio: `${item.width} / ${item.height}`} : undefined}>
+    <div className={cn('relative flex aspect-[3/4] w-full justify-center overflow-hidden bg-transparent transition-shadow', selected && 'ring-1 ring-inset ring-accent-line')} style={item.width > 0 && item.height > 0 ? {aspectRatio: `${item.width} / ${item.height}`} : undefined}>
       <img
         className="pointer-events-none block size-full select-none object-contain"
         draggable={false}
@@ -142,8 +145,8 @@ const PageListItem = memo(function PageListItem({
       <span className={cn('absolute bottom-1 left-1 bg-canvas px-1 py-0.5 font-mono text-[12px]', selected && 'text-accent')}>{String(index + 1).padStart(2,'0')}</span>
       {activeTask && <span className="absolute right-1 top-1 grid rounded-full bg-canvas/90 p-1 shadow-panel"><CircularProgress value={activeTask.progress} size={34} label={`${item.filename} 处理进度`}/></span>}
     </div>
-    <small className={cn('mt-2 block truncate text-[12px]', selected ? 'font-semibold text-accent-ink' : 'text-secondary')} title={item.filename}>{item.filename}</small>
-    <i className={cn('mt-1 block truncate font-mono text-[12px] not-italic', state.emphasized && 'font-semibold', selected ? 'text-accent-ink' : state.className)}>{state.label}</i>
+    <small className={cn('mt-2 block truncate text-[12px]', selected ? 'font-semibold text-accent-soft-ink' : 'text-secondary')} title={item.filename}>{item.filename}</small>
+    <i className={cn('mt-1 block truncate font-mono text-[12px] not-italic', state.emphasized && 'font-semibold', selected ? 'text-accent-soft-ink' : state.className)}>{state.label}</i>
   </button>
 })
 
@@ -216,6 +219,7 @@ export function EditorPage() {
   const [notice, setNotice] = useState('')
   const [runningRegionAction, setRunningRegionAction] = useState<string | null>(null)
   const [showContext, setShowContext] = useState(false)
+  const contextDialogRef = useRef<HTMLDivElement>(null)
   const [contextText, setContextText] = useState('{}')
   const [schedulingProcess, setSchedulingProcess] = useState(false)
   const [runningWorkflowStage, setRunningWorkflowStage] = useState<PageWorkflowStage | null>(null)
@@ -251,6 +255,29 @@ export function EditorPage() {
   const routeRegionIdRef = useRef(searchParams.get('region'))
   routeImageIdRef.current = imageId
   routeRegionIdRef.current = searchParams.get('region')
+  useEffect(() => {
+    if (!showContext) return
+    const previous = document.activeElement as HTMLElement | null
+    const dialog = contextDialogRef.current
+    dialog?.querySelector<HTMLButtonElement>('button')?.focus()
+    const keydown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && dialog?.dataset.saving !== 'true') {
+        event.preventDefault(); event.stopPropagation(); setShowContext(false)
+      }
+      if (event.key !== 'Tab') return
+      const items = Array.from(dialog?.querySelectorAll<HTMLElement>('button:not(:disabled), textarea:not(:disabled)') || [])
+      const first = items[0], last = items.at(-1)
+      if (!first || !last) {event.preventDefault(); return}
+      if (event.shiftKey && (document.activeElement === first || !dialog?.contains(document.activeElement))) {
+        event.preventDefault(); last.focus()
+      } else if (!event.shiftKey && (document.activeElement === last || !dialog?.contains(document.activeElement))) {
+        event.preventDefault(); first.focus()
+      }
+    }
+    document.addEventListener('keydown', keydown, true)
+    return () => {document.removeEventListener('keydown', keydown, true); previous?.focus()}
+  }, [showContext])
+
   const selectedIds = useEditorStore(state => state.selectedIds)
   const select = useEditorStore(state => state.select)
   const setTool = useEditorStore(state => state.setTool)
@@ -938,14 +965,17 @@ export function EditorPage() {
     })
   }, [])
 
+  const navigatePage = useCallback((pageId: string) => {
+    if (!editorBusyRef.current) navigateRef.current(`/projects/${projectId}/editor/${pageId}`)
+  }, [projectId])
   const activatePage = useCallback((event: ReactMouseEvent<HTMLButtonElement>, pageId: string) => {
     if (suppressPageClick.current) {
       event.preventDefault()
       event.stopPropagation()
       return
     }
-    if (!editorBusyRef.current) navigateRef.current(`/projects/${projectId}/editor/${pageId}`)
-  }, [projectId])
+    navigatePage(pageId)
+  }, [navigatePage])
 
   const openImagePickerFromBlank = (event: ReactMouseEvent<HTMLDivElement>) => {
     if ((event.target as HTMLElement).closest('[data-page-id]')) return
@@ -1049,7 +1079,7 @@ export function EditorPage() {
   }
 
   const beginPagePress = useCallback((event: ReactPointerEvent<HTMLButtonElement>, item: ImagePage, index: number) => {
-    if (editorBusyRef.current || !event.isPrimary || event.button !== 0) return
+    if (editorBusyRef.current || !event.isPrimary || event.button !== 0 || event.pointerType === 'touch') return
     setPageContextMenu(null)
     pagePressRef.current = {
       pageId: item.id,
@@ -1371,7 +1401,8 @@ export function EditorPage() {
     if ((event.repeat && !repeatable) || editorBusy) return
 
     const store = useEditorStore.getState()
-    if (shortcutId === 'tool.select') store.setTool('select')
+    if (shortcutId === 'tool.pan') store.setTool('pan')
+    else if (shortcutId === 'tool.select') store.setTool('select')
     else if (shortcutId === 'tool.rectangle') store.setTool('rectangle')
     else if (shortcutId === 'tool.polygon') store.setTool('polygon')
     else if (shortcutId === 'tool.lasso') store.setTool('lasso')
@@ -1387,7 +1418,7 @@ export function EditorPage() {
       store.selectMany(regionsRef.current.map(region => region.id))
     } else if (shortcutId === 'zoom.out') store.setZoom(store.zoom / 1.15)
     else if (shortcutId === 'zoom.in') store.setZoom(store.zoom * 1.15)
-    else if (shortcutId === 'zoom.reset') store.setZoom(1)
+    else if (shortcutId === 'zoom.reset') store.resetView()
     else if (shortcutId === 'region.delete') {
       if (selectedIds.length) void deleteSelectedRegion()
     } else if (shortcutId === 'region.cancelSelection') store.select(null)
@@ -1442,10 +1473,13 @@ export function EditorPage() {
 
   const contextPage = pageContextMenu ? pages.find(item => item.id === pageContextMenu.pageId) : undefined
   const selectedPageId = imageId || page?.id
+  const selectedPageIndex = pages.findIndex(item => item.id === selectedPageId)
+  const previousPage = selectedPageIndex > 0 ? pages[selectedPageIndex - 1] : undefined
+  const nextPage = selectedPageIndex >= 0 ? pages[selectedPageIndex + 1] : undefined
   if (!project && !showingInitialLoading) return <div className="grid h-full place-content-center text-center"><h2>无法打开项目</h2><p className="text-muted">{error}</p><Link className="text-accent" to="/projects">返回项目</Link></div>
   return <>
     {editorTarget && createPortal(<>
-      <div className="ml-auto flex items-center gap-2">
+      <EditorHeaderActions>
         <button className={headerButtonClass} onClick={() => setShowContext(true)} disabled={editorBusy || showingInitialLoading} title={`翻译上下文 (${formatShortcut(shortcuts['page.context'])})`} aria-keyshortcuts={shortcutToAria(shortcuts['page.context'])}><BookOpenText size={16}/>翻译上下文</button>
         <div className="relative" ref={exportMenuRef}>
           <button className={headerButtonClass} disabled={editorBusy || showingInitialLoading || exporting} title={`导出 (${formatShortcut(shortcuts['page.export'])})`} aria-keyshortcuts={shortcutToAria(shortcuts['page.export'])} aria-haspopup="menu" aria-expanded={exportMenuOpen} onClick={() => setExportMenuOpen(open => !open)}>{exporting ? <ButtonLoading label="导出中…"/> : <><Download size={16}/>导出<ChevronDown className={cn('transition-transform', exportMenuOpen && 'rotate-180')} size={13}/></>}</button>
@@ -1461,9 +1495,9 @@ export function EditorPage() {
           </div>}
         </div>
         <button className={headerButtonClass} onClick={() => void batchRecognize()} disabled={editorBusy || showingInitialLoading} title={`只识别当前页之外尚未完成 OCR 的图片 (${formatShortcut(shortcuts['page.batchOcr'])})`} aria-keyshortcuts={shortcutToAria(shortcuts['page.batchOcr'])}>{schedulingBatch ? <ButtonLoading label="批量识别中…"/> : <><Layers3 size={16}/>批量识别</>}</button>
-      </div>
+      </EditorHeaderActions>
     </>, editorTarget)}
-    <div className="editor-content-enter grid h-full grid-rows-[48px_minmax(0,1fr)] bg-canvas">
+    <div className="editor-content-enter grid h-full grid-rows-[auto_minmax(0,1fr)] bg-canvas">
     <EditorToolbar
       onUndo={() => applyHistory('undo')}
       onRedo={() => applyHistory('redo')}
@@ -1471,17 +1505,28 @@ export function EditorPage() {
       canRedo={!!redoStack.length}
       disabled={editorBusy}
       centerContent={!blockingBusy ? <EditorToolbarFeedback error={error} notice={notice} onDismiss={() => {setError(''); setNotice('')}}/> : null}
+      mobileActions={<MobilePageWorkflow
+        key={`${selectedPageId}:${editorBusy}`}
+        actions={workflowButtons.map(item => ({...item, disabled:!page || editorBusy || !canRunPageWorkflowStage(item.stage, workflowRank)}))}
+        recommended={nextWorkflowStage}
+        disabled={!page || editorBusy}
+        running={schedulingProcess ? runningWorkflowStage : null}
+        resetting={resettingPage}
+        resetDisabled={!page || editorBusy || (page.status === 'UPLOADED' && !regions.length && !page.clean_url && !page.rendered_url)}
+        onRun={stage => void processPageStage(stage)}
+        onReset={() => void resetCurrentPage()}
+      />}
       rightActions={<div className="flex items-center gap-1" aria-label="当前页处理流程">
         {workflowButtons.map(({stage, shortcutId, label, title, icon: Icon}) => <button
           key={stage}
-          className={cn(nextWorkflowStage === stage ? primaryButtonClass : buttonClass, '!h-8 !min-h-8 px-2.5 py-0 text-[11px]')}
+          className={cn(nextWorkflowStage === stage ? primaryButtonClass : ghostButtonClass, '!h-8 !min-h-8 px-2.5 py-0 text-[11px]')}
           onClick={() => void processPageStage(stage)}
           disabled={!page || editorBusy || !canRunPageWorkflowStage(stage, workflowRank)}
           title={`${title} (${formatShortcut(shortcuts[shortcutId])})`}
           aria-keyshortcuts={shortcutToAria(shortcuts[shortcutId])}
         >{schedulingProcess && runningWorkflowStage === stage ? <ButtonLoading label={`${label.replace('重新 ', '')} 中…`}/> : <><Icon size={14}/>{label}</>}</button>)}
         <button
-          className={`${dangerButtonClass} !h-8 !min-h-8 px-2.5 py-0 text-[11px]`}
+          className={`${dangerButtonClass} workflow-reset !h-8 !min-h-8 px-2.5 py-0 text-[11px]`}
           onClick={() => void resetCurrentPage()}
           disabled={!page || editorBusy || (page.status === 'UPLOADED' && !regions.length && !page.clean_url && !page.rendered_url)}
           title={`重置当前页 (${formatShortcut(shortcuts['page.reset'])})`}
@@ -1489,10 +1534,12 @@ export function EditorPage() {
         >{resettingPage ? <ButtonLoading label="恢复中…"/> : <><RotateCcw size={14}/>重置当前页</>}</button>
       </div>}
     />
-    {showingInitialLoading ? <EditorSkeleton canvasControls={<CanvasZoomControls/>}/> : <div className="grid min-h-0 grid-cols-[200px_minmax(0,1fr)_320px]">
+    {showingInitialLoading ? <EditorSkeleton canvasControls={<CanvasZoomControls/>}/> : <EditorWorkspace pageId={selectedPageId} selectedCount={selectedIds.length}
+      onPreviousPage={!editorBusy && previousPage ? () => navigatePage(previousPage.id) : undefined}
+      onNextPage={!editorBusy && nextPage ? () => navigatePage(nextPage.id) : undefined} pages={
       <aside className="flex min-h-0 flex-col border-r border-line-subtle bg-panel">
-        <div className="flex h-12 shrink-0 items-center justify-between border-b border-line-subtle px-3.5 font-mono text-[12px] font-semibold uppercase tracking-[.8px] text-muted"><span>页面</span><button className={cn(buttonClass, '!size-8 !min-h-8 !p-0 border-0 bg-transparent')} disabled={editorBusy} title={`导入图片 (${formatShortcut(shortcuts['page.import'])})`} aria-label="导入图片" aria-keyshortcuts={shortcutToAria(shortcuts['page.import'])} onClick={openImagePicker}>{uploadingPages ? <ButtonLoading compact label="正在导入图片"/> : <ImagePlus aria-hidden="true" size={16}/>}</button></div>
-        <div ref={pageListRef} className={cn('min-h-0 flex-1 overflow-auto p-2.5', scrollbarClass)} onContextMenu={openImagePickerFromBlank}>{pages.map((item, index) => {
+        <div className="flex h-12 shrink-0 items-center justify-between border-b border-line-subtle px-3.5 text-[13px] font-semibold text-secondary"><span>页面</span><button className={cn(buttonClass, '!size-8 !min-h-8 !p-0 border-0 bg-transparent')} disabled={editorBusy} title={`导入图片 (${formatShortcut(shortcuts['page.import'])})`} aria-label="导入图片" aria-keyshortcuts={shortcutToAria(shortcuts['page.import'])} onClick={openImagePicker}>{uploadingPages ? <ButtonLoading compact label="正在导入图片"/> : <ImagePlus aria-hidden="true" size={16}/>}</button></div>
+        <div ref={pageListRef} data-page-list className={cn('min-h-0 flex-1 overflow-auto p-2.5', scrollbarClass)} onContextMenu={openImagePickerFromBlank}>{pages.map((item, index) => {
           const dropDirection = pageDrag && pageDrag.overIndex === index && pageDrag.fromIndex !== index
             ? (pageDrag.overIndex > pageDrag.fromIndex ? 'after' : 'before')
             : null
@@ -1511,16 +1558,15 @@ export function EditorPage() {
         })}
         {!pages.length && <div className="flex min-h-full items-center justify-center"><button className={`${buttonClass} min-h-[140px] w-full flex-col border-dashed bg-transparent text-[12px] text-muted`} disabled={editorBusy} onClick={openImagePicker}><Upload size={22}/>导入漫画图片</button></div>}
         </div>
-      </aside>
-      <main className="relative min-h-0 min-w-0 bg-canvas bg-[linear-gradient(45deg,var(--color-panel)_25%,transparent_25%),linear-gradient(-45deg,var(--color-panel)_25%,transparent_25%),linear-gradient(45deg,transparent_75%,var(--color-panel)_75%),linear-gradient(-45deg,transparent_75%,var(--color-panel)_75%)] [background-position:0_0,0_10px,10px_-10px,-10px_0] [background-size:20px_20px]">{page ? <MangaCanvas page={page} regions={regions} onCreate={createRegion} onUpdate={updateRegion} onRegionAction={(id, name, options) => {void action(name, options, id)}} runningAction={runningRegionAction} interactionKey={`${view}:${tool}:${editorBusy}:${selectedIds.join(',')}`}/> : <div className="flex h-full flex-col items-center justify-center text-muted"><ImagePlus size={36}/><h3 className="mb-1 mt-3 text-base text-secondary">导入漫画页面</h3><p className="mb-4 mt-0 text-xs">支持 JPG、PNG 和 WebP，可一次选择多张。</p><button className={`${primaryButtonClass} !min-h-[34px]`} disabled={editorBusy} onClick={openImagePicker}>选择图片</button></div>}<CanvasZoomControls disabled={editorBusy}/></main>
-      <RegionProperties region={selectedIds.length === 1 ? regions.find(region => region.id === selectedIds[0]) : undefined} selectedRegions={regions.filter(region => selectedIds.includes(region.id))} selectedCount={selectedIds.length} fontOptions={[...DEFAULT_FONT_FAMILIES.map(font => font.name), ...fontResources.map(font => font.name)]} busyAction={runningRegionAction} onUpdate={updateRegion} onAction={action}/>
-    </div>}
+      </aside>} canvas={
+      <main className="relative min-h-0 min-w-0 workspace-background">{page ? <MangaCanvas page={page} regions={regions} onCreate={createRegion} onUpdate={updateRegion} onRegionAction={(id, name, options) => {void action(name, options, id)}} runningAction={runningRegionAction} interactionKey={`${view}:${tool}:${editorBusy}:${selectedIds.join(',')}`}/> : <div className="flex h-full flex-col items-center justify-center text-muted"><ImagePlus size={36}/><h3 className="mb-1 mt-3 text-base text-secondary">导入漫画页面</h3><p className="mb-4 mt-0 text-xs">支持 JPG、PNG 和 WebP，可一次选择多张。</p><button className={`${primaryButtonClass} !min-h-[34px]`} disabled={editorBusy} onClick={openImagePicker}>选择图片</button></div>}<CanvasZoomControls disabled={editorBusy}/></main>} properties={
+      <RegionProperties region={selectedIds.length === 1 ? regions.find(region => region.id === selectedIds[0]) : undefined} selectedRegions={regions.filter(region => selectedIds.includes(region.id))} selectedCount={selectedIds.length} fontOptions={[...DEFAULT_FONT_FAMILIES.map(font => font.name), ...fontResources.map(font => font.name)]} busyAction={runningRegionAction} onUpdate={updateRegion} onAction={action}/>}/>}
     {pageContextMenu && createPortal(<div ref={pageContextMenuRef} className="fixed z-[110] w-[182px] overflow-hidden rounded-xl border border-line-strong bg-popover p-1 text-secondary shadow-dialog backdrop-blur-xl" style={{left: pageContextMenu.x, top: pageContextMenu.y}} role="menu" aria-label="图片操作">
       <div className="flex h-9 items-center border-b border-line-subtle px-2"><span className="min-w-0 truncate text-[10px] text-muted" title={pages.find(item => item.id === pageContextMenu.pageId)?.filename}>{pages.find(item => item.id === pageContextMenu.pageId)?.filename}</span></div>
       <button className="mt-1 flex h-9 w-full cursor-pointer items-center gap-2 rounded-lg border-0 bg-transparent px-3 text-left text-[11px] text-secondary outline-none transition-colors hover:bg-hover hover:text-ink disabled:cursor-default disabled:opacity-60" type="button" role="menuitem" disabled={!!contextPage && !contextPage.ocr_exempt && !pageNeedsOcr(contextPage)} onClick={() => void togglePageOcrExempt(pageContextMenu.pageId)}><CheckCircle2 size={15} className="text-accent"/>{contextPage?.ocr_exempt ? '取消已翻译' : '已翻译'}</button>
       <button className="mt-1 flex h-9 w-full cursor-pointer items-center gap-2 rounded-lg border-0 bg-transparent px-3 text-left text-[11px] text-danger-soft-ink outline-none transition-colors hover:bg-danger/15 hover:text-danger-soft-ink" type="button" role="menuitem" onClick={() => void deletePage(pageContextMenu.pageId)}><Trash2 size={15}/>删除图片</button>
     </div>, document.body)}
-    {showContext && <div className="fixed inset-0 z-[90] grid place-items-center bg-overlay backdrop-blur-sm" role="dialog" aria-modal="true" aria-labelledby="translation-context-title"><div className="w-[min(680px,72vw)] overflow-hidden rounded-2xl border border-line-strong bg-surface shadow-dialog"><header className="flex items-center justify-between border-b border-line-subtle px-6 py-5"><div><span className={eyebrowClass}>PROJECT CONTEXT</span><h2 className="mb-0 mt-1.5 text-xl" id="translation-context-title">翻译上下文</h2></div><button className={cn(iconButtonClass, 'border-0 bg-transparent text-xl')} disabled={savingContext} aria-label="关闭翻译上下文" onClick={() => setShowContext(false)}>×</button></header><p className="px-6 text-[13px] leading-6 text-muted">以 JSON 保存人物名、术语、口癖、称谓和章节背景；整页翻译时会随 Region ID 一起发送。</p><textarea className={cn(textareaClass, 'mx-6 mb-6 min-h-[320px] w-[calc(100%-48px)] font-mono text-[12px] leading-relaxed')} disabled={savingContext} value={contextText} onChange={event => setContextText(event.target.value)} spellCheck={false}/><footer className="flex justify-end gap-2.5 border-t border-line-subtle px-6 py-4"><button className={buttonClass} disabled={savingContext} onClick={() => setShowContext(false)}>取消</button><button className={primaryButtonClass} disabled={savingContext} onClick={() => void saveTranslationContext()}>{savingContext ? <ButtonLoading label="保存中…"/> : '保存上下文'}</button></footer></div></div>}
+    {showContext && createPortal(<div ref={contextDialogRef} data-saving={savingContext} className="fixed inset-0 z-[90] grid place-items-center bg-overlay backdrop-blur-sm" role="dialog" aria-modal="true" aria-labelledby="translation-context-title"><div className="flex max-h-[90dvh] w-[min(680px,calc(100vw-24px))] flex-col overflow-hidden rounded-2xl border border-line-strong bg-surface shadow-dialog"><header className="flex items-center justify-between border-b border-line-subtle px-6 py-5"><div><span className={eyebrowClass}>PROJECT CONTEXT</span><h2 className="mb-0 mt-1.5 text-xl" id="translation-context-title">翻译上下文</h2></div><button className={cn(iconButtonClass, 'border-0 bg-transparent text-xl')} disabled={savingContext} aria-label="关闭翻译上下文" onClick={() => setShowContext(false)}>×</button></header><p className="px-6 text-[13px] leading-6 text-muted">以 JSON 保存人物名、术语、口癖、称谓和章节背景；整页翻译时会随 Region ID 一起发送。</p><textarea className={cn(textareaClass, 'mx-6 mb-6 min-h-[120px] flex-1 w-[calc(100%-48px)] font-mono text-[12px] leading-relaxed')} disabled={savingContext} value={contextText} onChange={event => setContextText(event.target.value)} spellCheck={false}/><footer className="flex justify-end gap-2.5 border-t border-line-subtle px-6 py-4"><button className={buttonClass} disabled={savingContext} onClick={() => setShowContext(false)}>取消</button><button className={primaryButtonClass} disabled={savingContext} onClick={() => void saveTranslationContext()}>{savingContext ? <ButtonLoading label="保存中…"/> : '保存上下文'}</button></footer></div></div>, document.body)}
     {blockingBusy && <BlockingLoader label={busyLabel} progress={busyProgress}/>}
     <input ref={fileRef} disabled={editorBusy} hidden type="file" accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp" multiple onChange={event => void upload(event.currentTarget.files)}/>
   </div>
@@ -1552,7 +1598,8 @@ function pageTaskBusyLabel(task: ProcessingTask | null, requestedStage: PageWork
   if (task.current_stage === 'ocr') {
     if (task.message.startsWith('Loading OCR model')) return '检测完成，正在加载 OCR 模型…'
     const progress = task.message.match(/OCR\s+(\d+)\/(\d+)/)
-    return progress ? `正在 OCR 识别（${progress[1]}/${progress[2]}）…` : '检测完成，正在 OCR 识别…'
+    const scheduling = task.message.includes(' · ') ? ` · ${task.message.split(' · ').slice(1).join(' · ')}` : ''
+    return progress ? `正在 OCR 识别（${progress[1]}/${progress[2]}）${scheduling}…` : '检测完成，正在 OCR 识别…'
   }
   return ({
     translation: '正在翻译已确认区域…',

@@ -411,7 +411,7 @@ def test_text_mask_rectangle_corners_are_clipped_to_ellipse_safe_interior(tmp_pa
     distance = cv2.distanceTransform((balloon > 0).astype(np.uint8), cv2.DIST_L2, 5)
     safe_interior = distance > constraint["safe_margin_px"]
 
-    assert metadata["method"] == "uniform_background_polygon"
+    assert metadata["method"] == "balloon_glyph"
     assert constraint["status"] in {"applied", "relaxed"}
     assert constraint["bubble_id"] == "bubble-ellipse"
     assert np.count_nonzero(mask[~safe_interior]) == 0

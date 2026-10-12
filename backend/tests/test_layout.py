@@ -182,6 +182,8 @@ def test_renderer_skips_hidden_regions(tmp_path: Path) -> None:
     Image.new("RGB", (32, 24), "#426688").save(background_path, "PNG")
     hidden = SimpleNamespace(visible=False, translated_text="must not be rendered")
 
+    hidden.id = "hidden"
+    hidden.layout_data = {}
     result = PillowRenderer().render(background_path, [hidden], output_path, layer_path)
 
     assert result["layouts"] == {}
@@ -270,3 +272,88 @@ def test_perspective_supersampling_is_bounded_by_pixel_budget() -> None:
     assert PillowRenderer._perspective_raster_scale(200, 100) == 4.0
     assert PillowRenderer._perspective_raster_scale(2_000, 2_000) == 2.0
     assert PillowRenderer._perspective_raster_scale(4_000, 4_000) == 1.0
+
+
+@pytest.mark.parametrize("empty", [False, True])
+def test_shape_renderer_never_draws_outside_balloon(tmp_path, empty):
+    import cv2
+    font = available_font()
+    background, output, layer = [tmp_path / name for name in ("bg.png", "out.png", "layer.png")]
+    Image.new("RGB", (180, 200), "white").save(background)
+    box = [5, 5, 170, 190]
+    region = SimpleNamespace(
+        id="ellipse", visible=True, translated_text="MANGA TEXT", bbox=box,
+        polygon=[[5, 5], [175, 5], [175, 195], [5, 195]],
+        orientation="horizontal", font_family=font.stem, font_weight=400,
+        font_size=26, line_spacing=1.15, character_spacing=0, alignment="center",
+        layout_data={"custom_font_path": str(font)}, text_color="#111111",
+        stroke_color="#ffffff", stroke_width=1, rotation=0, opacity=1,
+    )
+    mask = np.zeros((200, 180), np.uint8)
+    if not empty:
+        cv2.ellipse(mask, (90, 100), (75, 95), 0, 0, 360, 255, -1)
+    result = PillowRenderer().render(background, [region], output, layer, shape_masks={region.id: mask})
+    alpha = np.asarray(Image.open(layer))[:, :, 3]
+    assert not np.any(alpha[mask == 0])
+    layout = result["layouts"][region.id]
+    if empty:
+        assert layout["render_skipped"] and layout["overflow"]
+    else:
+        assert layout["shape_layout_applied"] and np.any(alpha)
+
+
+def simple_render_region():
+    font = available_font()
+    return SimpleNamespace(id="test", visible=True, translated_text="Hi", bbox=[10, 10, 200, 80],
+        polygon=[[10,10],[210,10],[210,90],[10,90]], orientation="horizontal",
+        font_family=font.stem, font_weight=400, font_size=24, line_spacing=1.15,
+        character_spacing=0, alignment="center", layout_data={"custom_font_path":str(font)},
+        text_color="#111111", stroke_color="#ffffff", stroke_width=0, rotation=0, opacity=1, locked=False)
+
+
+def test_horizontal_alignment_is_applied_exactly_once(tmp_path):
+    bg, out, layer = [tmp_path/name for name in ("bg.png", "out.png", "layer.png")]
+    Image.new("RGB", (240,100), "white").save(bg)
+    region = simple_render_region()
+    boxes = []
+    for alignment in ("left", "center", "right"):
+        region.alignment = alignment
+        result = PillowRenderer().render(bg, [region], out, layer)
+        box = Image.open(layer).getbbox()
+        assert box is not None, alignment
+        assert 10 <= box[0] < box[2] <= 210
+        assert not result["layouts"][region.id]["overflow"]
+        boxes.append(box)
+    assert boxes[0][0] < 30
+    assert abs((boxes[1][0]+boxes[1][2])/2-110) < 4
+    assert boxes[2][2] > 190
+
+
+def test_locking_region_preserves_shape_layout_pixels(tmp_path):
+    import cv2
+    bg, out, layer = [tmp_path/name for name in ("bg.png", "out.png", "layer.png")]
+    Image.new("RGB", (240,100), "white").save(bg)
+    region = simple_render_region()
+    mask = np.zeros((100,240), np.uint8)
+    cv2.ellipse(mask,(110,50),(95,45),0,0,360,255,-1)
+    renderer = PillowRenderer()
+    first = renderer.render(bg,[region],out,layer,shape_masks={region.id:mask})
+    pixels = np.asarray(Image.open(layer)).copy()
+    region.font_size = first["layouts"][region.id]["font_size"]
+    region.layout_data.update(first["layouts"][region.id])
+    region.locked = True
+    second = renderer.render(bg,[region],out,layer,shape_masks={region.id:mask})
+    assert np.array_equal(pixels,np.asarray(Image.open(layer)))
+    assert first["layouts"][region.id]["effective_text_bbox"] == second["layouts"][region.id]["effective_text_bbox"]
+    assert "locked" not in second["inputs"][region.id]
+
+
+def test_text_layer_and_export_use_identical_pixels(tmp_path):
+    bg, out, layer = [tmp_path/name for name in ("bg.png", "out.png", "layer.png")]
+    Image.new("RGB", (240,100), "#bbbbbb").save(bg)
+    region = simple_render_region()
+    region.orientation="vertical"
+    region.translated_text="ABC!?"
+    PillowRenderer().render(bg,[region],out,layer)
+    preview = Image.alpha_composite(Image.open(bg).convert("RGBA"), Image.open(layer)).convert("RGB")
+    assert np.array_equal(np.asarray(preview),np.asarray(Image.open(out)))

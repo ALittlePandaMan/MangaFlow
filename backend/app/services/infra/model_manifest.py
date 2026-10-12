@@ -102,8 +102,8 @@ class ModelManifest(BaseModel):
                 details.append(f"unknown stages: {extra}")
             raise ValueError("manifest must define exactly six stages (" + "; ".join(details) + ")")
         for kind, stage in self.stages.items():
-            if stage.api_key_env is not None and kind != "translation":
-                raise ValueError(f"{kind}.api_key_env is only supported for translation")
+            if stage.api_key_env is not None and kind not in {"translation", "ocr"}:
+                raise ValueError(f"{kind}.api_key_env is only supported for translation or OCR")
             if stage.device is not None and kind in {"translation", "font"}:
                 raise ValueError(f"{kind}.device is not supported")
         return self
@@ -173,14 +173,14 @@ def persist_model_settings(
         descriptor = descriptors.get((kind, item.provider), {})
         devices = {str(device).lower() for device in descriptor.get("devices", [])}
         device: Literal["recommended", "cpu", "cuda:0"] | None = None
-        if devices != {"remote"}:
+        if devices != {"remote"} and kind != "translation":
             device = _portable_device(config.pop("device", None), devices)
         stages[kind] = ManifestStage(
             provider=item.provider,
             name=item.name,
             device=device,
             config=config,
-            api_key_env="MANGAFLOW_TRANSLATION_API_KEY" if kind == "translation" else None,
+            api_key_env=(f"MANGAFLOW_{kind.upper()}_API_KEY" if kind == "translation" or (kind == "ocr" and devices == {"remote"}) else None),
         )
 
     stages["font"] = (
@@ -213,17 +213,12 @@ def persist_model_settings(
     )
 
     if environment_path is not None:
-        translation = defaults.get("translation")
-        secret = (
-            get_secret_store().decrypt(translation.encrypted_api_key)
-            if translation is not None and translation.encrypted_api_key
-            else ""
-        )
-        _persist_environment_value(
-            Path(environment_path),
-            "MANGAFLOW_TRANSLATION_API_KEY",
-            secret or "",
-        )
+        for kind in ("translation", "ocr"):
+            item = defaults.get(kind)
+            if item is None or not stages[kind].api_key_env:
+                continue
+            secret = get_secret_store().decrypt(item.encrypted_api_key) if item.encrypted_api_key else ""
+            _persist_environment_value(Path(environment_path), stages[kind].api_key_env, secret or "")
     return manifest
 
 
@@ -350,6 +345,9 @@ def preload_manifest_models(db: Session, manifest: ModelManifest | dict[str, Any
         )
         if item is None:
             report.append(_preload_report(kind, stage.provider, "missing", "no active default configuration"))
+            continue
+        if item.provider in {"cloud-multimodal", "cloud-ocr"} and kind == "ocr":
+            report.append(_preload_report(kind, item.provider, "skipped", "remote provider"))
             continue
         if not registry.is_installed(kind, item.provider):
             report.append(

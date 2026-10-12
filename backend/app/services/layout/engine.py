@@ -38,6 +38,9 @@ class LayoutResult:
     overflow: bool = False
     warnings: list[str] = field(default_factory=list)
     lines: list[str] = field(default_factory=list)
+    # Horizontal placements already include alignment inside this coordinate
+    # space. The renderer must center that space, not center the text again.
+    coordinate_width: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -226,7 +229,8 @@ class MangaLayoutEngine:
                 placements.append(GlyphPlacement(character, cursor, line_index * line_height, str(char_path), size))
                 cursor += self._measure(character, char_font, 0) + character_spacing
         overflow = max_width > width + 0.5 or total_height > height + 0.5
-        return LayoutResult(size, placements, max_width, total_height, overflow=overflow, lines=lines)
+        return LayoutResult(size, placements, max_width, total_height, overflow=overflow, lines=lines,
+                            coordinate_width=width)
 
     def _vertical(
         self,

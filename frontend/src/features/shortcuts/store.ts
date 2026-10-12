@@ -4,7 +4,7 @@ import {persist} from 'zustand/middleware'
 export type ShortcutGroupId = 'tools' | 'views' | 'editing' | 'regions' | 'page'
 
 export type ShortcutId =
-  | 'tool.select' | 'tool.rectangle' | 'tool.polygon' | 'tool.lasso'
+  | 'tool.pan' | 'tool.select' | 'tool.rectangle' | 'tool.polygon' | 'tool.lasso'
   | 'view.original' | 'view.clean' | 'view.translated' | 'view.comparison'
   | 'edit.undo' | 'edit.redo' | 'edit.selectAll'
   | 'zoom.out' | 'zoom.reset' | 'zoom.in'
@@ -32,6 +32,7 @@ export const SHORTCUT_GROUPS: Array<{id: ShortcutGroupId, label: string, descrip
 ]
 
 export const SHORTCUT_DEFINITIONS: ShortcutDefinition[] = [
+  {id:'tool.pan', group:'tools', label:'拖拽画布', description:'拖动画布而不修改文字区域', defaultBinding:'KeyH'},
   {id:'tool.select', group:'tools', label:'选择 / 变换', description:'选择、移动和调整文字区域', defaultBinding:'KeyV'},
   {id:'tool.rectangle', group:'tools', label:'矩形区域', description:'创建矩形文字区域', defaultBinding:'KeyR'},
   {id:'tool.polygon', group:'tools', label:'多边形区域', description:'逐点创建不规则文字区域', defaultBinding:'KeyP'},

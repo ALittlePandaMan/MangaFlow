@@ -1,7 +1,7 @@
 import { Eraser, Eye, EyeOff, Languages, Layers3, Lock, LockOpen, Merge, Scan, ScanLine, ScanText, TextCursorInput, Trash2, X } from 'lucide-react'
 import { useLayoutEffect, useRef } from 'react'
 import type { TextRegion } from '../../../types'
-import {buttonClass, cn, dangerButtonClass, inputClass, primaryButtonClass, scrollbarClass, textareaClass} from '../../../ui'
+import {buttonClass, cn, dangerButtonClass, primaryButtonClass, scrollbarClass, textareaClass} from '../../../ui'
 import {ColorControl, NumberControl, SelectControl} from '../../../components/FormControls'
 import {ButtonLoading} from '../../../components/LoadingUI'
 import {formatShortcut, shortcutToAria, useShortcutStore} from '../../shortcuts/store'
@@ -25,8 +25,8 @@ export function RegionProperties({region, selectedRegions, selectedCount, fontOp
   const view = useEditorStore(state => state.view)
   const shortcuts = useShortcutStore(state => state.shortcuts)
   const sectionClass = 'border-b border-line-subtle p-4'
-  const headingClass = 'mb-3.5 flex items-center gap-2 font-mono text-[11px] font-semibold uppercase leading-none tracking-[1.3px] text-muted before:h-3 before:w-0.5 before:rounded before:bg-accent/70'
-  const fieldClass = 'mt-2.5 block min-w-0 text-[11px] font-medium text-secondary [&>*:last-child]:mt-1.5'
+  const headingClass = 'mb-3.5 flex items-center gap-2 text-[13px] font-semibold leading-normal text-ink before:h-3 before:w-0.5 before:rounded before:bg-accent/70'
+  const fieldClass = 'mt-2.5 block min-w-0 text-[13px] font-medium text-secondary [&>*:last-child]:mt-1.5'
   const setCoordinate = (axis: 'x' | 'y', value: number) => {
     if (!region || !Number.isFinite(value)) return
     const translated = view === 'translated'
@@ -94,15 +94,7 @@ export function RegionProperties({region, selectedRegions, selectedCount, fontOp
       <section className={sectionClass}><h3 className={headingClass}>文本内容</h3>
         <label className={fieldClass}>原文<AutoResizeTextarea value={region.source_text} onChange={value => onUpdate(region.id, {source_text: value})} placeholder="OCR 原文" /></label>
         <label className={fieldClass}>译文<AutoResizeTextarea className="bg-accent/[.025] focus:bg-accent/[.04]" value={region.translated_text} onChange={value => onUpdate(region.id, {translated_text: value})} placeholder="输入译文" /></label>
-        <div className="grid min-w-0 grid-cols-2 gap-2"><label className={fieldClass}>方向<SelectControl compact ariaLabel="文字方向" value={region.orientation} options={[{value:'vertical', label:'竖排'}, {value:'horizontal', label:'横排'}, {value:'rotated', label:'旋转'}]} onChange={value => onUpdate(region.id, {orientation:value as TextRegion['orientation']})}/></label><label className={fieldClass}>修复方式<input className={cn(inputClass, '!h-[34px] px-2 text-[11px]')} value="复杂（LaMa）" readOnly /></label></div>
-      </section>
-      <section className={sectionClass}><h3 className={headingClass}>{view === 'translated' ? '译文框坐标' : '原文框坐标'}</h3>
-        <div className="grid min-w-0 grid-cols-3 gap-1.5">
-          <label className={fieldClass}>X 坐标<NumberControl compact ariaLabel="X 坐标" step={1} disabled={region.locked} value={coordinateValue(coordinateBox![0])} onChange={value => setCoordinate('x', value)}/></label>
-          <label className={fieldClass}>Y 坐标<NumberControl compact ariaLabel="Y 坐标" step={1} disabled={region.locked} value={coordinateValue(coordinateBox![1])} onChange={value => setCoordinate('y', value)}/></label>
-          <label className={fieldClass}>旋转角度<NumberControl compact ariaLabel={`${view === 'translated' ? '译文框' : '原文框'}旋转角度（度）`} min={-180} max={180} step={1} disabled={region.locked} value={coordinateRotation} onChange={setCoordinateRotation}/></label>
-        </div>
-        <small className="mt-2 block font-mono text-[8px] text-muted">画布像素 · {coordinateValue(coordinateBox![2])} × {coordinateValue(coordinateBox![3])} px{region.locked ? ' · 已锁定' : ' · 方向键微调'}</small>
+        <div className="grid min-w-0 grid-cols-2 gap-2"><label className={fieldClass}>方向<SelectControl compact ariaLabel="文字方向" value={region.orientation} options={[{value:'vertical', label:'竖排'}, {value:'horizontal', label:'横排'}, {value:'rotated', label:'旋转'}]} onChange={value => onUpdate(region.id, {orientation:value as TextRegion['orientation']})}/></label><p className="mb-1 mt-auto text-[12px] leading-5 text-muted">背景修复 · LaMa</p></div>
       </section>
       <section className={sectionClass}>
         <div className="mb-3 flex min-w-0 items-center justify-between gap-2">
@@ -122,6 +114,14 @@ export function RegionProperties({region, selectedRegions, selectedCount, fontOp
         <div className="grid min-w-0 grid-cols-3 gap-1"><label className={fieldClass}>文字色<ColorControl compact ariaLabel="文字颜色" value={region.text_color} onChange={value => onUpdate(region.id, {text_color:value})}/></label><label className={fieldClass}>描边色<ColorControl compact ariaLabel="描边颜色" value={region.stroke_color} onChange={value => onUpdate(region.id, {stroke_color:value})}/></label><label className={fieldClass}>描边<NumberControl compact ariaLabel="描边宽度" value={region.stroke_width} min={0} max={20} step={0.5} onChange={value => onUpdate(region.id, {stroke_width:value})}/></label></div>
         <div className="grid min-w-0 grid-cols-2 gap-2"><label className={fieldClass}>对齐<SelectControl compact ariaLabel="文字对齐" value={region.alignment} options={[{value:'left', label:'左对齐'}, {value:'center', label:'居中'}, {value:'right', label:'右对齐'}]} onChange={value => onUpdate(region.id, {alignment:value as TextRegion['alignment']})}/></label><label className={fieldClass}>译文旋转<NumberControl compact ariaLabel="译文旋转角度" value={region.rotation} min={-180} max={180} step={1} onChange={value => onUpdate(region.id, {rotation:value})}/></label></div>
       </section>
+      <details className={sectionClass}><summary className="cursor-pointer rounded text-[13px] font-semibold text-secondary outline-none focus-visible:ring-2 focus-visible:ring-accent/30">位置与旋转 · {view === 'translated' ? '译文框坐标' : '原文框坐标'}</summary>
+        <div className="grid min-w-0 grid-cols-3 gap-1.5">
+          <label className={fieldClass}>X 坐标<NumberControl compact ariaLabel="X 坐标" step={1} disabled={region.locked} value={coordinateValue(coordinateBox![0])} onChange={value => setCoordinate('x', value)}/></label>
+          <label className={fieldClass}>Y 坐标<NumberControl compact ariaLabel="Y 坐标" step={1} disabled={region.locked} value={coordinateValue(coordinateBox![1])} onChange={value => setCoordinate('y', value)}/></label>
+          <label className={fieldClass}>旋转角度<NumberControl compact ariaLabel={`${view === 'translated' ? '译文框' : '原文框'}旋转角度（度）`} min={-180} max={180} step={1} disabled={region.locked} value={coordinateRotation} onChange={setCoordinateRotation}/></label>
+        </div>
+        <small className="mt-2 block font-mono text-[8px] text-muted">画布像素 · {coordinateValue(coordinateBox![2])} × {coordinateValue(coordinateBox![3])} px{region.locked ? ' · 已锁定' : ' · 方向键微调'}</small>
+      </details>
     </>}
   </aside>
 }
@@ -174,8 +174,19 @@ function AutoResizeTextarea({value, onChange, placeholder, className = ''}: {val
   useLayoutEffect(() => {
     const element = textarea.current
     if (!element) return
-    element.style.height = 'auto'
-    element.style.height = `${Math.max(82, element.scrollHeight)}px`
+    const resize = () => {
+      element.style.height = 'auto'
+      element.style.height = `${Math.max(82, element.scrollHeight)}px`
+    }
+    resize()
+    if (typeof ResizeObserver === 'undefined') return
+    let width = element.getBoundingClientRect().width
+    const observer = new ResizeObserver(entries => {
+      const nextWidth = entries[0]?.contentRect.width
+      if (nextWidth !== undefined && nextWidth !== width) {width = nextWidth; resize()}
+    })
+    observer.observe(element)
+    return () => observer.disconnect()
   }, [value])
-  return <textarea ref={textarea} className={cn(textareaClass, 'min-h-[82px] overflow-hidden text-[11px]', className)} value={value} onChange={event => onChange(event.target.value)} placeholder={placeholder}/>
+  return <textarea ref={textarea} className={cn(textareaClass, 'min-h-[82px] overflow-hidden text-[13px] leading-relaxed', className)} value={value} onChange={event => onChange(event.target.value)} placeholder={placeholder}/>
 }

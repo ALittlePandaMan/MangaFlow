@@ -13,9 +13,12 @@ from app.core.database import get_db
 from app.core.secrets import get_secret_store
 from app.models import ModelConfig
 from app.schemas.domain import BootstrapModelsRequest, ModelConfigCreate, ModelDiscoveryRequest
+from app.services.base import ProviderError
 from app.services.infra.device import device_profile
 from app.services.infra.model_manifest import persist_model_settings
 from app.services.infra.model_provisioning import bootstrap_recommended_models, setup_status_report
+from app.services.ocr.cloud import CloudMultimodalOCRProvider
+from app.services.ocr.generic import GenericCloudOCRProvider
 from app.services.registry import registry
 from app.services.translation.providers import api_auth_headers, normalize_api_base_url, resolve_api_protocol
 
@@ -85,8 +88,10 @@ async def discover_models(payload: ModelDiscoveryRequest, db: Session = Depends(
     api_key = payload.api_key.strip() if payload.api_key else None
     if not api_key and payload.config_id:
         configured = db.get(ModelConfig, payload.config_id)
-        if configured is not None:
+        if configured is not None and _same_api_origin(str(configured.config.get("base_url", "")), raw_base_url):
             api_key = get_secret_store().decrypt(configured.encrypted_api_key)
+        elif configured is not None and configured.encrypted_api_key:
+            raise HTTPException(422, "接口地址已更换，请重新输入 API Key 后获取模型。")
     headers = api_auth_headers(protocol, api_key)
     last_status = 404
     invalid_json = False
@@ -154,8 +159,67 @@ def _extract_model_ids(body: object) -> list[str]:
     return output
 
 
+def _same_api_origin(left: str, right: str) -> bool:
+    try:
+        def origin(value: str) -> tuple:
+            url = urlsplit(value)
+            return url.scheme, url.hostname, url.port or (443 if url.scheme == "https" else 80)
+        return bool(left and right) and origin(left) == origin(right)
+    except ValueError:
+        return False
+
+
+def _reuse_translation_connection(payload: ModelConfigCreate, db: Session) -> ModelConfigCreate:
+    if not payload.reuse_translation:
+        return payload
+    if payload.kind != "ocr" or payload.provider != "cloud-multimodal":
+        raise HTTPException(422, "只有多模态大模型识字支持复用翻译模型。")
+    translation = db.scalar(select(ModelConfig).where(
+        ModelConfig.kind == "translation", ModelConfig.enabled.is_(True), ModelConfig.is_default.is_(True),
+        ModelConfig.provider == "openai-compatible",
+    ).order_by(ModelConfig.updated_at.desc()))
+    if translation is None or not translation.encrypted_api_key or not (
+        translation.config.get("base_url") and translation.config.get("model")
+    ):
+        raise HTTPException(422, "请先配置可用的默认云端翻译模型及密钥。")
+    # Copy a snapshot server-side. Never return the key or accept a caller's endpoint
+    # alongside the translation credential. OCR keeps its own prompt and limits.
+    config = {**payload.config, **{
+        key: translation.config.get(key, "auto" if key == "api_protocol" else "")
+        for key in ("base_url", "api_protocol", "model")
+    }}
+    config.pop("device", None)
+    return payload.model_copy(update={
+        "config": config, "api_key": get_secret_store().decrypt(translation.encrypted_api_key),
+    })
+
+
+def _validate_cloud_ocr(payload: ModelConfigCreate, existing: ModelConfig | None = None) -> None:
+    if payload.kind != "ocr" or payload.provider not in {"cloud-multimodal", "cloud-ocr"}:
+        return
+    try:
+        provider = GenericCloudOCRProvider if payload.provider == "cloud-ocr" else CloudMultimodalOCRProvider
+        provider.validate_config(payload.config)
+    except ProviderError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    if "api_key" in payload.config or "device" in payload.config:
+        raise HTTPException(422, "云端 OCR 不使用本地设备，API Key 请填写在独立的密钥字段。")
+    saved_key_usable = (
+        existing is not None and existing.kind == "ocr" and existing.provider == payload.provider
+        and existing.encrypted_api_key
+        and _same_api_origin(str(existing.config.get("base_url", "")), str(payload.config.get("base_url", "")))
+    )
+    needs_key = payload.provider != "cloud-ocr" or payload.config.get("auth_mode", "bearer") != "none"
+    if needs_key and not (payload.api_key or "").strip() and not (payload.api_key is None and saved_key_usable):
+        raise HTTPException(422, "请填写云端 OCR 的 API Key；更换服务地址后需要重新输入。")
+
+
 @router.post("/models/config", status_code=201)
 def configure_model(payload: ModelConfigCreate, db: Session = Depends(get_db)) -> dict:
+    payload = _reuse_translation_connection(payload, db)
+    _validate_cloud_ocr(payload)
+    if payload.provider == "cloud-ocr" and payload.config.get("auth_mode") == "none":
+        payload = payload.model_copy(update={"api_key": None})
     descriptions = {(entry["kind"], entry["name"]) for entry in registry.describe()}
     if (payload.kind, payload.provider) not in descriptions:
         raise HTTPException(422, f"Provider {payload.provider} is not registered for {payload.kind}")
@@ -206,6 +270,8 @@ def update_model_config(config_id: str, payload: ModelConfigCreate, db: Session 
     item = db.get(ModelConfig, config_id)
     if item is None:
         raise HTTPException(404, "Model config not found")
+    payload = _reuse_translation_connection(payload, db)
+    _validate_cloud_ocr(payload, item)
     descriptions = {(entry["kind"], entry["name"]) for entry in registry.describe()}
     if (payload.kind, payload.provider) not in descriptions:
         raise HTTPException(422, f"Provider {payload.provider} is not registered for {payload.kind}")
@@ -218,7 +284,9 @@ def update_model_config(config_id: str, payload: ModelConfigCreate, db: Session 
     item.enabled = payload.enabled
     item.is_default = payload.is_default
     item.config = payload.config
-    if payload.api_key is not None:
+    if payload.provider == "cloud-ocr" and payload.config.get("auth_mode") == "none":
+        item.encrypted_api_key = None
+    elif payload.api_key is not None:
         item.encrypted_api_key = get_secret_store().encrypt(payload.api_key)
     elif previous_provider != payload.provider and payload.provider != "openai-compatible":
         item.encrypted_api_key = None

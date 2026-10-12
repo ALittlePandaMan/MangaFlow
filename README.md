@@ -125,7 +125,7 @@ cd frontend && npm run dev
 推荐组合与可替换 Provider：
 
 - Detection：内置 `opencv-fallback`，推荐使用 `paddleocr` polygon 检测；PaddleOCR 会搭配约 11.8 MB 的 YOLO11n ONNX 气泡实例分割模型，只合并可靠归属于同一气泡的文字框。气泡外或归属有歧义的文字保持独立，旧的纯几何 `group_text_lines` 仍默认关闭。
-- OCR：默认 `manga-ocr`；也可选择 `review-fallback`、`tesseract` 或 `paddleocr`。首次加载 MangaOCR 会下载约 400 MB 权重。
+- OCR：默认 `manga-ocr`；也可选择 `review-fallback`、`tesseract`、`paddleocr`、`cloud-ocr`（专用云端 OCR 通用接口）或 `cloud-multimodal`（多模态大模型识字）。首次加载 MangaOCR 会下载约 400 MB 权重。
 - Translation：`openai-compatible`。填写 Base URL、模型名和 API Key；Ollama 示例地址为 `http://localhost:11434/v1`。
 - Inpainting：Docker 镜像内置 `simple-lama-inpainting`，推荐配置统一使用 `lama` 处理文字区域；`opencv` 仅作为低资源备选。
 - Rendering：`pillow`，支持系统 `.ttf` / `.otf` / `.ttc` / `.otc` 字体集合和项目上传字体；低对比文字会自动补反色描边。
@@ -145,6 +145,41 @@ Paddle Provider 会自动将保存的 `cuda:0` 转换为 Paddle 使用的 `gpu:0
 
 ## 环境变量
 
+### 可选：多模态大模型识字
+
+在“设置 → OCR 识别 → 编辑”中，将 Provider 切换为“多模态大模型识字”。可以选择“使用当前翻译模型”，保存时由后端复制默认翻译模型的地址、协议、模型名和密钥；不会把密钥返回浏览器，也不会复制翻译 Prompt。复制后 OCR 与翻译配置独立，后续改动不自动同步。也可以独立填写 API Base URL、API Key，获取并选择模型；服务商没有模型列表时，可以手动输入完整模型 ID。所选模型必须支持图片输入。
+
+支持 OpenAI Chat Completions、OpenAI Responses 和 Anthropic Messages 兼容协议；图片请求格式分别参考 [OpenAI 图片输入](https://developers.openai.com/api/docs/guides/images-vision)与 [Anthropic Vision](https://platform.claude.com/docs/en/build-with-claude/vision)。完整端点 URL 可以自动判断协议，也可以手动指定；Base URL 通常需要包含服务商要求的 `/v1` 前缀。
+
+识别 Prompt、超时、失败重试和最大输出 Token 数都可配置，Temperature 可以留空使用模型默认值。系统会自动附加 `{"text":"原文"}` 输出约定。拒绝、截断或格式错误不会作为原文写入；识别结果没有可用置信度时，不伪造分数。
+
+此模式仍使用本地文字检测和气泡合并结果，逐框上传裁剪图片（最长边最多 2048 px）并将识别结果写入原文，不直接翻译或重新划分气泡。**图片会发送给配置的服务商，并可能按区域请求产生费用。** 保存配置和启动检查不会上传图片；点击 OCR 后才会请求识别。OCR 与翻译的密钥独立，OCR 使用 `.env` 中的 `MANGAFLOW_OCR_API_KEY`，不会把密钥写入 `config.yaml`。安装此功能不会自动切换现有本地 OCR。
+
+### 可选：云端 OCR（通用接口）
+
+此入口用于专用 OCR 服务，和上面的通用多模态大模型分开配置，但都只上传裁剪区域。切换 Provider 时会保留各自已保存的配置和密钥；保存后所选 Provider 成为当前 OCR，原有本地 OCR 配置也保留。
+
+- **OCR 专用模型（Chat Completions）**：填完整识别地址（例如 `https://api.siliconflow.cn/v1/chat/completions`）、独立密钥和 OCR 模型名。通过标准 `image_url` 消息传入 PNG Data URL，使用 `max_tokens`，直接读取 `choices[0].message.content` 的纯文字，不要求模型输出 JSON。截断或拒绝不会写入原文。
+- **JSON + Base64**：自定义图片字段名、纯 Base64 / Data URL 编码、非敏感附加参数和返回文字路径。
+- **Multipart 文件上传**：自定义上传字段名和标量附加参数。图片文件名固定为 `region.png`。
+- **鉴权与返回值**：支持 Bearer Token、自定义 API Key 请求头或无鉴权；`data.words.*.text` 可提取多个文本字段并按返回顺序换行，`result.0.text` 支持数组下标。密钥不能放入 URL 或附加参数；不会跟随重定向。
+
+硅基流动的调用格式见[官方 Chat Completions 文档](https://api-docs.siliconflow.cn/docs/api/chat-completions-post)。`PaddlePaddle/PaddleOCR-VL-1.5` 的识别指令为 `OCR:`，见[官方模型卡](https://huggingface.co/PaddlePaddle/PaddleOCR-VL-1.5)。`deepseek-ai/DeepSeek-OCR` 的纯文本识别指令为 `<image>`、换行、`Free OCR.`，见[官方多模态输入文档](https://docs.siliconflow.cn/docs/userguide/capabilities/multimodal-vision)。具体模型可用性以服务端模型列表为准。
+
+“通用接口”并不意味着自动兼容所有厂商。需要签名算法、OAuth、查询参数鉴权、异步任务轮询或专有二进制协议的服务，需新增适配器或在前面提供兼容网关。专用 OCR 模型也可能采用视觉语言架构；这里按用途和输出协议区分，而不是按 HTTP 端点名称区分。
+
+### 云端 OCR 并发调度
+
+两种云端识别均可在配置窗口选择串行、固定或自适应并发。已有云端配置未设置这些字段时，默认使用自适应：从 2 路开始（不超过设定上限），默认上限 8，允许设置 1–16；每分钟最多发起 60 次请求，可按服务商配额调整为 1–6000。每个区域仍是独立请求，不额外上传图片探测上限。
+
+- 连续成功后逐步增加；增加并发未提高估算吞吐时回退。HTTP 429、超时或服务端错误会降低自适应并发并统一退避，优先遵守 `Retry-After`。固定模式保持设定数量，但仍遵守速率和退避。
+- 失败区域按“失败重试”次数重试，成功结果不重复请求；401/403 等不可重试错误停止后续派发。进度显示完成数、当前在途/允许并发数及退避倒计时。
+- 同一个后端进程内，相同接口域名/端口、密钥及模型的 OCR 和翻译共享速率、并发额度与退避。翻译仍将一页待翻译文本合成一次请求。不同密钥的账号总额度、TPM/图片额度不能由此推断，应按服务商限制设置；多进程部署需外部共享限流器。
+- 暂停或取消后不再派发新请求，等待已发请求结束后释放任务；已发送请求仍可能计费，取消后返回的文字不会写入。每个结果由主任务统一写库，并检查区域版本，手工修改、锁定或删除后不会被旧结果覆盖。
+- 本地 OCR 保持串行，页面队列并发配置不变。学习值只保留在进程内，空闲 10 分钟重新从低并发开始，重启后重新学习。
+
+### 通用配置
+
 所有变量以 `MANGAFLOW_` 开头。常用变量见 `.env.example`：数据目录、模型目录、模型清单路径、云端翻译 API Key、自动配置开关、数据库 URL、CORS、上传大小、OCR 复核阈值、队列并发数与 Fernet 密钥。不要把真实 `.env` 或密钥提交到版本库。
 
 ## 完整操作流程
@@ -159,6 +194,8 @@ Paddle Provider 会自动将保存的 `cuda:0` 转换为 Paddle 使用的 `gpu:0
 8. 导出译图、净图或完整工程 ZIP；工程包可再次导入继续编辑。
 
 ## 测试
+
+文字像素分割、气泡保护、残留复核、分镜阅读顺序及形状内排版的原理、模型安装和限制见 [翻译质量说明](docs/translation-quality.md)。
 
 ```bash
 ./scripts/check.sh

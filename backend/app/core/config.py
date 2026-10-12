@@ -35,6 +35,8 @@ class Settings(BaseSettings):
     task_concurrency: int = 1
     default_font_path: str | None = None
     auto_provision_models: bool = True
+    text_segmentation_enabled: bool = True
+    repair_auto_retry: bool = True
 
     @field_validator("cors_origins", mode="before")
     @classmethod

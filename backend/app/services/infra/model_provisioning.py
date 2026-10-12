@@ -10,7 +10,10 @@ from app.core.config import get_settings
 from app.core.database import SessionLocal, initialize_database
 from app.core.secrets import get_secret_store
 from app.models import ModelConfig
+from app.services.base import ProviderError
 from app.services.infra.device import paddle_cuda_available, torch_cuda_available
+from app.services.ocr.generic import GENERIC_OCR_DEFAULTS, GenericCloudOCRProvider
+from app.services.ocr.prompts import DEFAULT_OCR_PROMPT
 from app.services.registry import registry
 from app.services.translation.prompts import DEFAULT_TRANSLATION_PROMPT
 from sqlalchemy import select, update
@@ -95,6 +98,11 @@ SELECTABLE_MODELS.update(
 )
 
 ADDITIONAL_RECOMMENDED_MODELS = (
+    RecommendedModel("ocr", "云端 OCR（通用接口）", "cloud-ocr", dict(GENERIC_OCR_DEFAULTS)),
+    RecommendedModel(
+        "ocr", "云端多模态 OCR", "cloud-multimodal",
+        {"api_protocol": "auto", "timeout": 90, "retries": 2, "max_tokens": 2048, "prompt": DEFAULT_OCR_PROMPT},
+    ),
     RecommendedModel(
         "translation",
         "自定义云端翻译",
@@ -345,10 +353,18 @@ def setup_status_report(db: Session, *, validate_models: bool = False) -> dict[s
             status, message = "error", f"Provider {item.provider} 的运行依赖未安装"
         elif kind == "translation" and item.provider != "openai-compatible":
             status, message = "error", "必须配置真实的云端翻译接口，原文直通不能用于完整工作台"
-        elif kind == "translation" and not (
+        elif (kind == "translation" or (kind == "ocr" and item.provider == "cloud-multimodal")) and not (
             item.encrypted_api_key and item.config.get("base_url") and item.config.get("model")
         ):
-            status, message = "error", "云端翻译缺少 API 地址、密钥或模型"
+            status, message = "error", f"{'云端 OCR' if kind == 'ocr' else '云端翻译'}缺少 API 地址、密钥或模型"
+        elif kind == "ocr" and item.provider == "cloud-ocr":
+            try:
+                config = dict(item.config or {})
+                if item.encrypted_api_key:
+                    config["api_key"] = get_secret_store().decrypt(item.encrypted_api_key)
+                GenericCloudOCRProvider(config).ensure_loaded()
+            except ProviderError as exc:
+                status, message = "error", str(exc)
         elif str(item.config.get("device", "cpu")).lower().startswith(("cuda", "gpu")):
             if kind == "detection" and not paddle_cuda_available():
                 status, message = "error", "Paddle CUDA 当前不可用，请改用 CPU 或修复 GPU 环境"
@@ -356,7 +372,10 @@ def setup_status_report(db: Session, *, validate_models: bool = False) -> dict[s
                 status, message = "error", "PyTorch CUDA 当前不可用，请改用 CPU 或修复 GPU 环境"
         if validate_models and status == "ready" and kind != "translation" and item is not None:
             try:
-                registry.create(item.kind, item.provider, dict(item.config or {})).ensure_loaded()
+                config = dict(item.config or {})
+                if item.encrypted_api_key:
+                    config["api_key"] = get_secret_store().decrypt(item.encrypted_api_key)
+                registry.create(item.kind, item.provider, config).ensure_loaded()
             except Exception as exc:
                 status, message = "error", str(exc)
         stages.append(
@@ -422,11 +441,17 @@ def bootstrap_recommended_models(
         status = "configured"
         error: str | None = None
         installed = registry.is_installed(item.kind, item.provider)
-        if item.kind == "translation" and item.provider == "openai-compatible" and not (
+        if item.provider in {"openai-compatible", "cloud-multimodal"} and not (
             item.encrypted_api_key and item.config.get("base_url") and item.config.get("model")
         ):
             status = "configuration_required"
-            error = "请编辑云端翻译配置并填写 API 地址、密钥和模型"
+            error = f"请编辑{'云端 OCR' if item.kind == 'ocr' else '云端翻译'}配置并填写 API 地址、密钥和模型"
+        if item.provider == "cloud-ocr":
+            try:
+                config = {**item.config, "api_key": get_secret_store().decrypt(item.encrypted_api_key)}
+                GenericCloudOCRProvider(config).ensure_loaded()
+            except ProviderError as exc:
+                status, error = "configuration_required", str(exc)
         if preload:
             if status == "configuration_required":
                 pass
@@ -435,7 +460,10 @@ def bootstrap_recommended_models(
                 error = f"Provider dependency for {item.provider} is not installed in this runtime"
             else:
                 try:
-                    registry.create(item.kind, item.provider, dict(item.config or {})).ensure_loaded()
+                    config = dict(item.config or {})
+                    if item.encrypted_api_key:
+                        config["api_key"] = get_secret_store().decrypt(item.encrypted_api_key)
+                    registry.create(item.kind, item.provider, config).ensure_loaded()
                     status = "ready"
                 except Exception as exc:  # The report must include download/load failures per provider.
                     status = "error"

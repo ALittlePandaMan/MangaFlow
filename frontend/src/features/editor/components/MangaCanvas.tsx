@@ -1,3 +1,4 @@
+import {RegionLabel} from './RegionLabel'
 import Konva from 'konva'
 import { ChevronDown, Eraser, Languages, Layers3, ScanText, TextCursorInput } from 'lucide-react'
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
@@ -9,6 +10,10 @@ import {formatShortcut, shortcutToAria, useShortcutStore} from '../../shortcuts/
 import { useEditorStore } from '../store'
 import { RegionPolygonEditor } from './RegionPolygonEditor'
 import { useImage } from '../hooks/useImage'
+import {useCanvasTouch} from '../hooks/useCanvasTouch'
+import {canvasPalette} from '../lib/canvasPalette'
+import {shapePreviewRegion} from '../lib/shapeText'
+import {currentTextLayer} from '../lib/renderedText'
 import {isPerspectiveQuad, perspectiveQuadSize, warpCanvasToQuad, type WarpedCanvas} from '../lib/perspectiveText'
 
 interface Props {
@@ -94,8 +99,8 @@ const polygonContainsPoint = (polygon: number[][], point: MarqueePoint, edgeTole
 }
 function ComparisonLabel({x, scale, text}: {x: number, scale: number, text: string}) {
   return <Group x={x} y={12 * scale} scaleX={scale} scaleY={scale} listening={false}>
-    <Rect width={48} height={24} cornerRadius={6} fill="rgba(8,11,9,.82)" stroke="rgba(255,255,255,.18)" strokeWidth={1}/>
-    <Text width={48} height={24} text={text} align="center" verticalAlign="middle" fontFamily="Noto Sans CJK SC, sans-serif" fontSize={10} fontStyle="bold" fill="#dffbf3"/>
+    <Rect width={48} height={24} cornerRadius={6} fill="rgba(24,24,24,.86)" stroke="rgba(255,255,255,.18)" strokeWidth={1}/>
+    <Text width={48} height={24} text={text} align="center" verticalAlign="middle" fontFamily="Noto Sans CJK SC, sans-serif" fontSize={10} fontStyle="bold" fill="#f2f2f2"/>
   </Group>
 }
 
@@ -107,8 +112,16 @@ function MangaCanvasComponent({ page, regions, onCreate, onUpdate, onRegionActio
   const [draft, setDraft] = useState<number[][]>([])
   const [polygonPreview, setPolygonPreview] = useState<MarqueePoint | null>(null)
   const [drawing, setDrawing] = useState(false)
+  const [touchNavigating, setTouchNavigating] = useState(false)
   const [middlePanningActive, setMiddlePanningActive] = useState(false)
-  const [layersCollapsed, setLayersCollapsed] = useState(false)
+  const [layersCollapsed, setLayersCollapsed] = useState(() => {
+    try { return localStorage.getItem('mangaflow.layers-collapsed.v1') !== 'false' } catch { return true }
+  })
+  const [hoveredRegionId, setHoveredRegionId] = useState<string | null>(null)
+  const [checkerboard, setCheckerboard] = useState(false)
+  useEffect(() => {
+    try { localStorage.setItem('mangaflow.layers-collapsed.v1', String(layersCollapsed)) } catch { /* Storage may be disabled. */ }
+  }, [layersCollapsed])
   const [contextMenu, setContextMenu] = useState<{x: number, y: number, regionId: string, regionKey: string} | null>(null)
   const [marquee, setMarquee] = useState<MarqueeSelection | null>(null)
   const [translatedGeometryPreview, setTranslatedGeometryPreview] = useState<TranslatedGeometryPreview | null>(null)
@@ -120,6 +133,7 @@ function MangaCanvasComponent({ page, regions, onCreate, onUpdate, onRegionActio
   const view = useEditorStore(state => state.view)
   const tool = useEditorStore(state => state.tool)
   const zoom = useEditorStore(state => state.zoom)
+  const viewReset = useEditorStore(state => state.viewReset)
   const setZoom = useEditorStore(state => state.setZoom)
   const selectedIds = useEditorStore(state => state.selectedIds)
   const select = useEditorStore(state => state.select)
@@ -150,9 +164,10 @@ function MangaCanvasComponent({ page, regions, onCreate, onUpdate, onRegionActio
     : regions, [regions, translatedGeometryPreview])
   const comparisonWidth = page.width * 2 + COMPARISON_GAP
   const contentWidth = view === 'comparison' ? comparisonWidth : page.width
-  const fitScale = Math.min((viewport.width - 72) / contentWidth, (viewport.height - 72) / page.height)
+  const margin = viewport.width < 640 ? 32 : 72
+  const fitScale = Math.max(.01, Math.min((viewport.width - margin) / contentWidth, (viewport.height - margin) / page.height))
   const scale = Math.max(0.01, fitScale * zoom)
-  const regionLabelScale = 1 / Math.max(.01, fitScale)
+  const regionLabelScale = 1 / scale
   const origin = {x: (viewport.width - contentWidth * scale) / 2 + pan.x, y: (viewport.height - page.height * scale) / 2 + pan.y}
   useLayoutEffect(() => {
     if (wheelFrame.current !== null) cancelAnimationFrame(wheelFrame.current)
@@ -173,7 +188,7 @@ function MangaCanvasComponent({ page, regions, onCreate, onUpdate, onRegionActio
     setContextMenu(null)
     setMarquee(null)
     setTranslatedGeometryPreview(null)
-  }, [page.id])
+  }, [page.id, viewReset])
 
   const stopWheelAnimation = useCallback(() => {
     if (wheelFrame.current !== null) cancelAnimationFrame(wheelFrame.current)
@@ -187,6 +202,20 @@ function MangaCanvasComponent({ page, regions, onCreate, onUpdate, onRegionActio
     marqueeActive.current = false
     setMarquee(null)
   }, [])
+
+  useCanvasTouch(containerRef, {
+    singleFingerPan: tool === 'pan',
+    zoom, pan, viewport, content: {width: contentWidth, height: page.height}, fitScale,
+    onStart: () => {
+      stopWheelAnimation(); cancelMarquee(); setDraft([]); setDrawing(false)
+      setPolygonPreview(null); setTranslatedGeometryPreview(null); setTouchNavigating(true)
+    },
+    onEnd: () => setTouchNavigating(false),
+    onChange: next => {
+      currentView.current = next; targetView.current = next
+      setPan(next.pan); setZoom(next.zoom)
+    },
+  })
 
   const beginMarquee = useCallback((point: MarqueePoint) => {
     cancelMarquee()
@@ -280,7 +309,7 @@ function MangaCanvasComponent({ page, regions, onCreate, onUpdate, onRegionActio
       setPan(value => ({x: value.x + dx, y: value.y + dy}))
     }
     const stop = (event: MouseEvent) => {
-      if (event.button !== 1) return
+      if (event.button !== 1 && event.button !== 0) return
       middlePanning.current = false
       setMiddlePanningActive(false)
     }
@@ -322,6 +351,8 @@ function MangaCanvasComponent({ page, regions, onCreate, onUpdate, onRegionActio
     setDraft([])
     setPolygonPreview(null)
     setDrawing(false)
+    middlePanning.current = false
+    setMiddlePanningActive(false)
   }, [page.id, tool])
   useEffect(() => {
     if (view !== 'comparison') return
@@ -386,16 +417,18 @@ function MangaCanvasComponent({ page, regions, onCreate, onUpdate, onRegionActio
     stopWheelAnimation()
     cancelMarquee()
     if (event.evt instanceof MouseEvent) {
-      if (event.evt.button === 1) {
+      if (event.evt.button === 1 || (event.evt.button === 0 && tool === 'pan')) {
         event.evt.preventDefault()
         event.cancelBubble = true
         middlePanning.current = true
+        setContextMenu(null)
         middlePointer.current = {x: event.evt.clientX, y: event.evt.clientY}
         setMiddlePanningActive(true)
         return
       }
       if (event.evt.button !== 0) return
     }
+    if (tool === 'pan') return
     if (view === 'comparison') return
     const point = pointer(event)
     if (!point) return
@@ -502,7 +535,7 @@ function MangaCanvasComponent({ page, regions, onCreate, onUpdate, onRegionActio
     }
   }
 
-  const polygonClick = (event: Konva.KonvaEventObject<MouseEvent>) => {
+  const polygonClick = (event: Konva.KonvaEventObject<Event>) => {
     if (view === 'comparison' || tool !== 'polygon' || polygonSubmitting.current) return
     const point = pointer(event)
     if (!point || point[0] < 0 || point[0] > page.width || point[1] < 0 || point[1] > page.height) return
@@ -526,12 +559,13 @@ function MangaCanvasComponent({ page, regions, onCreate, onUpdate, onRegionActio
     ? Math.hypot(polygonPreview[0] - draft[0][0], polygonPreview[1] - draft[0][1]) * scale <= POLYGON_CLOSE_DISTANCE
     : false
 
-  return <div className={cn('relative size-full overflow-hidden', middlePanningActive && 'cursor-grabbing [&_canvas]:!cursor-grabbing', (marquee || tool === 'polygon') && 'cursor-crosshair [&_canvas]:!cursor-crosshair')} ref={containerRef} onAuxClick={event => event.preventDefault()}>
+  return <div className={cn('relative size-full overflow-hidden touch-none', checkerboard && 'workspace-checkerboard', tool === 'pan' && !middlePanningActive && 'cursor-grab [&_canvas]:!cursor-grab', middlePanningActive && 'cursor-grabbing [&_canvas]:!cursor-grabbing', (marquee || tool === 'polygon') && 'cursor-crosshair [&_canvas]:!cursor-crosshair')} ref={containerRef} onAuxClick={event => event.preventDefault()}>
     <Stage
       width={viewport.width} height={viewport.height}
       onMouseDown={handleDown} onTouchStart={handleDown}
       onMouseMove={handleMove} onTouchMove={handleMove}
       onMouseUp={handleUp} onTouchEnd={handleUp}
+      onTap={event => {setContextMenu(null); polygonClick(event)}}
       onMouseLeave={() => { if (tool === 'polygon') setPolygonPreview(null) }}
       onClick={event => {
         if (event.evt.button !== 0) return
@@ -543,29 +577,29 @@ function MangaCanvasComponent({ page, regions, onCreate, onUpdate, onRegionActio
     >
       <Layer>
         <Group x={origin.x} y={origin.y} scaleX={scale} scaleY={scale}>
-          <Rect name="canvas-background" width={page.width} height={page.height} fill="#f4f0e8" shadowColor="#172019" shadowOpacity={.16} shadowBlur={18 / scale} shadowOffsetY={4 / scale} />
+          <Rect name="canvas-background" width={page.width} height={page.height} fill="#ffffff" shadowColor="#000000" shadowOpacity={.12} shadowBlur={18 / scale} shadowOffsetY={4 / scale} />
           {view === 'comparison' && <>
             <KonvaImage image={original ?? undefined} width={page.width} height={page.height} listening={false}/>
-            <Rect x={page.width + COMPARISON_GAP} width={page.width} height={page.height} fill="#f4f0e8" shadowColor="#172019" shadowOpacity={.16} shadowBlur={18 / scale} shadowOffsetY={4 / scale} listening={false}/>
+            <Rect x={page.width + COMPARISON_GAP} width={page.width} height={page.height} fill="#ffffff" shadowColor="#000000" shadowOpacity={.12} shadowBlur={18 / scale} shadowOffsetY={4 / scale} listening={false}/>
             <Group x={page.width + COMPARISON_GAP} clipX={0} clipY={0} clipWidth={page.width} clipHeight={page.height} listening={false}>
               <KonvaImage image={clean ?? undefined} width={page.width} height={page.height}/>
-              <TranslatedRegions regions={translatedRenderRegions} displayScale={scale}/>
+              <TranslatedPageLayer page={page} regions={translatedRenderRegions} displayScale={scale}/>
             </Group>
             <ComparisonLabel x={12 / scale} scale={1 / scale} text="原图"/>
             <ComparisonLabel x={page.width + COMPARISON_GAP + 12 / scale} scale={1 / scale} text="译文"/>
           </>}
           {layers.original && <KonvaImage image={original ?? undefined} width={page.width} height={page.height} listening={false} />}
           {layers.clean && <KonvaImage image={clean ?? undefined} width={page.width} height={page.height} listening={false} />}
-          {layers.translated && <TranslatedRegions regions={translatedRenderRegions} displayScale={scale}/>}
+          {layers.translated && <TranslatedPageLayer page={page} regions={translatedRenderRegions} displayScale={scale}/>}
           {layers.detection && regions.map(region => {
             const selectedNow = selectedIds.includes(region.id)
             const geometry = regionGeometry(region, editingTranslatedGeometry)
-            const editable = view !== 'comparison' && singleSelection && selectedNow && tool === 'select' && !region.locked
+            const editable = !touchNavigating && view !== 'comparison' && singleSelection && selectedNow && tool === 'select' && !region.locked
             const geometryLabel = selectedNow ? `  · ${editingTranslatedGeometry ? '译文框' : '原文框'}` : ''
             const label = `${region.region_key}${geometryLabel}${region.visible ? '' : '  · 已关闭'}${region.locked ? '  🔒' : ''}`
-            const labelColor = selectedNow ? '#65ddc5' : region.visible ? '#4aa8ff' : '#888880'
+            const labelColor = selectedNow ? canvasPalette.selectedLabel : region.visible ? canvasPalette.detected : canvasPalette.hidden
             const drawingToolActive = tool === 'rectangle' || tool === 'polygon' || tool === 'lasso'
-            return <Group key={region.id} onContextMenu={event => openRegionContextMenu(event, region)}>
+            return <Group key={region.id} onMouseEnter={() => setHoveredRegionId(region.id)} onMouseLeave={() => setHoveredRegionId(null)} onContextMenu={event => openRegionContextMenu(event, region)}>
               {editable ? <RegionPolygonEditor
                 key={`${region.id}-${editingTranslatedGeometry ? 'translated' : 'source'}`}
                 polygon={geometry.polygon}
@@ -593,12 +627,12 @@ function MangaCanvasComponent({ page, regions, onCreate, onUpdate, onRegionActio
               /> : <>
                 <Line
                   points={flat(geometry.polygon)} closed
-                  stroke={selectedNow ? '#00d7aa' : region.visible ? '#4aa8ff' : '#77776f'}
+                  stroke={selectedNow ? canvasPalette.selected : region.visible ? canvasPalette.detected : canvasPalette.hidden}
                   strokeWidth={(selectedNow ? 3 : 1.5) / scale} hitStrokeWidth={12 / scale}
                   dash={region.visible ? undefined : [6 / scale, 4 / scale]}
-                  fill={selectedNow ? 'rgba(0,215,170,.08)' : 'rgba(0,0,0,.001)'}
+                  fill={selectedNow ? canvasPalette.selectionFill : 'rgba(0,0,0,.001)'}
                   opacity={region.visible ? 1 : .7}
-                  listening={!drawingToolActive}
+                  listening={!drawingToolActive && tool !== 'pan'}
                   onClick={event => {
                     event.cancelBubble = true
                     if (event.evt.button !== 0) return
@@ -607,7 +641,7 @@ function MangaCanvasComponent({ page, regions, onCreate, onUpdate, onRegionActio
                   onTap={event => { event.cancelBubble = true; select(region.id, tool === 'select') }}
                   onContextMenu={event => openRegionContextMenu(event, region)}
                 />
-                <Text x={geometry.bbox[0]} y={geometry.bbox[1] - 17 * regionLabelScale} text={label} fill={labelColor} fontSize={12 * regionLabelScale} listening={false}/>
+                {(selectedNow || hoveredRegionId === region.id) && <RegionLabel x={geometry.bbox[0]} y={geometry.bbox[1]} text={label} color={labelColor} scale={regionLabelScale}/>}
               </>}
             </Group>
           })}
@@ -616,7 +650,7 @@ function MangaCanvasComponent({ page, regions, onCreate, onUpdate, onRegionActio
             y={Math.min(marquee.start[1], marquee.current[1])}
             width={Math.abs(marquee.current[0] - marquee.start[0])}
             height={Math.abs(marquee.current[1] - marquee.start[1])}
-            fill="rgba(0,215,170,.1)" stroke="#00d7aa" strokeWidth={1.5 / scale}
+            fill={canvasPalette.marqueeFill} stroke={canvasPalette.selected} strokeWidth={1.5 / scale}
             dash={[6 / scale, 4 / scale]} listening={false}
           />}
           {view !== 'comparison' && draftRect && <Rect x={draftRect[0]} y={draftRect[1]} width={draftRect[2]} height={draftRect[3]} stroke="#ffcb45" dash={[8 / scale, 5 / scale]} strokeWidth={2 / scale} />}
@@ -625,14 +659,14 @@ function MangaCanvasComponent({ page, regions, onCreate, onUpdate, onRegionActio
             <Line points={flat(draft)} stroke="#ffcb45" strokeWidth={2 / scale} lineCap="round" lineJoin="round" listening={false}/>
             {polygonPreview && <Line
               points={[...draft.at(-1)!, ...(polygonCanClose ? draft[0] : polygonPreview)]}
-              stroke={polygonCanClose ? '#00d7aa' : '#ffcb45'} strokeWidth={1.5 / scale}
+              stroke={polygonCanClose ? canvasPalette.selected : '#ffcb45'} strokeWidth={1.5 / scale}
               dash={[6 / scale, 4 / scale]} lineCap="round" listening={false}
             />}
             {draft.map((point, index) => <Circle
               key={`polygon-point-${index}`} x={point[0]} y={point[1]}
               radius={(index === 0 ? 5 : 3.5) / scale}
-              fill={index === 0 && polygonCanClose ? '#00d7aa' : '#fff7d6'}
-              stroke={index === 0 ? '#00b991' : '#d8a91d'} strokeWidth={1.5 / scale}
+              fill={index === 0 && polygonCanClose ? canvasPalette.selected : '#fff7d6'}
+              stroke={index === 0 ? canvasPalette.handleBorder : '#d8a91d'} strokeWidth={1.5 / scale}
               hitStrokeWidth={Math.max(POLYGON_CLOSE_DISTANCE * 2 / scale, 12 / scale)}
               onClick={event => {
                 event.cancelBubble = true
@@ -655,12 +689,12 @@ function MangaCanvasComponent({ page, regions, onCreate, onUpdate, onRegionActio
       <button className={cn(contextButtonClass, runningAction === 'render' && 'bg-accent/10 text-ink')} role="menuitem" disabled={!!runningAction} title={`重新排版 (${formatShortcut(shortcuts['region.render'])})`} aria-keyshortcuts={shortcutToAria(shortcuts['region.render'])} onClick={() => runRegionContextAction('render')}>{runningAction === 'render' ? <ButtonLoading label="排版处理中…"/> : <><TextCursorInput size={15}/>重新排版</>}</button>
     </div>}
     {view !== 'comparison' && <div
-      className="absolute right-3.5 top-3.5 z-10 w-44 select-none text-secondary"
+      className={cn('absolute right-3.5 top-3.5 z-10 select-none text-secondary', layersCollapsed ? 'w-24' : 'w-40')}
       style={{filter: layersCollapsed ? undefined : 'drop-shadow(var(--shadow-soft))'}}
       aria-label="画布图层"
     >
       <button
-        className={cn('relative z-10 flex h-[36px] min-h-[36px] w-full cursor-pointer items-center justify-start gap-2 border border-line-strong bg-popover px-3 font-mono text-xs font-medium uppercase leading-none tracking-[1px] text-secondary outline-none transition-colors hover:bg-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-accent/30 [&>svg:first-child]:text-accent', layersCollapsed ? 'rounded-xl shadow-soft' : 'rounded-t-xl rounded-b-none')}
+        className={cn('relative z-10 flex h-[36px] min-h-[36px] w-full cursor-pointer items-center justify-start gap-2 border border-line-strong bg-popover px-3 text-xs font-medium leading-none text-secondary outline-none transition-colors hover:bg-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-accent/30 [&>svg:first-child]:text-accent', layersCollapsed ? 'rounded-xl shadow-soft' : 'rounded-t-xl rounded-b-none')}
         style={{borderBottomColor: layersCollapsed ? 'var(--color-line-strong)' : 'var(--color-line)'}}
         type="button" aria-expanded={!layersCollapsed} onClick={() => setLayersCollapsed(value => !value)}
       >
@@ -670,12 +704,13 @@ function MangaCanvasComponent({ page, regions, onCreate, onUpdate, onRegionActio
         className={cn('absolute right-0 top-full w-full overflow-hidden rounded-b-xl border-x border-b border-line-strong bg-popover transition-[clip-path] duration-200 ease-out motion-reduce:transition-none', layersCollapsed && 'pointer-events-none')}
         style={{clipPath: layersCollapsed ? 'inset(0 0 100% 0)' : 'inset(0 0 0 0)'}}
         aria-hidden={layersCollapsed}
-      ><div className="flex flex-col gap-1 p-1">{Object.entries(layers).map(([name, visible]) => <label className="relative flex h-[34px] shrink-0 cursor-pointer items-center gap-2 rounded-lg px-2 text-[11px] leading-none text-secondary transition-colors hover:bg-hover hover:text-ink" key={name}>
-          <input className="sr-only" type="checkbox" checked={visible} tabIndex={layersCollapsed ? -1 : 0} onChange={() => toggleLayer(name as keyof typeof layers)} />
-          <span className={cn('size-3 shrink-0 rounded-full border border-accent/50 transition', visible && 'border-accent bg-accent shadow-[0_0_8px_rgb(16_211_163/.25)]')} />
-          <span className="flex h-full items-center leading-none">{({original:'原始图像',detection:'检测区域',clean:'修复背景',translated:'翻译文字'} as Record<string,string>)[name]}</span>
+      ><div className="flex flex-col gap-0.5 p-1">{Object.entries({...layers, checkerboard}).map(([name, visible]) => <label className="relative flex h-[30px] shrink-0 cursor-pointer items-center gap-2 rounded-lg px-2 text-[11px] leading-none text-secondary transition-colors hover:bg-hover hover:text-ink" key={name}>
+          <input className="peer sr-only" type="checkbox" checked={visible} tabIndex={layersCollapsed ? -1 : 0} onChange={() => name === 'checkerboard' ? setCheckerboard(value => !value) : toggleLayer(name as keyof typeof layers)} />
+          <span aria-hidden="true" className={cn('size-3 shrink-0 rounded-full border border-line-strong transition-colors peer-focus-visible:ring-2 peer-focus-visible:ring-accent/50 peer-focus-visible:ring-offset-2 peer-focus-visible:ring-offset-panel', visible && 'border-accent bg-accent')} />
+          <span className="flex h-full items-center leading-none">{({original:'原始图像',detection:'检测区域',clean:'修复背景',translated:'翻译文字',checkerboard:'透明棋盘格'} as Record<string,string>)[name]}</span>
         </label>)}</div></div>
     </div>}
+    <span className="canvas-touch-hint pointer-events-none absolute bottom-3 left-3 rounded-md bg-panel/90 px-2 py-1 text-[11px] text-muted">双指缩放 / 移动</span>
     <div className="pointer-events-none absolute bottom-3 right-3 min-w-12 rounded-lg border border-line-strong bg-canvas/90 px-2.5 py-1.5 text-center font-mono text-[11px] font-semibold text-ink shadow-soft backdrop-blur-md">{Math.round(zoom * 100)}%</div>
   </div>
 }
@@ -687,13 +722,27 @@ export const MangaCanvas = memo(MangaCanvasComponent, (previous, next) =>
   previous.interactionKey === next.interactionKey
 )
 
+function TranslatedPageLayer({page, regions, displayScale}: {page: ImagePage, regions: TextRegion[], displayScale: number}) {
+  // Reuse the existing bounded/deduplicated image cache. Editing any visual
+  // input invalidates this artifact immediately, before the autosave response.
+  const source = currentTextLayer(page, regions)
+  const {image} = useImage(source)
+  return image && source
+    ? <KonvaImage image={image} width={page.width} height={page.height} listening={false}/>
+    : <TranslatedRegions regions={regions} displayScale={displayScale}/>
+}
+
 function TranslatedRegions({regions, displayScale}: {regions: TextRegion[], displayScale: number}) {
-  return <>{regions.filter(region => region.visible).map(region => {
+  return <>{regions.map(original => {
+    if (!original.visible) return null
+    const region = shapePreviewRegion(original)
+    if (!region) return null
     const renderStyle = resolvedRenderStyle(region)
     const geometry = regionGeometry(region, true)
     if (region.perspective_warp && isPerspectiveQuad(region.translated_polygon)) return <PerspectiveTranslatedText key={`text-${region.id}`} region={region} style={renderStyle} displayScale={displayScale}/>
-    if (region.orientation === 'vertical') return <VerticalTranslatedText key={`text-${region.id}`} region={region} style={renderStyle}/>
-    return <Text
+    const text = region.orientation === 'vertical'
+      ? <VerticalTranslatedText key={`text-${region.id}`} region={region} style={renderStyle}/>
+      : <Text
       key={`text-${region.id}`} x={geometry.bbox[0]} y={geometry.bbox[1]} width={geometry.bbox[2]} height={geometry.bbox[3]}
       text={region.translated_text}
       fontSize={region.font_size} fontFamily={region.font_family} fontStyle={region.font_weight >= 600 ? 'bold' : 'normal'}
@@ -701,6 +750,8 @@ function TranslatedRegions({regions, displayScale}: {regions: TextRegion[], disp
       opacity={region.opacity} rotation={region.rotation} align={region.alignment}
       lineHeight={region.line_spacing} letterSpacing={region.character_spacing} verticalAlign="middle" listening={false}
     />
+    return region === original ? text : <Group key={`text-${region.id}`} listening={false}
+      clipX={geometry.bbox[0]} clipY={geometry.bbox[1]} clipWidth={geometry.bbox[2]} clipHeight={geometry.bbox[3]}>{text}</Group>
   })}</>
 }
 

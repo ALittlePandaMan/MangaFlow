@@ -295,7 +295,12 @@ def _split_connected_balloon_group(
         min_boundary_run=min_boundary_run,
     )
     if boundary_split is None:
-        return [group]
+        compartments = _split_visible_compartments(group, bubble, image)
+        if compartments is None:
+            return [group]
+        groups, details, child_masks = compartments
+        return _tag_balloon_subgroups(groups, bubble=bubble, child_masks=child_masks, page_key=page_key,
+                                     parent_bubble_id=parent_bubble_id, method="visible_compartments", details=details)
     groups, details, child_masks = boundary_split
     return _tag_balloon_subgroups(
         groups,
@@ -306,6 +311,57 @@ def _split_connected_balloon_group(
         method="text_gap_boundary",
         details=details,
     )
+
+
+def _split_visible_compartments(group, bubble: BubbleInstance, image: np.ndarray | None):
+    """Handle curved/diagonal dividers that cannot be described by an axis cut.
+
+    A wall must actually disconnect the interior after text cores are removed.
+    Whitespace, text gaps, isolated strokes and empty lobes never suffice.
+    """
+    if image is None:
+        return None
+    mask = (bubble.mask > 0).astype(np.uint8)
+    x, y = bubble.mask_origin
+    h, w = mask.shape
+    gray = image[y:y+h, x:x+w]
+    if gray.shape != mask.shape:
+        return None
+    radius = max(1, min(3, round(min(w, h) / 120)))
+    distance = cv2.distanceTransform(np.pad(mask, 1), cv2.DIST_L2, 5)[1:-1, 1:-1]
+    walls = ((gray < 100) & (mask > 0)).astype(np.uint8)
+    cores = []
+    for _, region in group:
+        center = _polygon_centroid(region.polygon)
+        core = np.zeros_like(mask)
+        points = np.rint(np.asarray(_scale_polygon(region.polygon, center, .65)) - [x, y]).astype(np.int32)
+        cv2.fillPoly(core, [points], 1)
+        cores.append(core)
+        walls[core > 0] = 0
+    walls = cv2.morphologyEx(walls, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
+    # Near-wall ink alone cannot split a balloon. Require substantial evidence
+    # through the interior, but allow the divider to curve or run diagonally.
+    if np.count_nonzero(walls & (distance > max(4, min(w, h) * .08))) < max(12, min(w, h) * .2):
+        return None
+    barrier = cv2.dilate(walls, np.ones((radius*2+1, radius*2+1), np.uint8))
+    free = ((mask > 0) & (barrier == 0) & (distance > radius)).astype(np.uint8)
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(free, connectivity=8)
+    meaningful = {label for label in range(1, n) if stats[label, cv2.CC_STAT_AREA] >= np.count_nonzero(mask) * .1}
+    if len(meaningful) < 2:
+        return None
+    groups = {}
+    for item, core in zip(group, cores, strict=True):
+        counts = np.bincount(labels[core > 0], minlength=n)
+        candidates = sorted(((int(counts[label]), label) for label in meaningful), reverse=True)
+        area, label = candidates[0]
+        if area < np.count_nonzero(core) * .7 or sum(counts[k] for k in meaningful if k != label) > area * .1:
+            return None
+        groups.setdefault(label, []).append(item)
+    if len(groups) < 2:
+        return None
+    ordered = sorted(groups, key=lambda label: min(index for index, _ in groups[label]))
+    children = _partition_mask_from_seeds(mask, [(labels == label).astype(np.uint8) for label in ordered])
+    return [groups[label] for label in ordered], {"barrier_radius": radius, "compartments": len(ordered)}, children
 
 
 def _split_group_at_mask_neck(

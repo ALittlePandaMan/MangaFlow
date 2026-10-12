@@ -1,0 +1,86 @@
+"""Bounded OCR scheduler. Workers get immutable crops/IDs, never ORM sessions.
+
+Only this scheduler retries batch OCR. Completed regions are never resubmitted.
+Closing the iterator stops dispatch and drains in-flight HTTP calls (which may
+already have been billed), so a cancelled task cannot leave orphan requests.
+"""
+from __future__ import annotations
+
+import time
+from collections.abc import Callable, Iterator
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from dataclasses import dataclass
+from pathlib import Path
+
+from app.services.base import OCRResult, ProviderError
+from app.services.cloud_budget import request_budget
+
+
+@dataclass(frozen=True)
+class OCRJob:
+    region_id: str
+    bbox: tuple[float, ...]
+    orientation: str
+
+
+def recognize_regions(provider, source: Path, jobs: list[OCRJob], padding: int, check: Callable[[], None], report: Callable[[str], None]) -> Iterator[tuple[str, OCRResult]]:
+    budget = request_budget(provider.config)
+    budget.configure(provider.config)
+    maximum = int(provider.config.get("max_concurrency", 8))
+    retries = int(provider.config.get("retries", 2))
+    queued = [(job, 0, 0.0) for job in jobs]
+    futures: dict[Future, tuple[OCRJob, int]] = {}
+    last_report = 0.0
+
+    def perform(job: OCRJob) -> OCRResult:
+        started = time.monotonic()
+        error = None
+        try:
+            return provider.recognize_once(source, list(job.bbox), job.orientation, padding)
+        except ProviderError as exc:
+            error = exc
+            raise
+        except Exception:
+            error = ProviderError("云端 OCR 处理失败，原文未更新。")
+            raise error from None
+        finally:
+            budget.finish(time.monotonic() - started, error)
+
+    with ThreadPoolExecutor(max_workers=maximum, thread_name_prefix="cloud-ocr") as executor:
+        try:
+            while queued or futures:
+                check()
+                now = time.monotonic()
+                # Handle errors before dispatching replacement jobs.
+                for future in [item for item in futures if item.done()]:
+                    job, attempt = futures.pop(future)
+                    try:
+                        result = future.result()
+                    except ProviderError as error:
+                        if not error.retryable or attempt >= retries:
+                            raise
+                        queued.append((job, attempt + 1, now + min(2 ** attempt, 8)))
+                    else:
+                        check()
+                        yield job.region_id, result
+                while queued and len(futures) < maximum:
+                    ready = next((i for i, (_, _, at) in enumerate(queued) if at <= time.monotonic()), None)
+                    if ready is None or not budget.try_acquire():
+                        break
+                    job, attempt, _ = queued.pop(ready)
+                    try:
+                        futures[executor.submit(perform, job)] = (job, attempt)
+                    except BaseException:
+                        budget.finish(0, ProviderError("任务已停止"), learn=False)
+                        raise
+                if now - last_report >= .5:
+                    report(budget.status())
+                    last_report = now
+                if futures:
+                    wait(futures, timeout=budget.poll_interval(), return_when=FIRST_COMPLETED)
+                elif queued:
+                    time.sleep(.1)
+        finally:
+            queued.clear()
+            # No queued executor work: submissions never exceed worker count.
+            # The context manager waits for bounded in-flight calls, without DB writes.

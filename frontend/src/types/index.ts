@@ -1,5 +1,5 @@
 export type ViewMode = 'original' | 'clean' | 'translated' | 'comparison'
-export type Tool = 'select' | 'rectangle' | 'polygon' | 'lasso'
+export type Tool = 'pan' | 'select' | 'rectangle' | 'polygon' | 'lasso'
 
 export interface Project {
   id: string
@@ -30,6 +30,7 @@ export interface ImagePage {
   clean_url: string | null
   rendered_url: string | null
   text_layer_url: string | null
+  text_layer_region_ids?: string[] | null
   created_at: string
   updated_at: string
 }

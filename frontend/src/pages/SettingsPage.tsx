@@ -1,10 +1,13 @@
 import { Check, ChevronRight, CircleAlert, Cpu, Download, Keyboard, KeyRound, Pencil, RefreshCw, Server, Sparkles, Trash2, Type, Upload } from 'lucide-react'
 import { FormEvent, useEffect, useRef, useState } from 'react'
+import {GenericOCRFields} from '../components/GenericOCRFields'
+import {OCRConcurrencyFields} from '../components/OCRConcurrencyFields'
 import {NumberControl, SelectControl} from '../components/FormControls'
 import { useGlobalDialog } from '../components/GlobalDialog'
 import {ButtonLoading, IndeterminateProgress, SettingsSkeleton, useMinimumLoadingTime} from '../components/LoadingUI'
 import {ShortcutSettings} from '../components/ShortcutSettings'
 import { DEFAULT_FONT_FAMILIES } from '../constants/fonts'
+import { DEFAULT_OCR_PROMPT } from '../constants/ocr'
 import {SHORTCUT_DEFINITIONS} from '../features/shortcuts/store'
 import { api } from '../services/api'
 import type { DeviceProfile, FontResource, ModelBootstrapEntry, ModelConfiguration, ModelDescriptor } from '../types'
@@ -27,8 +30,9 @@ export function SettingsPage() {
       title: `编辑${kindLabel(kind)}配置`,
       description: '切换当前阶段使用的 Provider、设备或运行参数，保存后立即设为生效配置。',
       size:'large',
-      content:({close}) => <ModelForm available={available} fixedKind={kind} initial={initial} onCancel={close} onSave={async payload => {
-        if (initial) await api.models.update(initial.id, payload)
+      content:({close}) => <ModelForm available={available} configured={configured} translation={configured.find(item => item.kind === 'translation' && item.enabled && item.is_default && item.provider === 'openai-compatible')} fixedKind={kind} initial={initial} onCancel={close} onSave={async payload => {
+        const target = initial?.provider === payload.provider ? initial : configured.find(item => item.kind === kind && item.provider === payload.provider)
+        if (target) await api.models.update(target.id, payload)
         else await api.models.create(payload)
         await refreshModels()
         setNotice(`${kindLabel(kind)}配置已更新。`)
@@ -116,18 +120,18 @@ export function SettingsPage() {
   if (showingInitialLoading) return <SettingsSkeleton/>
   const activeConfigurations = CONFIGURATION_STAGES.map(stage => ({...stage, item: configurationForStage(configured, stage.kind)}))
   const configCard = 'grid min-h-[164px] grid-cols-[44px_minmax(0,1fr)] grid-rows-[minmax(0,1fr)_auto] gap-x-4 gap-y-4 rounded-2xl border border-line bg-panel p-5 [box-shadow:var(--shadow-card)]'
-  const configIcon = 'col-start-1 row-start-1 grid size-11 place-items-center rounded-xl bg-accent/12 text-accent'
+  const configIcon = 'col-start-1 row-start-1 grid size-11 place-items-center rounded-xl bg-accent-soft text-accent-soft-ink'
   const configBody = 'col-start-2 row-start-1 min-w-0'
-  const tag = 'inline-flex items-center gap-1.5 rounded-md border border-accent/25 bg-accent/[.035] px-2.5 py-1 font-mono text-[10px] leading-[normal] not-italic text-meta'
+  const tag = 'inline-flex items-center gap-1.5 rounded-md border border-line bg-surface px-2.5 py-1 text-[10px] leading-[normal] not-italic text-secondary'
   return <section className={`${pageClass} page-content-enter`}>
-    <div className="mb-10 flex items-end justify-between gap-8"><div><span className={eyebrowClass}>WORKSPACE SETTINGS</span><h1 className="mb-2 mt-2 text-[36px] font-semibold leading-tight tracking-[-1.6px] text-balance">设置</h1><p className="m-0 text-[14px] leading-6 text-muted">六个固定入口统一管理完整处理流水线与排版字体。</p></div><div className="flex items-center gap-2"><button className={buttonClass} disabled={installing} onClick={showRecommendedDialog}>{installing ? <ButtonLoading label="正在安装模型…"/> : <><Download aria-hidden="true" size={18}/>安装推荐配置</>}</button></div></div>
+    <div className="page-heading mb-10 flex items-end justify-between gap-8"><div><span className={eyebrowClass}>WORKSPACE SETTINGS</span><h1 className="mb-2 mt-2 text-[36px] font-semibold leading-tight tracking-[-1.6px] text-balance">设置</h1><p className="m-0 text-[14px] leading-6 text-muted">六个固定入口统一管理完整处理流水线与排版字体。</p></div><div className="flex items-center gap-2"><button className={buttonClass} disabled={installing} onClick={showRecommendedDialog}>{installing ? <ButtonLoading label="正在安装模型…"/> : <><Download aria-hidden="true" size={18}/>安装推荐配置</>}</button></div></div>
     {error && <div className="my-3 rounded-[10px] border border-danger/20 bg-danger/10 px-4 py-3 text-[13px] text-danger-soft-ink" role="alert">{error}</div>}
     {notice && <div className="my-3 rounded-[10px] border border-success/20 bg-success/10 px-4 py-3 text-[13px] text-success-soft-ink" role="status" aria-live="polite">{notice}</div>}
     <div className="mt-8"><h2 className="mb-4 mt-0 text-lg font-semibold">已配置</h2><div className="grid grid-cols-3 gap-4 max-[1100px]:grid-cols-2 max-[700px]:grid-cols-1">
-      {activeConfigurations.map(({kind, label, item}) => <article className={configCard} key={kind}><div className={configIcon}>{kind === 'translation' ? <Server aria-hidden="true"/> : <Cpu aria-hidden="true"/>}</div><div className={configBody}><span className="font-mono text-[10px] font-medium uppercase leading-[normal] tracking-[.8px] text-muted">流水线配置</span><h3 className="my-1.5 text-base font-semibold leading-[1.35]">{label}</h3><p className="m-0 font-mono text-[11px] leading-[normal] text-muted">{item ? providerLabel(kind, item.provider) : '尚未配置，点击编辑进行设置'}</p><div className="mt-3.5 flex flex-wrap gap-1.5">{item ? <><i className={tag}><Check size={12}/>当前配置</i>{configurationDeviceTag(item, available) && <i className={tag}>{configurationDeviceTag(item, available)}</i>}{item.has_api_key && <i className={tag}><KeyRound size={12}/>密钥已保存</i>}{kind === 'translation' && !item.has_api_key && <i className={cn(tag, 'border-warning/40 text-warning')}>待填写密钥</i>}</> : <i className={cn(tag, 'border-warning/40 text-warning')}>待配置</i>}</div></div><div className="col-start-2 row-start-2 flex justify-end"><button className={iconButtonClass} title={`编辑${label}配置`} aria-label={`编辑${label}配置`} onClick={() => showModelDialog(kind, item)}><Pencil size={16}/></button></div></article>)}
-      <article className={configCard}><div className={configIcon}><Type aria-hidden="true"/></div><div className={configBody}><span className="font-mono text-[10px] font-medium uppercase leading-[normal] tracking-[.8px] text-muted">排版资源</span><h3 className="my-1.5 text-base font-semibold leading-[1.35]">字体</h3><p className="m-0 font-mono text-[11px] leading-[normal] text-muted">{DEFAULT_FONT_FAMILIES.length + fonts.length} 种字体可用</p><div className="mt-3.5 flex flex-wrap gap-1.5"><i className={tag}><Check size={12}/>{DEFAULT_FONT_FAMILIES.length} 种内置</i>{fonts.length > 0 && <i className={tag}>{fonts.length} 种自定义</i>}</div></div><div className="col-start-2 row-start-2 flex justify-end"><button className={iconButtonClass} title="编辑字体配置" aria-label="编辑字体配置" onClick={showFontDialog}><Pencil size={16}/></button></div></article>
+      {activeConfigurations.map(({kind, label, item}) => <article className={configCard} key={kind}><div className={configIcon}>{kind === 'translation' ? <Server aria-hidden="true"/> : <Cpu aria-hidden="true"/>}</div><div className={configBody}><span className="text-[10px] font-medium uppercase leading-[normal] tracking-[.8px] text-muted">流水线配置</span><h3 className="my-1.5 text-base font-semibold leading-[1.35]">{label}</h3><p className="m-0 text-[11px] leading-[normal] text-muted">{item ? providerLabel(kind, item.provider) : '尚未配置，点击编辑进行设置'}</p><div className="mt-3.5 flex flex-wrap gap-1.5">{item ? <><i className={tag}><Check size={12}/>当前配置</i>{configurationDeviceTag(item, available) && <i className={tag}>{configurationDeviceTag(item, available)}</i>}{item.has_api_key && <i className={tag}><KeyRound size={12}/>密钥已保存</i>}{kind === 'translation' && !item.has_api_key && <i className={cn(tag, 'border-warning/40 text-warning')}>待填写密钥</i>}</> : <i className={cn(tag, 'border-warning/40 text-warning')}>待配置</i>}</div></div><div className="col-start-2 row-start-2 flex justify-end"><button className={iconButtonClass} title={`编辑${label}配置`} aria-label={`编辑${label}配置`} onClick={() => showModelDialog(kind, item)}><Pencil size={16}/></button></div></article>)}
+      <article className={configCard}><div className={configIcon}><Type aria-hidden="true"/></div><div className={configBody}><span className="text-[10px] font-medium uppercase leading-[normal] tracking-[.8px] text-muted">排版资源</span><h3 className="my-1.5 text-base font-semibold leading-[1.35]">字体</h3><p className="m-0 text-[11px] leading-[normal] text-muted">{DEFAULT_FONT_FAMILIES.length + fonts.length} 种字体可用</p><div className="mt-3.5 flex flex-wrap gap-1.5"><i className={tag}><Check size={12}/>{DEFAULT_FONT_FAMILIES.length} 种内置</i>{fonts.length > 0 && <i className={tag}>{fonts.length} 种自定义</i>}</div></div><div className="col-start-2 row-start-2 flex justify-end"><button className={iconButtonClass} title="编辑字体配置" aria-label="编辑字体配置" onClick={showFontDialog}><Pencil size={16}/></button></div></article>
     </div></div>
-    <div className="mt-10"><h2 className="mb-4 mt-0 text-lg font-semibold">操作偏好</h2><article className="grid min-h-[124px] grid-cols-[44px_minmax(0,1fr)_auto] items-center gap-4 rounded-2xl border border-line bg-panel p-5 [box-shadow:var(--shadow-card)]"><div className={configIcon}><Keyboard aria-hidden="true"/></div><div className="min-w-0"><span className="font-mono text-[10px] font-medium uppercase leading-[normal] tracking-[.8px] text-muted">编辑器控制</span><h3 className="my-1.5 text-base font-semibold leading-[1.35]">快捷键</h3><p className="m-0 text-[12px] leading-relaxed text-muted">{SHORTCUT_DEFINITIONS.length} 项操作可自定义，包含工具、视图、区域、页面流程与导入导出。</p></div><button className={buttonClass} onClick={showShortcutDialog}><Keyboard aria-hidden="true" size={16}/>编辑快捷键</button></article></div>
+    <div className="mt-10"><h2 className="mb-4 mt-0 text-lg font-semibold">操作偏好</h2><article className="preferences-card grid min-h-[124px] grid-cols-[44px_minmax(0,1fr)_auto] items-center gap-4 rounded-2xl border border-line bg-panel p-5 [box-shadow:var(--shadow-card)]"><div className={configIcon}><Keyboard aria-hidden="true"/></div><div className="min-w-0"><span className="text-[10px] font-medium uppercase leading-[normal] tracking-[.8px] text-muted">编辑器控制</span><h3 className="my-1.5 text-base font-semibold leading-[1.35]">快捷键</h3><p className="m-0 text-[12px] leading-relaxed text-muted">{SHORTCUT_DEFINITIONS.length} 项操作可自定义，包含工具、视图、区域、页面流程与导入导出。</p></div><button className={buttonClass} onClick={showShortcutDialog}><Keyboard aria-hidden="true" size={16}/>编辑快捷键</button></article></div>
   </section>
 }
 
@@ -339,10 +343,10 @@ export function RecommendedConfigurationWizard({available, configured, fonts, on
     </div>
     {profile && <div className="mx-5 mt-2 flex flex-wrap gap-1.5 text-[8px]"><span className={cn('rounded px-2 py-1 font-mono', profile.runtimes.torch.cuda_available ? 'bg-success/10 text-success' : 'bg-raised text-muted')}>PyTorch CUDA {profile.runtimes.torch.cuda_available ? '可用' : '不可用'}</span><span className={cn('rounded px-2 py-1 font-mono', profile.runtimes.paddle.cuda_available ? 'bg-success/10 text-success' : 'bg-raised text-muted')}>Paddle CUDA {profile.runtimes.paddle.cuda_available ? '可用' : '不可用'}</span></div>}
     <div className="grid min-h-0 flex-1 grid-cols-[156px_minmax(0,1fr)] gap-4 px-5 py-4 max-[700px]:grid-cols-1">
-      <nav className="flex flex-col gap-1.5 max-[700px]:grid max-[700px]:grid-cols-3" aria-label="推荐配置阶段">
-        {RECOMMENDATION_STAGES.map((stage, index) => <button key={stage.kind} type="button" className={cn('grid grid-cols-[22px_minmax(0,1fr)_auto] items-center gap-2 rounded-lg px-2.5 py-2 text-left transition', activeKind === stage.kind ? 'bg-accent/15 text-ink' : 'text-muted hover:bg-raised hover:text-secondary')} onClick={() => setActiveKind(stage.kind)}><span className={cn('grid size-[22px] place-items-center rounded-md font-mono text-[8px]', activeKind === stage.kind ? 'bg-accent text-accent-ink' : 'bg-raised text-muted')}>{index + 1}</span><span className="min-w-0"><strong className="block truncate text-[10px]">{stage.label}</strong><small className="mt-0.5 block truncate text-[8px] font-normal text-muted">{providers[stage.kind] === 'builtin' ? `${DEFAULT_FONT_FAMILIES.length + fonts.length} 种可用` : providerLabel(stage.kind, providers[stage.kind])}</small></span><ChevronRight size={13}/></button>)}
+      <nav className="flex flex-col gap-1.5 max-[700px]:grid max-[700px]:grid-cols-3 max-[480px]:grid-cols-2" aria-label="推荐配置阶段">
+        {RECOMMENDATION_STAGES.map((stage, index) => <button key={stage.kind} type="button" className={cn('grid grid-cols-[22px_minmax(0,1fr)_auto] items-center gap-2 rounded-lg px-2.5 py-2 text-left transition', activeKind === stage.kind ? 'bg-accent/15 text-ink' : 'text-muted hover:bg-raised hover:text-secondary')} onClick={() => setActiveKind(stage.kind)}><span className={cn('grid size-[22px] place-items-center rounded-md text-[8px]', activeKind === stage.kind ? 'bg-accent text-accent-ink' : 'bg-raised text-muted')}>{index + 1}</span><span className="min-w-0"><strong className="block truncate text-[10px]">{stage.label}</strong><small className="mt-0.5 block truncate text-[8px] font-normal text-muted">{providers[stage.kind] === 'builtin' ? `${DEFAULT_FONT_FAMILIES.length + fonts.length} 种可用` : providerLabel(stage.kind, providers[stage.kind])}</small></span><ChevronRight size={13}/></button>)}
       </nav>
-      <section className="min-w-0"><div className="mb-3"><span className="font-mono text-[8px] text-accent">{String(RECOMMENDATION_STAGES.findIndex(stage => stage.kind === activeKind) + 1).padStart(2, '0')} / 06</span><h3 className="mb-1 mt-1 text-sm">{activeStage.label}</h3><p className="m-0 text-[9px] text-muted">{activeStage.hint}。请选择一个方案，选择后仍可在对应配置中修改。</p></div>
+      <section className="min-w-0"><div className="mb-3"><span className="text-[8px] text-accent">{String(RECOMMENDATION_STAGES.findIndex(stage => stage.kind === activeKind) + 1).padStart(2, '0')} / 06</span><h3 className="mb-1 mt-1 text-sm">{activeStage.label}</h3><p className="m-0 text-[9px] text-muted">{activeStage.hint}。请选择一个方案，选择后仍可在对应配置中修改。</p></div>
         <div className="flex flex-col gap-2.5">
           {candidates.map(candidate => {
             const selected = providers[activeKind] === candidate.provider
@@ -353,8 +357,8 @@ export function RecommendedConfigurationWizard({available, configured, fonts, on
             return <article key={candidate.provider} className={cn('overflow-hidden rounded-xl border bg-panel transition', selected ? 'border-accent/60 ring-1 ring-inset ring-accent/15' : 'border-line-subtle hover:border-line-strong')}>
               <button type="button" disabled={unavailableDuringSetup} className="grid w-full grid-cols-[20px_minmax(0,1fr)_auto] items-start gap-3 bg-transparent px-3.5 py-3 text-left text-inherit disabled:cursor-not-allowed disabled:opacity-45" onClick={() => setProviders(current => ({...current, [activeKind]:candidate.provider}))}>
                 <span className={cn('mt-0.5 grid size-4 place-items-center rounded-full border', selected ? 'border-accent bg-accent' : 'border-line-strong bg-transparent')}>{selected && <Check size={11} className="text-accent-ink"/>}</span>
-                <span className="min-w-0"><span className="flex flex-wrap items-center gap-2"><strong className="text-[11px]">{candidate.title}</strong>{isCurrent && <i className="rounded bg-accent/10 px-1.5 py-0.5 font-mono text-[7px] not-italic text-accent">当前配置</i>}{descriptor && <i className={cn('rounded px-1.5 py-0.5 font-mono text-[7px] not-italic', descriptor.installed ? 'bg-success/10 text-success' : 'bg-warning/10 text-warning')}>{descriptor.installed ? '依赖已安装' : '缺少运行依赖'}</i>}{unavailableDuringSetup && <i className="rounded bg-danger/10 px-1.5 py-0.5 font-mono text-[7px] not-italic text-danger">首次启动不可用</i>}</span><small className="mt-1 block text-[9px] leading-relaxed text-muted">{candidate.summary}</small></span>
-                <span className="font-mono text-[8px] text-muted">{descriptor?.devices.join(' / ') || 'resource'}</span>
+                <span className="min-w-0"><span className="flex flex-wrap items-center gap-2"><strong className="text-[11px]">{candidate.title}</strong>{isCurrent && <i className="rounded bg-accent/10 px-1.5 py-0.5 text-[7px] not-italic text-accent">当前配置</i>}{descriptor && <i className={cn('rounded px-1.5 py-0.5 text-[7px] not-italic', descriptor.installed ? 'bg-success/10 text-success' : 'bg-warning/10 text-warning')}>{descriptor.installed ? '依赖已安装' : '缺少运行依赖'}</i>}{unavailableDuringSetup && <i className="rounded bg-danger/10 px-1.5 py-0.5 text-[7px] not-italic text-danger">首次启动不可用</i>}</span><small className="mt-1 block text-[9px] leading-relaxed text-muted">{candidate.summary}</small></span>
+                <span className="text-[8px] text-muted">{descriptor?.devices.join(' / ') || 'resource'}</span>
               </button>
               {selected && <div className="border-t border-line-subtle px-3.5 py-3"><div className="grid grid-cols-3 gap-3 max-[620px]:grid-cols-1"><GuideList title="优势" items={candidate.pros} tone="success"/><GuideList title="注意" items={candidate.cons} tone="warning"/><GuideList title="运行要求" items={candidate.requirements} tone="neutral"/></div>{deviceReasons[activeKind] && <div className="mt-2.5 flex items-start gap-2 rounded-lg bg-accent/10 px-2.5 py-2 text-[8px] leading-relaxed text-accent-soft-ink"><Sparkles className="mt-px shrink-0" size={12}/><span>设备建议：{deviceReasons[activeKind]}</span></div>}{supportsCuda && activeKind !== 'font' && <div className="mt-3 grid grid-cols-[90px_minmax(0,180px)] items-center gap-2"><span className="text-[9px] text-secondary">运行设备</span><SelectControl ariaLabel={`${candidate.title}运行设备`} value={devices[activeKind] || 'cpu'} options={deviceOptions(descriptor)} onChange={value => setDevices(current => ({...current, [activeKind]:value}))}/></div>}{activeKind === 'translation' && candidate.provider === 'openai-compatible' && <div className="mt-3 grid grid-cols-2 gap-2.5 rounded-xl bg-canvas p-3"><div className="text-[9px] text-secondary"><span className="mb-1.5 block">API 协议</span><SelectControl ariaLabel="首次配置翻译 API 协议" value={translationProtocol} options={TRANSLATION_PROTOCOLS} onChange={value => {setTranslationProtocol(value); setTranslationVerified(false)}}/></div><label className="text-[9px] text-secondary">API Base URL<input className={cn(inputClass, 'mt-1.5')} value={translationBaseUrl} onChange={event => {setTranslationBaseUrl(event.target.value); setModelDiscoveryError(''); setTranslationVerified(false)}} placeholder="https://api.example.com/v1"/></label><label className="col-span-full text-[9px] text-secondary">API Key<input className={cn(inputClass, 'mt-1.5')} type="password" value={translationApiKey} onChange={event => {setTranslationApiKey(event.target.value); setModelDiscoveryError(''); setTranslationVerified(false)}} autoComplete="new-password" placeholder={currentTranslation?.has_api_key ? '密钥已保存，留空则继续使用' : '请输入云端接口密钥'}/></label><div className="col-span-full text-[9px] text-secondary"><span className="mb-1.5 block">模型</span><div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2"><SelectControl ariaLabel="首次配置翻译模型" value={translationModel} disabled={discoveringModels || !translationModels.length} placeholder={discoveringModels ? '正在获取模型…' : '请先连接接口获取模型'} options={translationModels.map(item => ({value:item, label:item}))} onChange={setTranslationModel}/><button type="button" className={buttonClass} disabled={discoveringModels || !translationBaseUrl.trim()} onClick={() => void discoverTranslationModels()}>{discoveringModels ? <ButtonLoading label="连接中…"/> : <><RefreshCw size={14}/>{translationVerified ? '已通过连接检测' : '连接并获取模型'}</>}</button></div>{modelDiscoveryError && <small className="mt-2 block text-[8px] leading-relaxed text-danger">{modelDiscoveryError}</small>}</div><div className={cn('col-span-full flex items-start gap-2 rounded-lg px-2.5 py-2 text-[8px] leading-relaxed', translationVerified ? 'bg-success/10 text-success' : 'bg-warning/10 text-warning')}>{translationVerified ? <Check className="mt-px shrink-0" size={12}/> : <CircleAlert className="mt-px shrink-0" size={12}/>} {translationVerified ? '接口连接检测通过，保存时会加密写入密钥。' : '必须成功获取模型，才能确认接口地址、协议和密钥有效。'}</div></div>}{activeKind === 'font' && <div className="mt-2.5 text-[8px] text-muted">当前：{DEFAULT_FONT_FAMILIES.length} 种内置字体{fonts.length ? `，${fonts.length} 种自定义字体` : '；暂未添加自定义字体'}。</div>}</div>}
             </article>
@@ -367,7 +371,7 @@ export function RecommendedConfigurationWizard({available, configured, fonts, on
 }
 
 function GuideList({title, items, tone}: {title: string, items: string[], tone: 'success' | 'warning' | 'neutral'}) {
-  return <div><strong className={cn('mb-1.5 block font-mono text-[8px]', tone === 'success' ? 'text-success' : tone === 'warning' ? 'text-warning' : 'text-secondary')}>{title}</strong><ul className="m-0 flex list-none flex-col gap-1 p-0">{items.map(item => <li key={item} className="flex items-start gap-1.5 text-[8px] leading-relaxed text-muted"><i className={cn('mt-[5px] size-1 shrink-0 rounded-full', tone === 'success' ? 'bg-success' : tone === 'warning' ? 'bg-warning' : 'bg-muted')}/><span>{item}</span></li>)}</ul></div>
+  return <div><strong className={cn('mb-1.5 block text-[8px]', tone === 'success' ? 'text-success' : tone === 'warning' ? 'text-warning' : 'text-secondary')}>{title}</strong><ul className="m-0 flex list-none flex-col gap-1 p-0">{items.map(item => <li key={item} className="flex items-start gap-1.5 text-[8px] leading-relaxed text-muted"><i className={cn('mt-[5px] size-1 shrink-0 rounded-full', tone === 'success' ? 'bg-success' : tone === 'warning' ? 'bg-warning' : 'bg-muted')}/><span>{item}</span></li>)}</ul></div>
 }
 
 function initialRecommendationProviders(available: ModelDescriptor[], configured: ModelConfiguration[]): Record<RecommendationKind, string> {
@@ -427,15 +431,15 @@ function FontManager({initialFonts, onCancel, onChanged}: {initialFonts: FontRes
   return <div className="flex min-h-[360px] flex-col">
     {error && <div className="mx-5 mt-4 rounded-lg bg-danger/15 px-3 py-2.5 text-[10px] leading-relaxed text-danger-soft-ink">{error}</div>}
     <div className="flex items-center justify-between gap-4 px-6 pt-5"><div className="flex flex-col gap-1"><strong className="text-xs">可用字体</strong><span className="text-[9px] text-muted">{DEFAULT_FONT_FAMILIES.length} 种内置 · {items.length} 种自定义</span></div><button className={buttonClass} type="button" disabled={Boolean(busy)} onClick={() => input.current?.click()}>{busy === 'upload' ? <ButtonLoading label="正在添加…"/> : <><Upload size={15}/>添加字体</>}</button><input ref={input} hidden type="file" accept=".ttf,.otf,font/ttf,font/otf" onChange={event => {const file = event.target.files?.[0]; if (file) void upload(file)}}/></div>
-    <div className="grid grid-cols-[repeat(auto-fill,minmax(285px,1fr))] gap-3 px-6 py-5">
-      {DEFAULT_FONT_FAMILIES.map(font => <article className={fontCard} key={font.name}><div className="grid size-9 place-items-center rounded-lg bg-raised text-secondary"><Type size={19}/></div><div className="min-w-0"><span className="block truncate font-mono text-[8px] text-muted">内置字体</span><strong className="my-1 block truncate text-xs" style={{fontFamily:font.name}}>{font.label}</strong><small className="block truncate font-mono text-[8px] text-muted">{font.name}</small></div><i className="font-mono text-[7px] not-italic text-meta">BUILT-IN</i></article>)}
-      {items.map(font => <article className={fontCard} key={font.filename}><div className="grid size-9 place-items-center rounded-lg bg-accent/15 text-accent"><Type size={19}/></div><div className="min-w-0"><span className="block truncate font-mono text-[8px] text-muted">自定义字体</span><strong className="my-1 block truncate text-xs" style={{fontFamily:font.name}}>{font.name}</strong><small className="block truncate font-mono text-[8px] text-muted">{font.filename}</small></div><button type="button" className={dangerButtonClass} disabled={Boolean(busy)} title={`删除${font.name}`} onClick={() => void remove(font)}>{busy === font.filename ? <ButtonLoading compact label={`正在删除${font.name}`}/> : <Trash2 size={15}/>}</button></article>)}
+    <div className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,285px),1fr))] gap-3 px-6 py-5">
+      {DEFAULT_FONT_FAMILIES.map(font => <article className={fontCard} key={font.name}><div className="grid size-9 place-items-center rounded-lg bg-raised text-secondary"><Type size={19}/></div><div className="min-w-0"><span className="block truncate text-[8px] text-muted">内置字体</span><strong className="my-1 block truncate text-xs" style={{fontFamily:font.name}}>{font.label}</strong><small className="block truncate text-[8px] text-muted">{font.name}</small></div><i className="text-[7px] not-italic text-meta">BUILT-IN</i></article>)}
+      {items.map(font => <article className={fontCard} key={font.filename}><div className="grid size-9 place-items-center rounded-lg bg-accent/15 text-accent"><Type size={19}/></div><div className="min-w-0"><span className="block truncate text-[8px] text-muted">自定义字体</span><strong className="my-1 block truncate text-xs" style={{fontFamily:font.name}}>{font.name}</strong><small className="block truncate text-[8px] text-muted">{font.filename}</small></div><button type="button" className={dangerButtonClass} disabled={Boolean(busy)} title={`删除${font.name}`} onClick={() => void remove(font)}>{busy === font.filename ? <ButtonLoading compact label={`正在删除${font.name}`}/> : <Trash2 size={15}/>}</button></article>)}
     </div>
     <footer className="mt-auto flex justify-end border-t border-line-subtle px-6 pb-5 pt-4"><button className={buttonClass} type="button" onClick={onCancel}>完成</button></footer>
   </div>
 }
 
-function ModelForm({available, fixedKind, initial, onCancel, onSave}: {available: ModelDescriptor[], fixedKind?: string, initial?: ModelConfiguration, onCancel: () => void, onSave: (payload: Record<string, unknown>) => Promise<void>}) {
+function ModelForm({available, configured, translation, fixedKind, initial, onCancel, onSave}: {available: ModelDescriptor[], configured: ModelConfiguration[], translation?: ModelConfiguration, fixedKind?: string, initial?: ModelConfiguration, onCancel: () => void, onSave: (payload: Record<string, unknown>) => Promise<void>}) {
   const [submitting, setSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState('')
   const initialKind = initial?.kind || fixedKind || 'translation'
@@ -443,78 +447,110 @@ function ModelForm({available, fixedKind, initial, onCancel, onSave}: {available
   const choices = available.filter(item => item.kind === kind)
   const [provider, setProvider] = useState(initial?.provider || preferredProvider(initialKind, available.filter(item => item.kind === initialKind)))
   const selected = choices.find(item => item.name === provider)
+  const cloudOcr = kind === 'ocr' && provider === 'cloud-multimodal'
+  const genericOcr = kind === 'ocr' && provider === 'cloud-ocr'
+  const cloud = cloudOcr || genericOcr || (kind === 'translation' && provider !== 'passthrough')
+  const canReuseTranslation = Boolean(translation?.has_api_key && translation.config.base_url && translation.config.model)
+  const [reuseTranslation, setReuseTranslation] = useState(false)
+  const useTranslation = cloudOcr && reuseTranslation
   const preset = providerPreset(kind, provider)
-  const editingSameProvider = initial?.kind === kind && initial.provider === provider
-  const defaults = editingSameProvider ? initial.config : preset.config
+  const existing = initial?.kind === kind && initial.provider === provider ? initial : configured.find(item => item.kind === kind && item.provider === provider)
+  const defaults = existing?.config || preset.config
   const [device, setDevice] = useState(concreteDevice(defaults.device, selected))
   const [apiProtocol, setApiProtocol] = useState(String(defaults.api_protocol ?? 'auto'))
   const [baseUrl, setBaseUrl] = useState(String(defaults.base_url ?? ''))
   const initialModel = String(defaults.model ?? '')
   const [model, setModel] = useState(initialModel)
   const [modelOptions, setModelOptions] = useState<string[]>(initialModel ? [initialModel] : [])
+  const [manualModel, setManualModel] = useState(false)
   const [apiKey, setApiKey] = useState('')
   const [discovering, setDiscovering] = useState(false)
   const [discoveryError, setDiscoveryError] = useState('')
   const [discoveredEndpoint, setDiscoveredEndpoint] = useState('')
+  const discoveryRequest = useRef(0)
+  const savedKeyUsable = Boolean(existing?.has_api_key && sameApiOrigin(String(existing.config.base_url || ''), baseUrl))
+  const invalidateDiscovery = () => {
+    discoveryRequest.current += 1
+    setDiscovering(false)
+    setDiscoveryError('')
+    setDiscoveredEndpoint('')
+  }
 
   useEffect(() => {
-    if (kind !== 'translation') {
-      setDevice(concreteDevice(defaults.device, selected))
-      return
-    }
-    if (provider === 'passthrough') return
+    discoveryRequest.current += 1
+    setDiscovering(false)
+    setDevice(concreteDevice(defaults.device, selected))
     const nextBaseUrl = String(defaults.base_url ?? '')
     const nextModel = String(defaults.model ?? '')
     setApiProtocol(String(defaults.api_protocol ?? 'auto'))
     setBaseUrl(nextBaseUrl)
     setModel(nextModel)
     setModelOptions(nextModel ? [nextModel] : [])
+    setManualModel(false)
     setApiKey('')
     setDiscoveryError('')
     setDiscoveredEndpoint('')
+    return () => {discoveryRequest.current += 1}
   }, [kind, provider])
 
   const discoverModels = async () => {
     const normalizedUrl = baseUrl.trim()
     if (!normalizedUrl) return
+    if (!apiKey.trim() && !savedKeyUsable) return
     if (!/^https?:\/\//i.test(normalizedUrl)) {
       setDiscoveryError('请输入以 http:// 或 https:// 开头的 API Base URL')
       return
     }
     setDiscovering(true)
     setDiscoveryError('')
+    const request = ++discoveryRequest.current
     try {
-      const result = await api.models.discover({base_url: normalizedUrl, api_protocol: apiProtocol, api_key: apiKey.trim() || undefined, config_id: initial?.id})
+      const result = await api.models.discover({base_url: normalizedUrl, api_protocol: apiProtocol, api_key: apiKey.trim() || undefined, config_id: savedKeyUsable ? existing?.id : undefined})
+      if (request !== discoveryRequest.current) return
       setModelOptions(result.models)
-      setModel(current => result.models.includes(current) ? current : result.models[0] || '')
+      setModel(current => current || (cloudOcr ? '' : result.models[0] || ''))
       setBaseUrl(result.base_url)
+      setApiProtocol(result.protocol)
       setDiscoveredEndpoint(result.endpoint)
     } catch (reason) {
+      if (request !== discoveryRequest.current) return
       setModelOptions(model ? [model] : [])
       setDiscoveryError(reason instanceof Error ? reason.message : String(reason))
       setDiscoveredEndpoint('')
     } finally {
-      setDiscovering(false)
+      if (request === discoveryRequest.current) setDiscovering(false)
     }
   }
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault(); const data = new FormData(event.currentTarget)
     const config: Record<string, unknown> = {...defaults}
-    for (const key of ['api_protocol','base_url','model','device','batch_size','timeout','retries','temperature','min_font_size','prompt']) {
+    for (const key of ['api_protocol','base_url','model','device','batch_size','timeout','retries','temperature','max_tokens','min_font_size','prompt','request_format','image_field','image_encoding','auth_mode','api_key_header','response_text_path','concurrency_mode','max_concurrency','requests_per_minute']) {
       if (!data.has(key)) continue
       const value = data.get(key)
-      if (typeof value === 'string' && value.trim()) config[key] = ['batch_size','timeout','retries','temperature','min_font_size'].includes(key) ? Number(value) : value.trim()
+      if (typeof value === 'string' && value.trim()) config[key] = ['batch_size','timeout','retries','temperature','max_tokens','min_font_size','max_concurrency','requests_per_minute'].includes(key) ? Number(value) : value.trim()
       else delete config[key]
     }
-    const modelName = String(data.get('model') || '').trim()
-    if (kind === 'translation' && provider !== 'passthrough' && !modelName) {
-      setSubmitError('请先根据 API Base URL 获取并选择一个模型。')
+    if (genericOcr) {
+      try {
+        const extra = JSON.parse(String(data.get('extra_fields') || '{}'))
+        if (!extra || typeof extra !== 'object' || Array.isArray(extra)) throw new Error()
+        config.extra_fields = extra
+      } catch {
+        setSubmitError('附加参数必须是有效的 JSON 对象。')
+        return
+      }
+    }
+    const modelName = String(useTranslation ? translation?.config.model || '' : data.get('model') || '').trim()
+    if (cloud && !genericOcr && !modelName) {
+      setSubmitError('请获取并选择模型，或手动填写模型名。')
       return
     }
-    const generatedName = kind === 'translation' && modelName ? `云端翻译 · ${modelName}` : initial?.name || preset.title
+    if (cloud) delete config.device
+    if (useTranslation) for (const key of ['base_url', 'model', 'api_protocol']) delete config[key]
+    const generatedName = cloud && modelName ? `${cloudOcr ? '多模态识字' : genericOcr ? '云端 OCR' : '云端翻译'} · ${modelName}` : existing?.name || preset.title
     setSubmitting(true); setSubmitError('')
     try {
-      await onSave({kind, provider, name: generatedName, api_key: data.get('api_key') || undefined, enabled: true, is_default: true, config})
+      await onSave({kind, provider, name: generatedName, api_key: useTranslation ? undefined : String(data.get('api_key') || '').trim() || undefined, reuse_translation: useTranslation, enabled: true, is_default: true, config})
       onCancel()
     } catch (reason) {
       setSubmitError(reason instanceof Error ? reason.message : String(reason))
@@ -522,24 +558,40 @@ function ModelForm({available, fixedKind, initial, onCancel, onSave}: {available
     }
   }
   const fieldClass = 'min-w-0 text-[10px] text-secondary [&>*:last-child]:mt-2'
-  return <form className="m-0 bg-transparent" onSubmit={submit}>{submitError && <div className="mx-6 mt-5 rounded-lg bg-danger/15 px-3 py-2.5 text-[10px] leading-relaxed text-danger-soft-ink">{submitError}</div>}<div className="grid grid-cols-2 gap-3 px-6 py-5">
+  return <form className="m-0 bg-transparent" onSubmit={submit}>{submitError && <div className="mx-6 mt-5 rounded-lg bg-danger/15 px-3 py-2.5 text-[10px] leading-relaxed text-danger-soft-ink">{submitError}</div>}<div className="grid grid-cols-2 max-sm:grid-cols-1 gap-3 px-6 py-5">
     <div className={fieldClass}><span>流水线阶段</span><SelectControl ariaLabel="流水线阶段" value={kind} disabled={Boolean(initial || fixedKind)} options={[{value:'detection', label:'文字检测'}, {value:'ocr', label:'OCR'}, {value:'translation', label:'翻译'}, {value:'inpainting', label:'图像修复'}, {value:'rendering', label:'排版渲染'}]} onChange={nextKind => {setKind(nextKind); setProvider(preferredProvider(nextKind, available.filter(item => item.kind === nextKind)))}}/></div>
-    {kind === 'translation' ? <div className={fieldClass}><span>API 协议</span><SelectControl name="api_protocol" ariaLabel="API 协议" value={apiProtocol} options={TRANSLATION_PROTOCOLS} onChange={nextProtocol => {setApiProtocol(nextProtocol); setDiscoveryError(''); setDiscoveredEndpoint('')}}/></div> : <div className={fieldClass}><span>Provider 类型</span><SelectControl ariaLabel="Provider 类型" value={provider} options={choices.map(item => ({value:item.name, label:`${providerLabel(kind, item.name)}${item.is_fallback ? '（备用）' : ''}`}))} onChange={setProvider}/></div>}
-    {kind !== 'translation' && <div className="col-span-full grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 rounded-lg bg-surface p-3"><strong className="text-[11px] text-ink">{providerLabel(kind, provider)}</strong><span className="text-[10px] text-muted">{selected?.description}</span><i className="font-mono text-[9px] not-italic text-accent">{selected?.devices.join(' / ')}</i></div>}
-    {kind !== 'translation' && kind !== 'rendering' && <div className={fieldClass} key={`${kind}-${provider}-device`}><span>运行设备</span><SelectControl name="device" ariaLabel="运行设备" value={device} options={deviceOptions(selected)} onChange={setDevice}/></div>}
+    {kind === 'translation' ? <div className={fieldClass}><span>API 协议</span><SelectControl name="api_protocol" ariaLabel="API 协议" value={apiProtocol} options={TRANSLATION_PROTOCOLS} onChange={nextProtocol => {setApiProtocol(nextProtocol); invalidateDiscovery()}}/></div> : <div className={fieldClass}><span>Provider 类型</span><SelectControl ariaLabel="Provider 类型" value={provider} options={choices.map(item => ({value:item.name, label:`${providerLabel(kind, item.name)}${item.is_fallback ? '（备用）' : ''}`}))} onChange={next => {setProvider(next); setReuseTranslation(next === 'cloud-multimodal' && !configured.some(item => item.kind === kind && item.provider === next) && canReuseTranslation)}}/></div>}
+    {kind !== 'translation' && <div className="col-span-full grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 rounded-lg bg-surface p-3"><strong className="text-[11px] text-ink">{providerLabel(kind, provider)}</strong><span className="text-[10px] text-muted">{selected?.description}</span><i className="text-[9px] not-italic text-accent">{selected?.devices.join(' / ')}</i></div>}
+    {kind !== 'translation' && kind !== 'rendering' && !cloud && <div className={fieldClass} key={`${kind}-${provider}-device`}><span>运行设备</span><SelectControl name="device" ariaLabel="运行设备" value={device} options={deviceOptions(selected)} onChange={setDevice}/></div>}
     {selected?.supports_batch && kind !== 'translation' && <label className={fieldClass} key={`${kind}-${provider}-batch`}>Batch Size<NumberControl ariaLabel="Batch Size" name="batch_size" min={1} step={1} defaultValue={String(defaults.batch_size ?? '')} placeholder="4"/></label>}
-    {kind === 'translation' && provider !== 'passthrough' && <div className="col-span-full grid grid-cols-2 gap-3" key={`${kind}-${provider}`}>
-      <label className={cn(fieldClass, 'col-span-full')}>API Base URL<input className={inputClass} name="base_url" required value={baseUrl} onChange={event => {setBaseUrl(event.target.value); setDiscoveryError(''); setDiscoveredEndpoint('')}} onBlur={() => void discoverModels()} placeholder="https://api.example.com/v1"/></label>
-      <label className={cn(fieldClass, 'col-span-full')}>API Key<input className={inputClass} name="api_key" type="password" required={!(initial?.has_api_key && editingSameProvider)} value={apiKey} onChange={event => {setApiKey(event.target.value); setDiscoveryError('')}} onBlur={() => void discoverModels()} autoComplete="new-password" placeholder={initial?.has_api_key && editingSameProvider ? '密钥已保存，留空则保持不变' : '输入密钥后将自动获取模型列表'}/></label>
-      <div className={cn(fieldClass, 'col-span-full')}><span>模型</span><div className="mt-2 grid grid-cols-[minmax(0,1fr)_auto] gap-2"><SelectControl name="model" ariaLabel="选择翻译模型" value={model} disabled={discovering || !modelOptions.length} placeholder={discovering ? '正在获取模型…' : '请先填写接口地址和密钥'} options={modelOptions.map(item => ({value:item, label:item}))} onChange={setModel}/><button className={buttonClass} type="button" title="重新获取模型列表" aria-label="重新获取模型列表" disabled={discovering || !baseUrl.trim()} onClick={() => void discoverModels()}>{discovering ? <ButtonLoading label="获取中…"/> : <><RefreshCw size={15}/><span>获取模型</span></>}</button></div>{discoveryError ? <small className="mt-2 block text-[9px] text-danger">{discoveryError}</small> : discoveredEndpoint && <small className="mt-2 block font-mono text-[9px] text-muted">已从 {discoveredEndpoint} 获取 {modelOptions.length} 个模型</small>}</div>
-      <div className="col-span-full grid grid-cols-3 gap-3">
-        <label className={fieldClass}>超时（秒）<NumberControl ariaLabel="接口超时" name="timeout" min={10} step={5} defaultValue={String(defaults.timeout ?? 90)}/></label>
-        <label className={fieldClass}>失败重试<NumberControl ariaLabel="失败重试次数" name="retries" min={0} max={5} step={1} defaultValue={String(defaults.retries ?? 2)}/></label>
-        <label className={fieldClass}>Temperature<NumberControl ariaLabel="Temperature" name="temperature" min={0} max={2} step={0.1} defaultValue={String(defaults.temperature ?? 0.2)}/></label>
+    {genericOcr && <GenericOCRFields key={`${kind}-${provider}`} defaults={defaults} baseUrl={baseUrl} onBaseUrlChange={setBaseUrl} savedKeyUsable={savedKeyUsable}/>}
+    {cloud && !genericOcr && <div className="col-span-full grid grid-cols-2 max-sm:grid-cols-1 gap-3" key={`${kind}-${provider}`}>
+      {cloudOcr && <><p className="col-span-full m-0 rounded-lg bg-accent-soft p-3 text-xs leading-relaxed text-accent-soft-ink">多模态大语言模型直接看图识字：按检测框逐个上传裁剪区域，结果写入原文，不改变气泡检测与合并。图片会发送到你配置的服务，可能产生费用；请选择支持图片输入的模型。</p><div className={cn(fieldClass, 'col-span-full')}><span>连接配置</span><SelectControl ariaLabel="连接配置" value={useTranslation ? 'translation' : 'custom'} options={[{value:'translation', label:'使用当前翻译模型', disabled:!canReuseTranslation}, {value:'custom', label:'独立配置视觉模型'}]} onChange={value => {setReuseTranslation(value === 'translation'); invalidateDiscovery()}}/></div>{useTranslation && <p className="col-span-full m-0 break-all rounded-lg border border-line p-3 text-xs leading-relaxed text-secondary">模型：{String(translation?.config.model)}<br/>接口：{String(translation?.config.base_url)}<br/>保存时在后端复制当前连接及密钥；之后两份配置独立。下方识字 Prompt 不会覆盖翻译 Prompt。</p>}</>}
+      {!useTranslation && <>
+      {cloudOcr && <div className={cn(fieldClass, 'col-span-full')}><span>API 协议</span><SelectControl name="api_protocol" ariaLabel="API 协议" value={apiProtocol} options={TRANSLATION_PROTOCOLS} onChange={next => {setApiProtocol(next); invalidateDiscovery()}}/></div>}
+      <label className={cn(fieldClass, 'col-span-full')}>API Base URL<input className={inputClass} name="base_url" type="url" required value={baseUrl} onChange={event => {setBaseUrl(event.target.value); invalidateDiscovery()}} onBlur={() => void discoverModels()} placeholder="https://api.example.com/v1"/></label>
+      <label className={cn(fieldClass, 'col-span-full')}>API Key<input className={inputClass} name="api_key" type="password" required={!savedKeyUsable} value={apiKey} onChange={event => {setApiKey(event.target.value); invalidateDiscovery()}} onBlur={() => void discoverModels()} autoComplete="new-password" placeholder={savedKeyUsable ? '密钥已保存，留空则保持不变' : '输入密钥后将自动获取模型列表'}/></label>
+      <div className={cn(fieldClass, 'col-span-full')}>
+        <div className="flex items-center justify-between"><span>模型</span><button type="button" className="text-accent hover:underline" onClick={() => setManualModel(current => !current)}>{manualModel ? '从列表选择' : '手动输入模型'}</button></div>
+        <div className="mt-2 grid grid-cols-[minmax(0,1fr)_auto] gap-2">
+          {manualModel ? <input className={inputClass} aria-label="模型名称" name="model" required value={model} onChange={event => setModel(event.target.value)} placeholder="填写服务商提供的完整模型 ID"/> : <SelectControl name="model" ariaLabel={cloudOcr ? '选择 OCR 模型' : '选择翻译模型'} value={model} disabled={discovering || !modelOptions.length} placeholder={discovering ? '正在获取模型…' : '请选择模型'} options={Array.from(new Set([...modelOptions, ...(model ? [model] : [])])).map(item => ({value:item, label:item}))} onChange={setModel}/>}
+          <button className={buttonClass} type="button" title="重新获取模型列表" aria-label="重新获取模型列表" disabled={discovering || !baseUrl.trim() || (!apiKey.trim() && !savedKeyUsable)} onClick={() => void discoverModels()}>{discovering ? <ButtonLoading label="获取中…"/> : <><RefreshCw size={15}/><span>获取模型</span></>}</button>
+        </div>
+        {discoveryError ? <small className="mt-2 block text-[10px] text-danger">{discoveryError}，也可以手动输入模型名。</small> : discoveredEndpoint && <small className="mt-2 block break-all text-[10px] text-muted">已从 {discoveredEndpoint} 获取 {modelOptions.length} 个模型</small>}
+        {cloudOcr && <small className="mt-2 block text-[10px] text-muted">模型列表不代表支持视觉识别，请确认所选模型支持图片输入。</small>}
       </div>
-      <label className={cn(fieldClass, 'col-span-full')}>翻译 Prompt<textarea className={cn(textareaClass, 'min-h-[220px] resize-y overflow-y-auto leading-relaxed')} name="prompt" defaultValue={translationPrompt(defaults.prompt)} placeholder="漫画语气、角色称谓等翻译要求"/></label>
+      </>}
+      <div className="col-span-full grid grid-cols-3 gap-3">
+        <label className={fieldClass}>超时（秒）<NumberControl ariaLabel="接口超时" name="timeout" min={10} max={cloudOcr ? 600 : undefined} step={5} defaultValue={String(defaults.timeout ?? 90)}/></label>
+        <label className={fieldClass}>失败重试<NumberControl ariaLabel="失败重试次数" name="retries" min={0} max={5} step={1} defaultValue={String(defaults.retries ?? 2)}/></label>
+        <label className={fieldClass}>Temperature<NumberControl ariaLabel="Temperature" name="temperature" min={0} max={cloudOcr ? 1 : 2} step={0.1} placeholder={cloudOcr ? '模型默认' : undefined} defaultValue={String(defaults.temperature ?? (cloudOcr ? '' : 0.2))}/></label>
+      </div>
+      {cloudOcr && <label className={cn(fieldClass, 'col-span-full')}>最大输出 Token 数<NumberControl ariaLabel="最大输出 Token 数" name="max_tokens" min={128} max={32768} step={128} defaultValue={String(defaults.max_tokens ?? 2048)}/></label>}
+      <label className={cn(fieldClass, 'col-span-full')}>{cloudOcr ? '识别 Prompt' : '翻译 Prompt'}<textarea aria-label={cloudOcr ? '识别 Prompt' : '翻译 Prompt'} className={cn(textareaClass, 'min-h-[220px] resize-y overflow-y-auto leading-relaxed')} name="prompt" defaultValue={cloudOcr ? String(defaults.prompt || DEFAULT_OCR_PROMPT) : translationPrompt(defaults.prompt)} placeholder={cloudOcr ? '识别语言、阅读顺序、标点等要求；不需要填写输出格式' : '漫画语气、角色称谓等翻译要求'}/></label>
+      {cloudOcr && <p className="col-span-full m-0 text-[10px] leading-relaxed text-muted">系统会自动追加 JSON 输出格式要求。Temperature 可留空，以兼容不接受该参数的模型。未返回有效结果时会报错，不会把解释性内容当成原文保存。</p>}
     </div>}
     {kind === 'rendering' && <label className={fieldClass} key={`${kind}-${provider}-font-size`}>最小字号<NumberControl ariaLabel="最小字号" name="min_font_size" min={1} step={1} defaultValue={String(defaults.min_font_size ?? 10)}/></label>}
+    {(cloudOcr || genericOcr) && <OCRConcurrencyFields key={`${kind}-${provider}-concurrency`} defaults={defaults}/>}
   </div><footer className="sticky bottom-0 z-[2] flex justify-end gap-2.5 border-t border-line-subtle bg-surface/95 px-6 pb-5 pt-4 shadow-[0_-10px_30px_rgb(0_0_0/.08)] backdrop-blur-xl [&_button]:min-w-[92px]"><button className={buttonClass} type="button" disabled={submitting} onClick={onCancel}>取消</button><button className={primaryButtonClass} disabled={submitting} type="submit">{submitting ? <ButtonLoading label="正在保存…"/> : '保存配置'}</button></footer></form>
 }
 
@@ -575,6 +627,8 @@ const PROVIDER_PRESETS: Record<string, {label: string, title: string, config: Re
   'detection:paddleocr': {label: 'PaddleOCR 文字检测', title: '推荐文字检测（PaddleOCR）', config: {device: 'cuda:0', language: 'japan', ocr_version: 'PP-OCRv5', box_threshold: 0.45, unclip_ratio: 1.8, group_text_lines: false, bubble_grouping: {enabled: true, confidence_threshold: 0.25, min_bubble_confidence: 0.35, min_containment: 0.55, min_core_containment: 0.8, ambiguity_margin: 0.12, max_second_containment: 0.45, mask_padding: 3}}},
   'detection:opencv-fallback': {label: 'OpenCV 文本检测', title: '本地 OpenCV 文本检测', config: {device: 'cpu'}},
   'ocr:manga-ocr': {label: 'MangaOCR 漫画识别', title: '推荐漫画识别（MangaOCR）', config: {device: 'cuda:0', model: 'kha-white/manga-ocr-base'}},
+  'ocr:cloud-multimodal': {label: '多模态大模型识字', title: '多模态大模型识字', config: {api_protocol: 'auto', timeout: 90, retries: 2, max_tokens: 2048, prompt: DEFAULT_OCR_PROMPT}},
+  'ocr:cloud-ocr': {label: '云端 OCR（通用接口）', title: '云端 OCR（通用接口）', config: {request_format: 'json', image_field: 'image', image_encoding: 'base64', auth_mode: 'bearer', api_key_header: 'X-API-Key', response_text_path: 'text', extra_fields: {}, timeout: 90, retries: 2}},
   'ocr:paddleocr': {label: 'PaddleOCR 文字识别', title: 'PaddleOCR 文字识别', config: {device: 'cuda:0', language: 'japan'}},
   'ocr:tesseract': {label: 'Tesseract OCR', title: 'Tesseract OCR', config: {device: 'cpu'}},
   'ocr:review-fallback': {label: '人工审核占位', title: '人工审核占位 OCR', config: {}},
@@ -602,6 +656,7 @@ function configurationForStage(configured: ModelConfiguration[], kind: string): 
 function configurationDeviceTag(item: ModelConfiguration, available: ModelDescriptor[]): string {
   if (item.kind === 'translation') return '云端 API'
   const descriptor = available.find(entry => entry.kind === item.kind && entry.name === item.provider)
+  if (descriptor?.devices.includes('remote')) return '云端 API'
   const value = String(item.config.device || '').toLowerCase()
   if (value === 'cpu' || (!descriptor?.devices.includes('cuda') && descriptor?.devices.includes('cpu'))) return 'CPU'
   if (value.startsWith('cuda') || value.startsWith('gpu') || descriptor?.devices.includes('cuda')) return 'GPU'
@@ -612,6 +667,9 @@ function concreteDevice(value: unknown, selected?: ModelDescriptor): string {
   if (configured === 'cpu' || !selected?.devices.includes('cuda')) return 'cpu'
   if (configured.startsWith('cuda') || configured.startsWith('gpu')) return 'cuda:0'
   return 'cuda:0'
+}
+function sameApiOrigin(left: string, right: string): boolean {
+  try { return new URL(left).origin === new URL(right).origin } catch { return false }
 }
 function deviceOptions(selected?: ModelDescriptor) {
   return selected?.devices.includes('cuda')

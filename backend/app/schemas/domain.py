@@ -59,6 +59,7 @@ class ImageRead(ORMModel):
     clean_url: str | None = None
     rendered_url: str | None = None
     text_layer_url: str | None = None
+    text_layer_region_ids: list[str] | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -235,6 +236,7 @@ class ModelConfigCreate(BaseModel):
     is_default: bool = False
     config: dict[str, Any] = Field(default_factory=dict)
     api_key: str | None = None
+    reuse_translation: bool = False
 
 
 class ModelConfigRead(ORMModel):

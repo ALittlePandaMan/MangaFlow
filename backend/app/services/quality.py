@@ -5,6 +5,7 @@ from app.models import ImagePage, ProcessingTask, TextRegion
 from app.models.enums import TaskStatus
 from app.schemas.domain import QualityIssue
 from app.services.inpainting import mask_is_empty
+from app.services.ocr.quality import ocr_review_hints
 from app.storage import get_storage
 from app.utils.geometry import intersection_area
 
@@ -29,12 +30,17 @@ def evaluate_page(page: ImagePage, failed_tasks: list[ProcessingTask] | None = N
 
     for region in page.regions:
         reasons: list[str] = []
-        if region.confidence < threshold and not region.locked:
+        ocr_metadata = (region.layout_data or {}).get("ocr")
+        has_confidence = not isinstance(ocr_metadata, dict) or ocr_metadata.get("confidence_available") is not False
+        if has_confidence and region.confidence < threshold and not region.locked:
             reasons.append("low_ocr_confidence")
             add("low_ocr_confidence", f"OCR confidence {region.confidence:.2f} is below {threshold:.2f}", region)
         if not region.source_text.strip():
             reasons.append("empty_source_text")
             add("empty_source_text", "OCR did not produce source text", region)
+        for hint in ocr_review_hints(region.source_text):
+            reasons.append(hint)
+            add(hint, "OCR 结果存在异常重复或无效字符，请核对原图", region)
         if not region.translated_text.strip():
             reasons.append("missing_translation")
             add("missing_translation", "Region has no translated text", region)
@@ -77,6 +83,20 @@ def evaluate_page(page: ImagePage, failed_tasks: list[ProcessingTask] | None = N
         if not page.clean_path:
             reasons.append("inpainting_missing")
             add("inpainting_missing", "Inpainting has not been run", region)
+        repair_quality = (region.layout_data or {}).get("repair_quality", {})
+        if isinstance(repair_quality, dict) and page.clean_path:
+            if repair_quality.get("status") == "residual":
+                reasons.append("residual_text")
+                add("residual_text", "修复后仍检测到疑似文字残留，请检查该区域", region)
+                if repair_quality.get("outside_mask_pixels", 0):
+                    reasons.append("residual_outside_mask")
+                    add("residual_outside_mask", "原蒙版附近疑似有漏擦文字；为保护原画未自动扩大擦除范围", region)
+            elif repair_quality.get("status") == "uncertain":
+                reasons.append("repair_verification_uncertain")
+                add("repair_verification_uncertain", "整页与局部文字检查结果不一致，可能为纹理或文字残留，请确认净图", region)
+            elif repair_quality.get("status") == "unavailable":
+                reasons.append("repair_verification_unavailable")
+                add("repair_verification_unavailable", "未能执行文字残留检查；净图需要人工确认", region)
         original_orientation = (region.layout_data or {}).get("source_orientation")
         if original_orientation and original_orientation != region.orientation:
             reasons.append("orientation_changed")

@@ -72,6 +72,7 @@ def image_read(page: ImagePage) -> ImageRead:
             "clean_url": versioned(page.clean_path, "clean"),
             "rendered_url": versioned(page.rendered_path, "rendered"),
             "text_layer_url": versioned(page.text_layer_path, "text_layer"),
+            "text_layer_region_ids": (page.metadata_json or {}).get("text_layer_region_ids") if page.text_layer_path else None,
         }
     )
 

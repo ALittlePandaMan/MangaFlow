@@ -1,46 +1,50 @@
-@import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Noto+Sans+SC:wght@400;500;600;700&display=swap');
 @import "tailwindcss" source("../");
 
 @theme {
-  --font-sans: 'Noto Sans SC', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  --font-mono: 'DM Mono', 'SFMono-Regular', Consolas, monospace;
-  --color-canvas: #0d1210;
-  --color-app: #131916;
-  --color-panel: #1a211d;
-  --color-surface: #222a25;
-  --color-raised: #2a342e;
-  --color-hover: #344039;
-  --color-line-subtle: #29332d;
-  --color-line: #3b4940;
-  --color-line-strong: #526357;
-  --color-ink: #f2f5f1;
-  --color-secondary: #c2cac3;
-  --color-muted: #99a59b;
-  --color-disabled: #6f7a72;
-  --color-popover: rgb(30 38 33 / 98%);
-  --color-overlay: rgb(5 9 7 / 72%);
-  --color-accent: #2dd4a5;
-  --color-accent-hover: #47e0b4;
-  --color-accent-strong: #149a76;
-  --color-accent-ink: #061d16;
-  --color-accent-soft-ink: #d9fbf1;
-  --color-warning: #f3c96b;
-  --color-danger: #ff817a;
-  --color-danger-soft-ink: #ffb0a9;
-  --color-success: #43d8ad;
-  --color-success-soft-ink: #c7f7e9;
-  --color-meta: #8eafa3;
-  --shadow-soft: 0 8px 24px rgb(0 0 0 / 20%);
-  --shadow-panel: 0 18px 48px rgb(0 0 0 / 34%);
-  --shadow-dialog: 0 30px 90px rgb(0 0 0 / 52%);
+  --font-sans: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'SF Pro Display', 'Helvetica Neue', 'PingFang SC', 'Segoe UI', 'Microsoft YaHei', sans-serif;
+  --font-mono: 'SFMono-Regular', Consolas, 'Liberation Mono', 'PingFang SC', 'Microsoft YaHei', monospace;
+  --color-canvas: #181818;
+  --color-app: #212121;
+  --color-panel: #262626;
+  --color-surface: #2b2b2b;
+  --color-raised: #303030;
+  --color-hover: #3a3a3a;
+  --color-line-subtle: #333333;
+  --color-line: #424242;
+  --color-line-strong: #626262;
+  --color-ink: #f2f2f2;
+  --color-secondary: #d4d4d4;
+  --color-muted: #a3a3a3;
+  --color-disabled: #777777;
+  --color-popover: rgb(40 40 40 / 99%);
+  --color-overlay: rgb(0 0 0 / 62%);
+  --color-accent: #8dbdff;
+  --color-accent-hover: #b2d3ff;
+  --color-accent-strong: #5596ee;
+  --color-accent-ink: #12233a;
+  --color-accent-soft: #263a54;
+  --color-accent-soft-hover: #304b6b;
+  --color-accent-line: #47688e;
+  --color-accent-soft-ink: #c2dcff;
+  --color-warning: #eac17a;
+  --color-danger: #f28b87;
+  --color-danger-soft-ink: #ffb4b0;
+  /* Positive states use the same blue family as the workbench, not legacy green. */
+  --color-success: #8dbdff;
+  --color-success-soft-ink: #c2dcff;
+  --color-meta: #a3a3a3;
+  --shadow-soft: 0 2px 8px rgb(0 0 0 / 16%);
+  --shadow-panel: 0 6px 20px rgb(0 0 0 / 24%);
+  --shadow-dialog: 0 16px 48px rgb(0 0 0 / 38%);
 }
 
 :root {
   color-scheme: dark;
-  --shadow-card: 0 3px 12px rgb(0 0 0 / 14%);
-  --shadow-card-hover: 0 5px 18px rgb(0 0 0 / 20%);
-  --scrollbar-thumb: #4a574f;
-  --scrollbar-thumb-hover: #65746a;
+  --shadow-card: 0 1px 3px rgb(0 0 0 / 12%);
+  --shadow-card-hover: 0 3px 10px rgb(0 0 0 / 18%);
+  --scrollbar-thumb: #515151;
+  --scrollbar-thumb-hover: #737373;
+  --workspace-tile: #1e1e1e;
   --workspace-grid-line: rgb(255 255 255 / 4%);
   --loading-shimmer-soft: rgb(255 255 255 / 7%);
   --loading-shimmer-strong: rgb(255 255 255 / 13%);
@@ -48,42 +52,175 @@
 
 :root[data-theme='light'] {
   color-scheme: light;
-  --color-canvas: #e6ece8;
-  --color-app: #eff3f0;
+  --color-canvas: #f4f5f7;
+  --color-app: #ffffff;
   --color-panel: #ffffff;
-  --color-surface: #f8faf8;
-  --color-raised: #e4eae5;
-  --color-hover: #d8e2da;
-  --color-line-subtle: #e0e6e1;
-  --color-line: #c7d2ca;
-  --color-line-strong: #a8b7ac;
-  --color-ink: #18211b;
-  --color-secondary: #425148;
-  --color-muted: #5f6f65;
-  --color-disabled: #87938b;
-  --color-popover: rgb(255 255 255 / 98%);
-  --color-overlay: rgb(20 31 25 / 42%);
-  --color-accent: #08795b;
-  --color-accent-hover: #096d54;
-  --color-accent-strong: #075843;
+  --color-surface: #f8f9fb;
+  --color-raised: #f1f2f4;
+  --color-hover: #e9edf2;
+  --color-line-subtle: #eceef1;
+  --color-line: #dfe3e8;
+  --color-line-strong: #b4bdca;
+  --color-ink: #202123;
+  --color-secondary: #4b515b;
+  --color-muted: #626b78;
+  --color-disabled: #949ba5;
+  --color-popover: rgb(255 255 255 / 99%);
+  --color-overlay: rgb(20 23 28 / 35%);
+  --color-accent: #2864ae;
+  --color-accent-hover: #21558f;
+  --color-accent-strong: #21558f;
   --color-accent-ink: #ffffff;
-  --color-accent-soft-ink: #075f49;
-  --color-warning: #9a6200;
-  --color-danger: #c63f3a;
-  --color-danger-soft-ink: #a52e2a;
-  --color-success: #08795b;
-  --color-success-soft-ink: #076047;
-  --color-meta: #486d5f;
-  --shadow-soft: 0 8px 24px rgb(25 45 33 / 9%);
-  --shadow-panel: 0 18px 48px rgb(25 45 33 / 13%);
-  --shadow-dialog: 0 30px 90px rgb(25 45 33 / 20%);
-  --shadow-card: 0 3px 12px rgb(25 45 33 / 5%);
-  --shadow-card-hover: 0 5px 18px rgb(25 45 33 / 7%);
-  --scrollbar-thumb: #a6b3aa;
-  --scrollbar-thumb-hover: #84958a;
-  --workspace-grid-line: rgb(24 43 32 / 5%);
-  --loading-shimmer-soft: rgb(24 43 32 / 5%);
-  --loading-shimmer-strong: rgb(24 43 32 / 9%);
+  --color-accent-soft: #eaf3ff;
+  --color-accent-soft-hover: #dceaff;
+  --color-accent-line: #b8d3f4;
+  --color-accent-soft-ink: #245991;
+  --color-warning: #80500e;
+  --color-danger: #bd3732;
+  --color-danger-soft-ink: #a72f2a;
+  --color-success: #2864ae;
+  --color-success-soft-ink: #245991;
+  --color-meta: #667085;
+  --shadow-soft: 0 2px 8px rgb(20 23 28 / 5%);
+  --shadow-panel: 0 6px 20px rgb(20 23 28 / 8%);
+  --shadow-dialog: 0 16px 48px rgb(20 23 28 / 16%);
+  --shadow-card: 0 1px 3px rgb(20 23 28 / 3%);
+  --shadow-card-hover: 0 3px 10px rgb(20 23 28 / 6%);
+  --scrollbar-thumb: #c4c8ce;
+  --scrollbar-thumb-hover: #a1a8b3;
+  --workspace-tile: #eceef1;
+  --workspace-grid-line: rgb(32 33 35 / 4%);
+  --loading-shimmer-soft: rgb(32 33 35 / 4%);
+  --loading-shimmer-strong: rgb(32 33 35 / 7%);
+}
+
+/* Keep visual attention on the artwork; checkerboard is an explicit option. */
+.workspace-background {
+  background-color: var(--color-canvas);
+}
+.workspace-checkerboard {
+  background-image: conic-gradient(var(--workspace-tile) 25%, transparent 0 50%, var(--workspace-tile) 0 75%, transparent 0);
+  background-size: 20px 20px;
+}
+
+[hidden] { display: none !important; }
+button, a, summary { -webkit-tap-highlight-color: transparent; touch-action: manipulation; }
+button, a, summary, input, textarea { scroll-margin: 12px; }
+.app-shell { display: grid; height: 100dvh; grid-template-rows: auto minmax(0, 1fr); }
+.app-header { position: relative; min-height: 64px; gap: 12px; padding: env(safe-area-inset-top) max(20px, env(safe-area-inset-right)) 0 max(20px, env(safe-area-inset-left)); }
+.app-brand { margin-right: auto; }
+.app-header-slot { margin-left: auto; }
+.app-header-slot:empty { display: none; }
+.app-navigation { gap: 8px; }
+.app-header .app-header-icon { width: 40px; height: 40px; min-height: 40px; padding: 0; border-radius: 10px; flex-shrink: 0; }
+.editor-header-actions { position: relative; }
+.editor-project-actions { display: flex; align-items: center; gap: 8px; }
+.editor-toolbar { display: flex; min-width: 0; min-height: 48px; align-items: center; gap: 12px; padding: 6px 12px; flex-wrap: wrap; }
+.editor-tools, .editor-view-tabs { flex-shrink: 0; }
+.editor-feedback:empty { display: none; }
+.editor-workflow { margin-left: auto; }
+.workflow-reset { margin-left: 6px; border-left-color: var(--color-line) !important; }
+.editor-workspace { position: relative; display: grid; min-height: 0; min-width: 0; grid-template-columns: 200px minmax(0, 1fr) 320px; }
+.editor-pages, .editor-properties, .editor-canvas { min-height: 0; min-width: 0; }
+.editor-pages > aside, .editor-properties > aside, .editor-canvas > main { height: 100%; }
+.editor-canvas { overflow: hidden; }
+.editor-sheet-heading, .editor-dock { display: none; }
+.canvas-touch-hint { display: none; }
+
+@media (max-width: 1399px) {
+  .editor-feedback:not(:empty) { order: 4; flex-basis: 100%; padding-bottom: 2px; }
+}
+@media (max-width: 1099px) {
+  .app-header { min-height: 56px; gap: 8px; padding-right: max(12px, env(safe-area-inset-right)); padding-left: max(12px, env(safe-area-inset-left)); }
+  .brand-subtitle { display: none; }
+  .app-header-slot { margin-left: 0; }
+  .app-navigation { margin-left: auto; }
+  .editor-project-actions { position: absolute; right: 0; top: calc(100% + 12px); width: 252px; padding: 8px; border: 1px solid var(--color-line); border-radius: 14px; background: var(--color-panel); box-shadow: var(--shadow-panel); flex-direction: column; align-items: stretch; }
+  .editor-project-actions > button, .editor-project-actions > div > button { width: 100%; justify-content: flex-start; }
+  .editor-project-actions [role="menu"] { position: static; width: 100%; margin-top: 6px; box-shadow: none; }
+  .editor-toolbar { gap: 8px; }
+  .editor-view-tabs { margin-left: auto; }
+  .editor-workflow { width: 100%; overflow-x: auto; padding: 2px 0; scrollbar-width: thin; }
+  .editor-workflow > div { min-width: max-content; }
+  .editor-workflow button { white-space: nowrap; }
+  .editor-feedback:not(:empty) { order: 4; flex-basis: 100%; }
+  .editor-workspace { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto; }
+  .editor-canvas { grid-area: 1 / 1; }
+  .editor-dock { grid-area: 2 / 1; display: flex; justify-content: center; gap: 8px; border-top: 1px solid var(--color-line); background: var(--color-panel); padding: 6px max(12px, env(safe-area-inset-right)) calc(6px + env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left)); z-index: 35; }
+  .editor-dock .editor-page-step { flex: 0 0 auto; min-width: 44px; }
+  .editor-dock .editor-page-step:first-child { margin-right: auto; }
+  .editor-dock .editor-page-step:last-child { margin-left: auto; }
+  .editor-dock button:disabled { opacity: .35; cursor: not-allowed; background: transparent; }
+  .editor-dock button { display: flex; position: relative; align-items: center; justify-content: center; gap: 8px; flex: 1; max-width: 200px; min-height: 44px; padding: 8px; border-radius: 10px; color: var(--color-secondary); font-size: 13px; font-weight: 600; cursor: pointer; }
+  .editor-dock button:hover { background: var(--color-hover); }
+  .editor-dock button.is-active { background: var(--color-accent-soft); color: var(--color-accent-soft-ink); }
+  .editor-dock button:focus-visible { outline: 2px solid var(--color-accent); outline-offset: -2px; }
+  .editor-selection-count { background: var(--color-accent-soft); color: var(--color-accent-soft-ink); border-radius: 8px; padding: 2px 6px; font-size: 11px; }
+  .editor-pages, .editor-properties { position: absolute; top: 25%; bottom: calc(57px + env(safe-area-inset-bottom)); left: 0; right: 0; z-index: 30; padding-top: 48px; border-top: 1px solid var(--color-line); border-radius: 16px 16px 0 0; background: var(--color-panel); box-shadow: 0 -6px 24px rgb(0 0 0 / 8%); overflow: hidden; }
+  .editor-pages > aside, .editor-properties > aside { border: none; overscroll-behavior: contain; }
+  .editor-sheet-heading { display: flex; align-items: center; justify-content: space-between; height: 48px; position: absolute; top: 25%; left: 0; right: 0; padding: 0 12px 0 16px; z-index: 31; border-bottom: 1px solid var(--color-line-subtle); font-size: 13px; }
+  .editor-pages [data-page-id] { max-width: 240px; margin-inline: auto; }
+  .editor-pages [data-page-list] { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; align-content: start; }
+  .editor-properties section:not(.h-12), .editor-properties details { padding: 16px 20px; }
+  .editor-skeleton { grid-template-columns: minmax(0, 1fr); }
+  .editor-skeleton > aside { display: none; }
+}
+@media (max-width: 639px) {
+  .app-header { gap: 8px; }
+  .app-brand { gap: 8px; }
+  .app-brand strong { font-size: 15px; }
+  .app-brand > span:first-child { width: 30px; height: 30px; font-size: 16px; }
+  .app-navigation a { width: 40px; height: 40px; padding: 0; justify-content: center; flex-shrink: 0; }
+  .app-navigation a span { display: none; }
+  .editor-dock { gap: 4px; padding-inline: 8px; }
+  .editor-dock button { gap: 4px; padding-inline: 4px; font-size: 12px; min-width: 0; }
+  .editor-dock .editor-page-step span { display: none; }
+  .editor-toolbar { padding: 6px 8px; column-gap: 8px; }
+  .editor-tools { flex: 1 1 100%; min-width: 0; justify-content: flex-start; gap: 6px; }
+  .editor-tools > span { display: none; }
+  .editor-tools > div { flex-shrink: 0; gap: 6px; }
+  .editor-tool-button { width: 44px; height: 44px; flex-shrink: 0; }
+  .editor-view-tabs { flex: 1 1 100%; margin-left: 0; }
+  .editor-view-tabs button { flex: 1; }
+  [aria-label="画布图层"]:has(> button[aria-expanded="true"]) { width: 144px; }
+  .editor-workflow { margin: 0; }
+  .editor-workflow:has(.mobile-page-workflow) { min-width: 0; overflow: visible; padding: 0; }
+  .editor-workflow > .mobile-page-workflow { width: 100%; min-width: 0; }
+  .page-heading { flex-direction: column; align-items: flex-start; gap: 20px; margin-bottom: 28px; }
+  .page-heading h1 { font-size: 28px; letter-spacing: -.6px; }
+  .page-heading > div:last-child { flex-wrap: wrap; }
+  .preferences-card { grid-template-columns: 44px minmax(0, 1fr); }
+  .preferences-card > button { grid-column: 1 / -1; }
+  .loading-skeleton-page > div:first-child { flex-wrap: wrap; gap: 16px; }
+  .loading-shimmer { max-width: 100%; }
+  input:not([type="color"]), textarea { font-size: 16px !important; }
+}
+@media (max-height: 500px) and (max-width: 1099px) {
+  .editor-pages, .editor-properties, .editor-sheet-heading { top: 6%; }
+  .editor-toolbar { gap: 4px; }
+}
+@media (max-width: 379px) {
+  .app-brand > span:last-child { display: none; }
+}
+@media (max-width: 359px) {
+  /* Seven 44px touch targets fit a 320px phone without a second row. */
+  .editor-toolbar { padding-inline: 6px; }
+  .editor-tools, .editor-tools > div { gap: 0; }
+}
+@media (pointer: coarse) {
+  .app-navigation a, .app-header .app-header-icon { min-width: 44px; height: 44px; min-height: 44px; }
+  .editor-tool-button { width: 44px; height: 44px; }
+  [aria-label="画布缩放"] button { width: 44px; height: 44px; }
+  [aria-label="画布缩放"] { gap: 0; }
+  [aria-label="画布图层"] > button { min-height: 44px; }
+  [aria-label="画布图层"] label { min-height: 40px; }
+  .editor-view-tabs button, .editor-workflow button, .editor-properties button, .editor-pages button[aria-label="导入图片"] { min-height: 44px !important; }
+  .editor-properties button[aria-label$="增大"], .editor-properties button[aria-label$="减小"] { min-height: 22px !important; }
+  .number-control { height: 46px; grid-template-columns: minmax(0, 1fr) 32px; }
+  .number-control input { height: 44px; }
+  .number-control button { height: 22px; }
+  .editor-properties button[aria-label="关闭区域显示"], .editor-properties button[aria-label="打开区域显示"], .editor-properties button[aria-label="锁定区域"], .editor-properties button[aria-label="解除锁定"] { min-width: 44px; }
+  .canvas-touch-hint { display: block; }
 }
 
 /* Tailwind resolves named shadow tokens while generating utilities. Keep the
@@ -167,8 +304,8 @@
 }
 
 @keyframes loading-page-mark {
-  0%, 100% { transform: translateY(0) scale(1); box-shadow: 0 0 22px rgb(16 211 163 / 16%); }
-  50% { transform: translateY(-3px) scale(1.025); box-shadow: 0 0 38px rgb(16 211 163 / 25%); }
+  0%, 100% { transform: translateY(0); opacity: 1; }
+  50% { transform: translateY(-2px); opacity: .8; }
 }
 
 @keyframes loading-skeleton-page-in {

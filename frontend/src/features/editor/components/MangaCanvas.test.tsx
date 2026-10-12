@@ -1,4 +1,4 @@
-import {act, render, screen} from '@testing-library/react'
+import {act, fireEvent, render, screen, within} from '@testing-library/react'
 import type {ReactNode} from 'react'
 import {afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi} from 'vitest'
 
@@ -103,7 +103,7 @@ describe('MangaCanvas image loading', () => {
     expect(screen.getByTestId('konva-stage')).toBeInTheDocument()
     expect(screen.queryByText('正在载入画布图片')).not.toBeInTheDocument()
     expect(screen.queryByRole('status', {name: '正在载入画布图片'})).not.toBeInTheDocument()
-    expect(useImageMock.mock.calls.slice(-2).map(([source]) => source)).toEqual([null, '/media/page-clean.png'])
+    expect(useImageMock.mock.calls.slice(-3).map(([source]) => source)).toEqual([null, '/media/page-clean.png', null])
   })
 
   it('loads both page artifacts only for comparison view', () => {
@@ -122,10 +122,50 @@ describe('MangaCanvas image loading', () => {
       interactionKey="comparison:select:false:"
     />)
 
-    expect(useImageMock.mock.calls.slice(-2).map(([source]) => source)).toEqual([
+    expect(useImageMock.mock.calls.slice(-3).map(([source]) => source)).toEqual([
       '/media/page.png',
       '/media/page-clean.png',
+      null,
     ])
+  })
+
+  it('loads the export text layer only while its region snapshot matches', () => {
+    const props = {page: {...page, text_layer_url: '/media/text.png?v=2', text_layer_region_ids: []},
+      regions: [], onCreate: vi.fn(async () => true), onUpdate: vi.fn(async () => undefined),
+      onRegionAction: vi.fn(), runningAction: null, interactionKey: 'translated:select:false:'}
+    const {rerender} = render(<MangaCanvas {...props}/>)
+    expect(useImageMock.mock.calls.at(-1)?.[0]).toBe('/media/text.png?v=2')
+    rerender(<MangaCanvas {...props} page={{...props.page, text_layer_region_ids: ['deleted-region']}}/>)
+    expect(useImageMock.mock.calls.at(-1)?.[0]).toBeNull()
+  })
+
+  it('uses consistent layer toggles while keeping the checkerboard independent', () => {
+    render(<MangaCanvas page={page} regions={[]} onCreate={vi.fn(async () => true)} onUpdate={vi.fn(async () => undefined)} onRegionAction={vi.fn()} runningAction={null} interactionKey="translated:select:false:"/>)
+    const panel = screen.getByLabelText('画布图层')
+    const trigger = within(panel).getByRole('button', {name:'图层'})
+    if (trigger.getAttribute('aria-expanded') === 'false') fireEvent.click(trigger)
+    const toggles = within(panel).getAllByRole('checkbox')
+    expect(toggles).toHaveLength(5)
+    for (const toggle of toggles) {
+      expect(toggle).toHaveClass('peer', 'sr-only')
+      expect(toggle.closest('label')?.className).toBe(toggles[0].closest('label')?.className)
+      expect(toggle.nextElementSibling).toHaveClass('size-3', 'rounded-full')
+    }
+    const checkerboard = within(panel).getByRole('checkbox', {name:'透明棋盘格'})
+    const layerSnapshot = {...useEditorStore.getState().layers}
+    expect(checkerboard).not.toBeChecked()
+    fireEvent.click(checkerboard)
+    expect(checkerboard).toBeChecked()
+    expect(panel.parentElement).toHaveClass('workspace-checkerboard')
+    expect(useEditorStore.getState().layers).toEqual(layerSnapshot)
+    fireEvent.click(within(panel).getByRole('checkbox', {name:'原始图像'}))
+    expect(useEditorStore.getState().layers.original).toBe(true)
+    expect(checkerboard).toBeChecked()
+    fireEvent.click(checkerboard)
+    expect(panel.parentElement).not.toHaveClass('workspace-checkerboard')
+    fireEvent.click(trigger)
+    expect(trigger).toHaveAttribute('aria-expanded', 'false')
+    for (const toggle of toggles) expect(toggle).toHaveAttribute('tabindex', '-1')
   })
 
   it('skips expensive canvas reconciliation for unrelated parent updates', () => {
