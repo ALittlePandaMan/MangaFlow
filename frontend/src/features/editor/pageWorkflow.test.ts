@@ -51,7 +51,7 @@ describe('page workflow behavior', () => {
     expect(pageOcrNeedsDetection([{locked:true, layout_data:{detection:{}}}])).toBe(false)
     expect(pageOcrNeedsDetection([{
       locked:false,
-      layout_data:{detection:{balloon_assignment:{status:'outside', bubble_id:null}}},
+      layout_data:{detection:{balloon_grouping_version:2, balloon_assignment:{status:'outside', bubble_id:null}}},
     }])).toBe(false)
     expect(pageOcrNeedsDetection([{
       locked:false,
@@ -63,6 +63,22 @@ describe('page workflow behavior', () => {
     }])).toBe(false)
     expect(lockedLegacyOcrRegionCount([{locked:true, layout_data:{detection:{}}}])).toBe(1)
     expect(lockedLegacyOcrRegionCount([{locked:true, layout_data:{manual:true}}])).toBe(0)
+  })
+
+  it('offers user-confirmed redetection for old assigned and missed balloons', () => {
+    for (const status of ['assigned', 'outside', 'ambiguous']) {
+      const old = {locked:false, layout_data:{detection:{balloon_assignment:{status}}}}
+      expect(pageOcrNeedsDetection([old])).toBe(true)
+      expect(pageOcrNeedsDetection([{...old, layout_data:{detection:{
+        balloon_grouping_version:1, balloon_assignment:{status},
+      }}}])).toBe(true)
+      expect(pageOcrNeedsDetection([{...old, layout_data:{detection:{
+        balloon_grouping_version:2, balloon_assignment:{status},
+      }}}])).toBe(false)
+      expect(pageOcrNeedsDetection([{...old, locked:true}])).toBe(false)
+      expect(lockedLegacyOcrRegionCount([{...old, locked:true}])).toBe(1)
+      expect(pageOcrNeedsDetection([{...old, layout_data:{...old.layout_data, manual:true}}])).toBe(false)
+    }
   })
 
   it('only reports bubble grouping unavailable from the refreshed assignment metadata', () => {

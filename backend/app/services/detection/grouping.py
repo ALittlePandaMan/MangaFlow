@@ -8,9 +8,11 @@ import cv2
 import numpy as np
 from app.services.base import DetectionResult
 from app.services.detection.bubbles import BubbleInstance
+from app.services.detection.outlines import MIN_OUTLINE_VERIFIED_CONFIDENCE, refine_bubble_outlines
 from app.utils.geometry import bbox_to_polygon
 
 MIN_TRUSTED_BALLOON_CONFIDENCE = 0.75
+BALLOON_GROUPING_VERSION = 2
 
 
 def group_text_regions_by_bubbles(
@@ -36,6 +38,15 @@ def group_text_regions_by_bubbles(
     grouping key. This keeps free-standing sound effects and overlapping text
     boxes outside balloons independent.
     """
+    image = None
+    if image_path is not None and image_path.is_file():
+        image = cv2.imread(str(image_path), cv2.IMREAD_GRAYSCALE)
+    if image is not None:
+        original_ids = {bubble.instance_id: _stable_bubble_id(page_key, bubble) for bubble in bubbles}
+        bubbles = refine_bubble_outlines(bubbles, regions, image, split=split_connected_instances)
+        for bubble in bubbles:
+            if bubble.split_details:
+                bubble.split_details["parent_bubble_id"] = original_ids[bubble.split_details["parent_instance_id"]]
     assigned = assign_text_to_bubbles(
         regions,
         bubbles,
@@ -62,9 +73,6 @@ def group_text_regions_by_bubbles(
         if not 0 <= split_min_boundary_coverage <= 1 or not 0 <= split_min_boundary_run <= 1:
             raise ValueError("boundary split thresholds must be between 0 and 1")
 
-    image = None
-    if split_connected_instances and image_path is not None and image_path.is_file():
-        image = cv2.imread(str(image_path), cv2.IMREAD_GRAYSCALE)
     bubbles_by_id = {_stable_bubble_id(page_key, bubble): bubble for bubble in bubbles}
     output: list[DetectionResult] = []
     for key in order:
@@ -82,6 +90,8 @@ def group_text_regions_by_bubbles(
                 min_boundary_run=split_min_boundary_run,
             )
         output.extend(_merge_balloon_group(item) for item in split_groups)
+    for result in output:
+        result.metadata = {**result.metadata, "balloon_grouping_version": BALLOON_GROUPING_VERSION}
     return output
 
 
@@ -109,7 +119,11 @@ def assign_text_to_bubbles(
         core = _scale_polygon(region.polygon, centroid, 0.7)
         candidates: list[dict[str, float | str]] = []
         for bubble in bubbles:
-            if bubble.confidence < min_bubble_confidence:
+            if bubble.confidence < min_bubble_confidence and not (
+                min_bubble_confidence == MIN_TRUSTED_BALLOON_CONFIDENCE
+                and bubble.confidence >= MIN_OUTLINE_VERIFIED_CONFIDENCE
+                and bubble.outline_evidence
+            ):
                 continue
             coverage = bubble.intersection_ratio(region.polygon, padding=mask_padding)
             core_coverage = bubble.intersection_ratio(core)
@@ -246,14 +260,20 @@ def _with_balloon_assignment(
         assignment["second_score"] = round(float(second_score), 4)
     if reason:
         assignment["reason"] = reason
+    metadata = {**region.metadata, "balloon_assignment": assignment}
+    if bubble is not None and bubble.outline_evidence:
+        assignment["outline_evidence"] = dict(bubble.outline_evidence)
+    if bubble is not None and bubble.split_details:
+        metadata["instance_split"] = dict(bubble.split_details)
+        assignment["parent_bubble_id"] = bubble.split_details["parent_bubble_id"]
     return replace(
         region,
         bubble_id=bubble_id,
-        metadata={**region.metadata, "balloon_assignment": assignment},
+        metadata=metadata,
         balloon_mask=bubble.mask.copy() if bubble is not None else None,
         balloon_mask_origin=bubble.mask_origin if bubble is not None else None,
         balloon_mask_id=bubble_id if bubble is not None else None,
-        balloon_mask_parent_id=None,
+        balloon_mask_parent_id=assignment.get("parent_bubble_id"),
         balloon_mask_confidence=bubble.confidence if bubble is not None else None,
     )
 
@@ -1044,6 +1064,9 @@ def _merge_balloon_group(group: list[tuple[int, DetectionResult]]) -> DetectionR
     }
     if len(parent_ids) == 1:
         grouped_assignment["parent_bubble_id"] = next(iter(parent_ids))
+    outline_evidence = [item.get("outline_evidence") for item in source_assignments]
+    if outline_evidence[0] and all(item == outline_evidence[0] for item in outline_evidence):
+        grouped_assignment["outline_evidence"] = dict(outline_evidence[0])
 
     metadata = dict(members[0].metadata)
     metadata["balloon_assignment"] = grouped_assignment

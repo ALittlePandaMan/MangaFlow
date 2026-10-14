@@ -60,6 +60,10 @@ class BubbleInstance:
     mask: np.ndarray
     mask_origin: tuple[int, int]
     image_shape: tuple[int, int]
+    # Independent image evidence, not an inflated model confidence. These are
+    # populated only by outline verification on the original page.
+    outline_evidence: dict[str, Any] | None = None
+    split_details: dict[str, Any] | None = None
 
     def full_mask(self) -> np.ndarray:
         result = np.zeros(self.image_shape, dtype=np.uint8)

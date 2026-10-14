@@ -30,6 +30,9 @@ export function pageWorkflowTargetView(stage: PageWorkflowStage): ViewMode | nul
 
 type OcrRegionLayout = Pick<TextRegion, 'layout_data'>
 type OcrDetectionRegion = OcrRegionLayout & Pick<TextRegion, 'locked'>
+// Keep in sync with backend services/detection/grouping.py. A rule upgrade
+// only offers a user-confirmed rerun; it never mutates pages on load.
+const BALLOON_GROUPING_VERSION = 2
 
 export function pageOcrNeedsDetection(regions: OcrDetectionRegion[]): boolean {
   if (regions.length === 0) return true
@@ -50,7 +53,10 @@ function isLegacyAutomaticRegion(region: OcrDetectionRegion): boolean {
   const detection = region.layout_data.detection
   if (!detection || typeof detection !== 'object' || Array.isArray(detection)) return false
   if (!assignment) return true
-  return assignment.status === 'unavailable'
+  if (assignment.status === 'disabled') return false
+  if (assignment.status === 'unavailable') return true
+  const version = (detection as Record<string, unknown>).balloon_grouping_version
+  return typeof version !== 'number' || version < BALLOON_GROUPING_VERSION
 }
 
 function balloonAssignment(region: OcrRegionLayout): Record<string, unknown> | null {
