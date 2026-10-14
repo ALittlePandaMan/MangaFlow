@@ -1076,6 +1076,15 @@ def _merge_balloon_group(group: list[tuple[int, DetectionResult]]) -> DetectionR
         grouped_assignment["outline_evidence"] = dict(outline_evidence[0])
 
     metadata = dict(members[0].metadata)
+    classifications = [region.metadata.get("text_classification") for region in members]
+    if all(isinstance(item, dict) for item in classifications):
+        labels = {item.get("label") for item in classifications}
+        if len(labels) > 1:
+            metadata["text_classification"] = {
+                **metadata.get("text_classification", {}),
+                "version": 1, "label": "uncertain", "status": "uncertain",
+                "excluded": False, "reason": "mixed_group_classification",
+            }
     metadata["balloon_assignment"] = grouped_assignment
     line_grouping: dict[str, object] = {
         "method": "balloon_instance",

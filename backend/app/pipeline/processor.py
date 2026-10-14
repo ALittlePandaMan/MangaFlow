@@ -31,6 +31,7 @@ from app.services.detection.artifacts import (
 )
 from app.services.detection.grouping import MIN_TRUSTED_BALLOON_CONFIDENCE
 from app.services.detection.panels import detect_panel_frames, panel_reading_order
+from app.services.detection.text_roles import partition_text_roles
 from app.services.infra.model_manifest import persist_model_settings
 from app.services.infra.model_provisioning import ensure_recommended_config
 from app.services.inpainting import create_text_mask, create_text_mask_union, load_text_mask_source
@@ -346,7 +347,7 @@ class PipelineProcessor:
         # Run fallible model loading/inference before touching the last known
         # good regions or page artifacts. A failed forced detection must leave
         # the user's current page completely intact.
-        detected = provider.detect(source)
+        detected, classification_report = partition_text_roles(provider.detect(source))
 
         # Inference may take seconds and region edits are allowed concurrently.
         # Reload the relationship now so force detection preserves the latest
@@ -443,6 +444,7 @@ class PipelineProcessor:
                 )
             )
         page_metadata = dict(page.metadata_json or {})
+        page_metadata["text_classification"] = classification_report
         if geometry_items:
             page_metadata[BUBBLE_GEOMETRY_KEY] = {
                 "schema_version": BUBBLE_GEOMETRY_SCHEMA_VERSION,

@@ -4,9 +4,12 @@ import logging
 from pathlib import Path
 
 import cv2
+
 from app.services.base import DetectionResult, ProviderCapabilities, ProviderError, TextDetector
 from app.services.detection.bubbles import OnnxBubbleSegmenter
+from app.services.detection.classification import LayoutTextClassifier
 from app.services.detection.grouping import MIN_TRUSTED_BALLOON_CONFIDENCE, group_text_regions_by_bubbles
+from app.services.detection.text_roles import excluded_as_sfx
 from app.services.infra.device import is_accelerator_error, release_paddle_cuda, resolve_paddle_device
 from app.services.infra.paddle import extract_paddle_lines, load_paddle_image, predict_paddle_image
 from app.utils.geometry import bbox_to_polygon, polygon_to_bbox
@@ -88,6 +91,7 @@ class PaddleTextDetector(TextDetector):
         extra={
             "polygon": True,
             "bubble_instance_grouping": True,
+            "text_role_classification": ["text", "onomatopoeia", "uncertain"],
             "optional_dependency": "paddleocr",
         },
     )
@@ -98,6 +102,7 @@ class PaddleTextDetector(TextDetector):
         self._device = "cpu"
         self._bubble_segmenter: OnnxBubbleSegmenter | None = None
         self._bubble_unavailable_reason: str | None = None
+        self._text_classifier = LayoutTextClassifier(self.config)
 
     def load(self) -> None:
         try:
@@ -131,6 +136,7 @@ class PaddleTextDetector(TextDetector):
                 logger.warning("Bubble segmentation is unavailable; text boxes will remain separate: %s", exc)
 
     def unload(self) -> None:
+        self._text_classifier.close()
         if self._bubble_segmenter is not None:
             self._bubble_segmenter.unload()
         self._bubble_segmenter = None
@@ -192,16 +198,32 @@ class PaddleTextDetector(TextDetector):
         bubble_config = _bubble_grouping_config(self.config)
         if not output:
             return output
-        if not bool(bubble_config.get("enabled", True)):
-            return _mark_bubble_grouping_disabled(output)
+        bubbles = []
+        grouping_enabled = bool(bubble_config.get("enabled", True))
+        if grouping_enabled and self._bubble_unavailable_reason is None:
+            try:
+                if self._bubble_segmenter is None:
+                    self._bubble_segmenter = OnnxBubbleSegmenter(bubble_config)
+                bubbles = self._bubble_segmenter.segment(image_path)
+            except Exception as exc:
+                self._bubble_unavailable_reason = "segmentation_failed"
+                logger.warning("Bubble segmentation failed; keeping text boxes separate: %s", exc)
+        protected = {
+            index for index, region in enumerate(output)
+            if any(bubble.confidence >= MIN_TRUSTED_BALLOON_CONFIDENCE and bubble.intersection_ratio(region.polygon) >= 0.6 for bubble in bubbles)
+        }
+        output = self._text_classifier.annotate(image_path, output, protected_indices=protected)
+        # Never merge a filtered SFX line into neighbouring dialogue. Keep the
+        # rejected geometry until the pipeline saves its reversible report.
+        excluded = [region for region in output if excluded_as_sfx(region)]
+        accepted = [region for region in output if not excluded_as_sfx(region)]
+        if not grouping_enabled:
+            return _mark_bubble_grouping_disabled(accepted) + excluded
         if self._bubble_unavailable_reason is not None:
-            return _mark_bubble_grouping_unavailable(output, self._bubble_unavailable_reason)
+            return _mark_bubble_grouping_unavailable(accepted, self._bubble_unavailable_reason) + excluded
         try:
-            if self._bubble_segmenter is None:
-                self._bubble_segmenter = OnnxBubbleSegmenter(bubble_config)
-            bubbles = self._bubble_segmenter.segment(image_path)
-            return group_text_regions_by_bubbles(
-                output,
+            grouped = group_text_regions_by_bubbles(
+                accepted,
                 bubbles,
                 page_key=str(image_path.resolve()),
                 image_path=image_path,
@@ -221,10 +243,11 @@ class PaddleTextDetector(TextDetector):
                 ),
                 split_min_boundary_run=float(bubble_config.get("split_min_boundary_run", 0.65)),
             )
+            return grouped + excluded
         except Exception as exc:
             self._bubble_unavailable_reason = "segmentation_failed"
             logger.warning("Bubble segmentation failed; keeping %d text boxes separate: %s", len(output), exc)
-            return _mark_bubble_grouping_unavailable(output, self._bubble_unavailable_reason)
+            return _mark_bubble_grouping_unavailable(accepted, self._bubble_unavailable_reason) + excluded
 
 
 def _bubble_grouping_config(config: dict) -> dict:

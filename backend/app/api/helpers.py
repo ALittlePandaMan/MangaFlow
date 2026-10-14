@@ -48,6 +48,12 @@ def project_read(project: Project) -> ProjectRead:
 def image_read(page: ImagePage) -> ImageRead:
     storage = get_storage()
     result = ImageRead.model_validate(page)
+    classification = (page.metadata_json or {}).get("text_classification")
+    classification_summary = {
+        key: classification[key]
+        for key in ("version", "status", "excluded_count", "uncertain_count", "policy")
+        if key in classification
+    } if isinstance(classification, dict) else None
     artifact_versions = (page.metadata_json or {}).get("artifact_versions", {})
 
     def versioned(path: str | None, artifact: str) -> str | None:
@@ -67,6 +73,7 @@ def image_read(page: ImagePage) -> ImageRead:
 
     return result.model_copy(
         update={
+            "text_classification": classification_summary,
             "ocr_exempt": bool((page.metadata_json or {}).get("ocr_exempt", False)),
             "original_url": versioned(page.original_path, "original"),
             "clean_url": versioned(page.clean_path, "clean"),

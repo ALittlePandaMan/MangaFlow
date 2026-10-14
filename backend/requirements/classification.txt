@@ -1,0 +1,7 @@
+# Install in a separate --system-site-packages venv, NOT the MangaOCR runtime.
+# RF-DETR 1.7 requires Transformers 5; MangaOCR currently requires <5.
+rfdetr==1.7.0
+transformers==5.1.0
+supervision==0.28.0
+numpy>=2,<2.3
+opencv-python>=4.10,<5

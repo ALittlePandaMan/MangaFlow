@@ -45,6 +45,7 @@ class ProjectRead(ORMModel):
 
 
 class ImageRead(ORMModel):
+    text_classification: dict[str, Any] | None = None
     id: str
     project_id: str
     filename: str

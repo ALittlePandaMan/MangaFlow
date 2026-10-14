@@ -4,6 +4,7 @@ import {GenericOCRFields} from '../components/GenericOCRFields'
 import {OCRConcurrencyFields} from '../components/OCRConcurrencyFields'
 import {NumberControl, SelectControl} from '../components/FormControls'
 import { useGlobalDialog } from '../components/GlobalDialog'
+import {TextClassificationFields} from '../components/TextClassificationFields'
 import {ButtonLoading, IndeterminateProgress, SettingsSkeleton, useMinimumLoadingTime} from '../components/LoadingUI'
 import {ShortcutSettings} from '../components/ShortcutSettings'
 import { DEFAULT_FONT_FAMILIES } from '../constants/fonts'
@@ -524,6 +525,15 @@ function ModelForm({available, configured, translation, fixedKind, initial, onCa
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault(); const data = new FormData(event.currentTarget)
     const config: Record<string, unknown> = {...defaults}
+    if (kind === 'detection' && provider === 'paddleocr') {
+      const mode = data.get('classification_mode')
+      const previous = defaults.text_classification
+      config.text_classification = {
+        ...(previous && typeof previous === 'object' ? previous : {}),
+        enabled: mode !== 'off', filter_sfx: mode === 'filter',
+        min_sfx_confidence: Number(data.get('sfx_confidence') || 0.6),
+      }
+    }
     for (const key of ['api_protocol','base_url','model','device','batch_size','timeout','retries','temperature','max_tokens','min_font_size','prompt','request_format','image_field','image_encoding','auth_mode','api_key_header','response_text_path','concurrency_mode','max_concurrency','requests_per_minute']) {
       if (!data.has(key)) continue
       const value = data.get(key)
@@ -564,6 +574,7 @@ function ModelForm({available, configured, translation, fixedKind, initial, onCa
     {kind !== 'translation' && <div className="col-span-full grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 rounded-lg bg-surface p-3"><strong className="text-[11px] text-ink">{providerLabel(kind, provider)}</strong><span className="text-[10px] text-muted">{selected?.description}</span><i className="text-[9px] not-italic text-accent">{selected?.devices.join(' / ')}</i></div>}
     {kind !== 'translation' && kind !== 'rendering' && !cloud && <div className={fieldClass} key={`${kind}-${provider}-device`}><span>运行设备</span><SelectControl name="device" ariaLabel="运行设备" value={device} options={deviceOptions(selected)} onChange={setDevice}/></div>}
     {selected?.supports_batch && kind !== 'translation' && <label className={fieldClass} key={`${kind}-${provider}-batch`}>Batch Size<NumberControl ariaLabel="Batch Size" name="batch_size" min={1} step={1} defaultValue={String(defaults.batch_size ?? '')} placeholder="4"/></label>}
+    {kind === 'detection' && provider === 'paddleocr' && <TextClassificationFields key={`${kind}-${provider}-classification`} config={defaults.text_classification}/>}
     {genericOcr && <GenericOCRFields key={`${kind}-${provider}`} defaults={defaults} baseUrl={baseUrl} onBaseUrlChange={setBaseUrl} savedKeyUsable={savedKeyUsable}/>}
     {cloud && !genericOcr && <div className="col-span-full grid grid-cols-2 max-sm:grid-cols-1 gap-3" key={`${kind}-${provider}`}>
       {cloudOcr && <><p className="col-span-full m-0 rounded-lg bg-accent-soft p-3 text-xs leading-relaxed text-accent-soft-ink">多模态大语言模型直接看图识字：按检测框逐个上传裁剪区域，结果写入原文，不改变气泡检测与合并。图片会发送到你配置的服务，可能产生费用；请选择支持图片输入的模型。</p><div className={cn(fieldClass, 'col-span-full')}><span>连接配置</span><SelectControl ariaLabel="连接配置" value={useTranslation ? 'translation' : 'custom'} options={[{value:'translation', label:'使用当前翻译模型', disabled:!canReuseTranslation}, {value:'custom', label:'独立配置视觉模型'}]} onChange={value => {setReuseTranslation(value === 'translation'); invalidateDiscovery()}}/></div>{useTranslation && <p className="col-span-full m-0 break-all rounded-lg border border-line p-3 text-xs leading-relaxed text-secondary">模型：{String(translation?.config.model)}<br/>接口：{String(translation?.config.base_url)}<br/>保存时在后端复制当前连接及密钥；之后两份配置独立。下方识字 Prompt 不会覆盖翻译 Prompt。</p>}</>}

@@ -16,6 +16,12 @@ export interface Project {
 }
 
 export interface ImagePage {
+  text_classification?: {
+    version: number
+    status: string
+    excluded_count: number
+    policy?: {enabled: boolean; filter_sfx: boolean; min_sfx_confidence: number}
+  } | null
   id: string
   project_id: string
   filename: string

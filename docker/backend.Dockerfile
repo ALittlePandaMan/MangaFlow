@@ -25,6 +25,11 @@ RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
 # instead of downloading a duplicate Ubuntu package during every image build.
 RUN ln -sf /opt/conda/lib/libgomp.so.1 /usr/local/lib/libgomp.so.1 && ldconfig
 COPY VERSION /app/VERSION
+COPY backend/requirements/classification.txt /tmp/requirements-classification.txt
+# Transformers 5 must not replace the Transformers 4 used by MangaOCR.
+RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
+    python -m venv --system-site-packages /opt/layout-classifier \
+    && /opt/layout-classifier/bin/python -m pip install --timeout 300 --retries 10 -r /tmp/requirements-classification.txt
 COPY backend /app/backend
 WORKDIR /app/backend
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
