@@ -1,4 +1,5 @@
 import hashlib
+import shutil
 from pathlib import Path
 
 import cv2
@@ -150,3 +151,48 @@ def test_balloon_mask_rejects_geometry_outside_page(tmp_path: Path) -> None:
     entry["origin"] = [45, 35]
     with pytest.raises(ValueError, match="escapes the source image"):
         load_balloon_mask(storage, page_directory, entry, image_shape=(40, 50))
+
+
+def archived_balloon(tmp_path: Path):
+    storage = StorageManager(tmp_path / "data")
+    page_directory = storage.page_dir("project", "page")
+    compact = np.zeros((20, 24), dtype=np.uint8)
+    cv2.ellipse(compact, (12, 10), (10, 8), 0, 0, 360, 255, -1)
+    entry = persist_balloon_mask(storage, page_directory, instance_id="bubble-history",
+        mask=compact, origin=(4, 6), image_shape=(40, 50), confidence=.95, parent_instance_id=None)
+    live = load_balloon_mask(storage, page_directory, entry, image_shape=(40, 50))
+    directory = storage.project_dir("project") / "history" / "assets"
+    directory.mkdir(parents=True, exist_ok=True)
+    archived = directory / f"{entry['sha256']}.png"
+    shutil.copyfile(storage.absolute(entry["path"]), archived)
+    entry = {**entry, "path": storage.relative(archived)}
+    return storage, page_directory, entry, live
+
+
+def test_undo_archived_balloon_mask_keeps_the_same_pixel_constraint(tmp_path):
+    storage, directory, entry, expected = archived_balloon(tmp_path)
+    restored = load_balloon_mask(storage, directory, entry, image_shape=(40, 50))
+    assert np.array_equal(restored, expected)
+
+
+@pytest.mark.parametrize("project", ["other-project", "project"])
+def test_history_balloon_rejects_cross_project_and_non_content_addressed_paths(tmp_path, project):
+    storage, directory, entry, _ = archived_balloon(tmp_path)
+    other = storage.project_dir(project) / "history" / "assets"
+    other.mkdir(parents=True, exist_ok=True)
+    name = f"{entry['sha256']}.png" if project != "project" else "arbitrary.png"
+    path = other / name
+    shutil.copyfile(storage.absolute(entry["path"]), path)
+    entry["path"] = storage.relative(path)
+    with pytest.raises(ValueError, match="does not belong"):
+        load_balloon_mask(storage, directory, entry, image_shape=(40, 50))
+
+
+def test_archived_balloon_requires_and_checks_its_checksum(tmp_path):
+    storage, directory, entry, _ = archived_balloon(tmp_path)
+    missing_checksum = {key: value for key, value in entry.items() if key != "sha256"}
+    with pytest.raises(ValueError, match="does not belong"):
+        load_balloon_mask(storage, directory, missing_checksum, image_shape=(40, 50))
+    storage.absolute(entry["path"]).write_bytes(b"corrupted archive")
+    with pytest.raises(ValueError, match="checksum mismatch"):
+        load_balloon_mask(storage, directory, entry, image_shape=(40, 50))

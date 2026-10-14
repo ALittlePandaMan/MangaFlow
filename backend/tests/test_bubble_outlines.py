@@ -157,7 +157,7 @@ def test_user_handwritten_overlaps_merge_but_adjacent_balloon_stays_separate():
     assert grouped[1].bbox == [21, 157, 102, 132]
     assert grouped[1].metadata["line_grouping"]["member_order"] == [1, 0, 2]
     assert grouped[1].metadata["balloon_assignment"]["outline_evidence"]["support"] >= .75
-    assert all(r.metadata["balloon_grouping_version"] == 2 for r in grouped)
+    assert all(r.metadata["balloon_grouping_version"] == 3 for r in grouped)
     repeated = group_text_regions_by_bubbles(regions, bubbles, image_path=image_path, page_key="handwritten")
     assert [r.bubble_id for r in repeated] == [r.bubble_id for r in grouped]
 
@@ -186,3 +186,58 @@ def test_user_adjacent_balloon_wall_splits_one_large_model_proposal():
     assert len(grouped) == 2
     assert [r.metadata["line_grouping"]["source_count"] for r in grouped] == [2, 3]
     assert grouped[0].bubble_id != grouped[1].bubble_id
+
+
+def test_one_real_divider_does_not_authorize_splitting_a_neighboring_handwritten_stroke(tmp_path):
+    image = np.full(SHAPE, 255, np.uint8)
+    cv2.rectangle(image, (40, 20), (279, 219), 0, 2)
+    cv2.line(image, (115, 20), (115, 219), 0, 3)  # Two balloons.
+    cv2.line(image, (210, 20), (210, 219), 0, 3)  # A glyph touching the outline.
+    regions = [region([70, 40, 28, 160]), region([150, 40, 28, 160]),
+               region([195, 20, 32, 200]), region([235, 40, 28, 160])]
+    grouped = group_text_regions_by_bubbles(regions, [bubble(np.ones((200, 240), np.uint8), confidence=.95)],
+                                           image_path=save(tmp_path, image))
+    assert len(grouped) == 2
+    assert [r.metadata.get("line_grouping", {}).get("source_count", 1) for r in grouped] == [1, 3]
+    assert grouped[0].bubble_id != grouped[1].bubble_id
+
+
+def test_touching_handwritten_balloons_split_despite_mixed_orientation_and_punctuation():
+    path = FIXTURES / "handwritten-touching.png"
+    shape = cv2.imread(str(path), 0).shape
+    mask = (cv2.imread(str(FIXTURES / "handwritten-touching-mask.png"), 0) > 0).astype(np.uint8)
+    proposal = BubbleInstance(instance_id="touching", bbox=[12, 19, 166, 109],
+        polygon=bbox_to_polygon([12, 19, 166, 109]), mask=mask, mask_origin=(12, 19),
+        confidence=.929588, image_shape=shape)
+    boxes = [[102, 23, 34, 79], [31, 56, 26, 36], [40, 49, 12, 8], [115, 30, 57, 63], [61, 61, 20, 18]]
+    polygons = [
+        [[102, 24], [134, 23], [136, 101], [105, 102]],
+        [[31, 56], [57, 56], [57, 92], [31, 92]],
+        [[40, 49], [52, 49], [52, 57], [40, 57]],
+        [[115, 47], [149, 30], [172, 76], [138, 93]],
+        [[61, 61], [81, 61], [81, 79], [61, 79]],
+    ]
+    orientations = ["vertical", "vertical", "horizontal", "horizontal", "horizontal"]
+    confidences = [.539629, .610824, .309162, .7, .210258]
+    regions = [DetectionResult(bbox=b, polygon=p, orientation=o, confidence=c)
+               for b, p, o, c in zip(boxes, polygons, orientations, confidences, strict=True)]
+    grouped = group_text_regions_by_bubbles(regions, [proposal], image_path=path)
+    assert len(grouped) == 2
+    assert sorted(r.metadata["line_grouping"]["source_count"] for r in grouped) == [2, 3]
+    assert grouped[0].bubble_id != grouped[1].bubble_id
+
+
+def test_staggered_mixed_text_in_one_outlined_balloon_does_not_split(tmp_path):
+    image = np.full(SHAPE, 255, np.uint8)
+    mask = np.zeros((200, 220), np.uint8)
+    cv2.ellipse(mask, (110, 100), (105, 95), 0, 0, 360, 1, -1)
+    cv2.ellipse(image, (150, 120), (105, 95), 0, 0, 360, 0, 2)
+    regions = [region([195, 45, 25, 90]), region([90, 110, 25, 90]), region([145, 75, 25, 110])]
+    punctuation = region([120, 155, 9, 10])
+    punctuation.orientation = "horizontal"
+    regions.append(punctuation)
+    grouped = group_text_regions_by_bubbles(regions, [bubble(mask, confidence=.95)],
+                                           image_path=save(tmp_path, image))
+    assert len(grouped) == 1
+    assert grouped[0].metadata["line_grouping"]["source_count"] == 4
+    assert "instance_split" not in grouped[0].metadata

@@ -147,14 +147,40 @@ def _visible_interiors(gray: np.ndarray, mask: np.ndarray, cores: list[np.ndarra
     text = np.zeros_like(mask)
     for core in cores:
         text |= core
-    separator = np.zeros_like(mask)
+    children = [((owners == index) & (mask > 0)).astype(np.uint8) for index in range(len(seeds))]
+    expanded = [cv2.dilate(child, np.ones((5, 5), np.uint8)) for child in children]
+    parents = list(range(len(seeds)))
+
+    def root(index: int) -> int:
+        while parents[index] != index:
+            parents[index] = parents[parents[index]]
+            index = parents[index]
+        return index
+
+    verified = []
+    # Evidence for one real wall must not authorize every other cut. Lettering
+    # can split whitespace into extra components in a neighboring balloon.
     for index in range(len(seeds)):
-        child = ((owners == index) & (mask > 0)).astype(np.uint8)
-        edge = cv2.dilate(child, np.ones((5, 5), np.uint8)) & (mask > 0) & (owners != index)
-        separator |= edge.astype(np.uint8)
-    divider = (separator > 0) & (walls > 0) & (distance > 2)
-    total = np.count_nonzero(divider)
-    visible = np.count_nonzero(divider & (text == 0))
-    if total < max(16, min(mask.shape) * .2) or visible < total * .4:
+        for other in range(index + 1, len(seeds)):
+            interface = ((expanded[index] & children[other]) | (expanded[other] & children[index])) > 0
+            interface &= distance > 2
+            # A point/corner contact is not an independent separator.
+            if np.count_nonzero(interface) < max(16, min(mask.shape) * .1):
+                continue
+            divider = interface & (walls > 0)
+            total = np.count_nonzero(divider)
+            visible = np.count_nonzero(divider & (text == 0))
+            if total >= max(16, min(mask.shape) * .2) and visible >= total * .4:
+                verified.append((index, other))
+            else:
+                parents[root(other)] = root(index)
+    if not verified or any(root(first) == root(second) for first, second in verified):
         return None
-    return [((owners == index) & (mask > 0)).astype(np.uint8) for index in range(len(seeds))]
+    merged: dict[int, np.ndarray] = {}
+    for index, child in enumerate(children):
+        parent = root(index)
+        if parent not in merged:
+            merged[parent] = child.copy()
+        else:
+            merged[parent] |= child
+    return list(merged.values()) if len(merged) > 1 else None

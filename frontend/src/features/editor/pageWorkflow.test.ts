@@ -51,7 +51,7 @@ describe('page workflow behavior', () => {
     expect(pageOcrNeedsDetection([{locked:true, layout_data:{detection:{}}}])).toBe(false)
     expect(pageOcrNeedsDetection([{
       locked:false,
-      layout_data:{detection:{balloon_grouping_version:2, balloon_assignment:{status:'outside', bubble_id:null}}},
+      layout_data:{detection:{balloon_grouping_version:3, balloon_assignment:{status:'outside', bubble_id:null}}},
     }])).toBe(false)
     expect(pageOcrNeedsDetection([{
       locked:false,
@@ -74,6 +74,9 @@ describe('page workflow behavior', () => {
       }}}])).toBe(true)
       expect(pageOcrNeedsDetection([{...old, layout_data:{detection:{
         balloon_grouping_version:2, balloon_assignment:{status},
+      }}}])).toBe(true)
+      expect(pageOcrNeedsDetection([{...old, layout_data:{detection:{
+        balloon_grouping_version:3, balloon_assignment:{status},
       }}}])).toBe(false)
       expect(pageOcrNeedsDetection([{...old, locked:true}])).toBe(false)
       expect(lockedLegacyOcrRegionCount([{...old, locked:true}])).toBe(1)

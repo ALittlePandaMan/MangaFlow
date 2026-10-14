@@ -32,7 +32,7 @@ type OcrRegionLayout = Pick<TextRegion, 'layout_data'>
 type OcrDetectionRegion = OcrRegionLayout & Pick<TextRegion, 'locked'>
 // Keep in sync with backend services/detection/grouping.py. A rule upgrade
 // only offers a user-confirmed rerun; it never mutates pages on load.
-const BALLOON_GROUPING_VERSION = 2
+const BALLOON_GROUPING_VERSION = 3
 
 export function pageOcrNeedsDetection(regions: OcrDetectionRegion[]): boolean {
   if (regions.length === 0) return true

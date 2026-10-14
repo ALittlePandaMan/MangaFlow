@@ -116,7 +116,19 @@ def load_balloon_mask(
     path = storage.absolute(path_value)
     bubble_directory = (page_directory / "bubbles").resolve()
     if path.parent != bubble_directory:
-        raise ValueError("Balloon constraint path does not belong to this page")
+        # Undo/redo restores immutable, content-addressed project snapshots.
+        # Permit only that project's exact archive directory and require the
+        # manifest checksum to identify the file before reading any bytes.
+        page_parts = page_directory.resolve().relative_to(storage.root).parts
+        expected_sha256 = entry.get("sha256")
+        archived = bool(
+            len(page_parts) == 4 and page_parts[0] == "projects" and page_parts[2] == "pages"
+            and isinstance(expected_sha256, str) and re.fullmatch(r"[0-9a-f]{64}", expected_sha256)
+            and path.parent == (storage.project_dir(page_parts[1]) / "history" / "assets").resolve()
+            and path.name == f"{expected_sha256}.png"
+        )
+        if not archived:
+            raise ValueError("Balloon constraint path does not belong to this page")
     if not path.is_file():
         raise ValueError("Balloon constraint file is missing")
     expected_sha256 = entry.get("sha256")

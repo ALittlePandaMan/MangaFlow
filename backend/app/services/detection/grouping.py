@@ -12,7 +12,7 @@ from app.services.detection.outlines import MIN_OUTLINE_VERIFIED_CONFIDENCE, ref
 from app.utils.geometry import bbox_to_polygon
 
 MIN_TRUSTED_BALLOON_CONFIDENCE = 0.75
-BALLOON_GROUPING_VERSION = 2
+BALLOON_GROUPING_VERSION = 3
 
 
 def group_text_regions_by_bubbles(
@@ -490,13 +490,12 @@ def _split_group_at_visible_boundary(
 
     if image is None or len(group) < 2:
         return None
-    orientation_counts: dict[str, int] = {}
+    orientation_weights: dict[str, float] = {}
     for _, region in group:
-        orientation_counts[region.orientation] = orientation_counts.get(region.orientation, 0) + 1
-    text_orientation = max(orientation_counts, key=orientation_counts.get)
-    dominant = [item for item in group if item[1].orientation == text_orientation]
-    if text_orientation not in {"vertical", "horizontal"} or len(dominant) / len(group) < 0.8:
-        return None
+        if region.orientation in {"vertical", "horizontal"}:
+            weight = max(1.0, region.bbox[2] * region.bbox[3]) * max(.01, region.confidence)
+            orientation_weights[region.orientation] = orientation_weights.get(region.orientation, 0) + weight
+    text_orientation = max(orientation_weights, key=orientation_weights.get) if orientation_weights else "vertical"
 
     evidence_maps = _bubble_boundary_evidence(image, bubble, [region for _, region in group])
     if evidence_maps is None:
@@ -542,7 +541,7 @@ def _split_group_at_visible_boundary(
     orientations = [text_orientation, "horizontal" if text_orientation == "vertical" else "vertical"]
     for split_orientation in orientations:
         ordered = sorted(
-            dominant,
+            group,
             key=lambda item: sum(geometry(item[1], split_orientation)[:2]) / 2,
         )
         short_side = float(
@@ -563,6 +562,10 @@ def _split_group_at_visible_boundary(
             gap = second_edge - first_edge
             if gap < minimum_gap:
                 continue
+            # An outline can curve across the actual gap. Do not constrain it
+            # to a thin strip based on tiny punctuation boxes. Text cores are
+            # still excluded from the evidence; real anchored ink is required.
+            search_half_width = max(half_width, (gap - minimum_gap) / 2)
 
             first_lead = float(
                 np.median([geometry(region, split_orientation)[2] for _, region in first])
@@ -590,7 +593,7 @@ def _split_group_at_visible_boundary(
                     orientation=split_orientation,
                     cut=cut,
                     cap=cap,
-                    half_width=half_width,
+                    half_width=search_half_width,
                 )
                 boundary_source = "mask_boundary"
                 if coverage < min_boundary_coverage or run < min_boundary_run:
@@ -603,10 +606,14 @@ def _split_group_at_visible_boundary(
                         cut=cut,
                         cap=cap,
                         cap_kind=cap_kind,
-                        half_width=half_width,
+                        half_width=search_half_width,
                     )
                     boundary_source = "anchored_internal_line"
-                    if coverage < max(0.9, min_boundary_coverage) or run < max(
+                    # A verified visible outer outline permits a small
+                    # model-mask offset at the anchor. Otherwise retain the
+                    # stricter path threshold; whitespace is never evidence.
+                    internal_minimum = 0.85 if bubble.outline_evidence else 0.9
+                    if coverage < max(internal_minimum, min_boundary_coverage) or run < max(
                         0.85, min_boundary_run
                     ):
                         continue

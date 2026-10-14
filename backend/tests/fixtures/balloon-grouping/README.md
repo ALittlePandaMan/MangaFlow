@@ -11,3 +11,11 @@ The test replays original detector polygons without loading model weights,
 calling external services, accessing a user database, or modifying project data.
 Expected grouping is two upper columns and three lower columns, separately.
 It also simulates a model mask incorrectly joining these adjacent balloons.
+
+`handwritten-touching.png` is a 190 × 155 original crop from source coordinates
+`(155, 690)` on the second test page. Its model mask has crop-relative origin
+`(12, 19)` and confidence `0.929588`. This is a real incorrect union of two
+touching balloons: mixed-orientation detector fragments and punctuation
+previously disabled visible-seam checks, while the curved seam only partly
+matched the model's outer boundary. The expected result is two separate groups,
+containing two and three saved detector fragments respectively.
