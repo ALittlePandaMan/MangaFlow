@@ -1,5 +1,6 @@
 import {useEffect, useRef, useState} from 'react'
 import type {ReactNode} from 'react'
+import {FileImage, Focus} from 'lucide-react'
 import {cn, pageClass} from '../ui'
 
 export function useMinimumLoadingTime(active: boolean, minimumMs = 500) {
@@ -96,9 +97,18 @@ export function EditorSkeleton({canvasControls}: {canvasControls?: ReactNode}) {
   return <div className="editor-skeleton loading-skeleton-page grid min-h-0 grid-cols-[200px_minmax(0,1fr)_320px]" aria-busy="true" aria-label="正在打开工作台"><aside className="border-r border-line-subtle bg-panel p-3"><SkeletonBlock className="h-3 w-16"/>{[0,1,2].map(item => <div className="mt-4" key={item}><SkeletonBlock className="aspect-[3/4] w-full"/><SkeletonBlock className="mt-2 h-2.5 w-4/5"/><SkeletonBlock className="mt-2 h-2 w-2/5"/></div>)}</aside><main className="relative grid place-items-center workspace-background">{canvasControls}<div className="w-[min(420px,60%)]"><SkeletonBlock className="aspect-[3/4] w-full rounded-none"/><div className="mt-4 flex justify-center gap-2"><SkeletonBlock className="h-2 w-16"/><SkeletonBlock className="h-2 w-10"/></div></div></main><aside className="border-l border-line-subtle bg-panel p-5"><SkeletonBlock className="h-4 w-24"/>{[0,1,2,3,4,5].map(item => <div className="mt-5" key={item}><SkeletonBlock className="h-2.5 w-20"/><SkeletonBlock className="mt-2 h-10 w-full"/></div>)}</aside></div>
 }
 
-export function BlockingLoader({label, detail = '任务完成前暂时不能进行其他操作', progress}: {label: string, detail?: string, progress?: number | null}) {
+export type ProcessingScope = {kind: 'page', filename: string} | {kind: 'regions', filename: string, regionKeys: string[]}
+
+export function BlockingLoader({label, detail = '任务完成前暂时不能进行其他操作', progress, scope}: {label: string, detail?: string, progress?: number | null, scope?: ProcessingScope}) {
   const known = typeof progress === 'number' && progress >= 0
-  return <div className="fixed inset-0 z-[75] flex cursor-wait items-center justify-center bg-canvas/55 backdrop-blur-[3px]" role="status" aria-live="assertive" aria-label={label}><div className="w-[min(390px,calc(100vw-40px))] rounded-2xl bg-surface p-5 text-ink shadow-dialog"><div className="flex items-center gap-4">{known ? <CircularProgress value={progress} size={48} label={label}/> : <span className="grid size-12 shrink-0 place-items-center rounded-xl bg-accent/10"><ActivitySpinner className="text-accent" size={23} label={label}/></span>}<span className="min-w-0 flex-1"><strong className="block truncate text-xs">{label}</strong><small className="mt-1.5 block text-[10px] leading-relaxed text-muted">{detail}</small></span></div>{known ? <ProgressBar className="mt-4" value={progress} label="整体进度"/> : <IndeterminateProgress className="mt-4"/>}</div></div>
+  const regional = scope?.kind === 'regions'
+  const target = regional ? scope.regionKeys.join('、') : ''
+  const scopeTitle = regional ? `区域处理 · ${scope.regionKeys.length} 个` : '整页处理'
+  const ScopeIcon = regional ? Focus : FileImage
+  const scopeDetail = regional ? '仅处理这些区域，不执行整页重跑。任务完成前暂时不能编辑。' : '处理范围：本页全部文字区域。任务完成前暂时不能编辑。'
+  return <div className="fixed inset-0 z-[75] flex cursor-wait items-center justify-center bg-canvas/55 backdrop-blur-[3px]" role="status" aria-live="assertive" aria-label={scope ? `${regional ? `区域处理：${target}` : `整页处理：${scope.filename}`} · ${label}` : label}><div className="w-[min(390px,calc(100vw-40px))] rounded-2xl bg-surface p-5 text-ink shadow-dialog">
+    {scope && <div className="mb-4 flex min-w-0 items-center gap-2 text-[11px]"><ScopeIcon size={16} className="shrink-0 text-accent" aria-hidden="true"/><strong className="shrink-0 text-accent-soft-ink">{scopeTitle}</strong><span className="min-w-0 truncate text-muted" title={scope.filename}>{scope.filename}</span></div>}
+    <div className="flex items-center gap-4">{known ? <CircularProgress value={progress} size={48} label={label}/> : <span className="grid size-12 shrink-0 place-items-center rounded-xl bg-accent/10"><ActivitySpinner className="text-accent" size={23} label={label}/></span>}<span className="min-w-0 flex-1"><strong className="block text-xs">{label}</strong>{regional && <span className="mt-1.5 block max-h-20 overflow-y-auto break-words font-mono text-[10px] leading-relaxed text-accent-soft-ink" title={target}>{target}</span>}<small className="mt-1.5 block text-[10px] leading-relaxed text-muted">{scope ? scopeDetail : detail}</small></span></div>{known ? <ProgressBar className="mt-4" value={progress} label={scope ? (regional ? '区域进度' : '整页进度') : '整体进度'}/> : <IndeterminateProgress className="mt-4"/>}</div></div>
 }
 
 export function InlineLoading({label, children}: {label: string, children?: ReactNode}) {

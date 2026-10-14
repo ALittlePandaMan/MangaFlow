@@ -1,14 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from fastapi.staticfiles import StaticFiles
-from starlette.responses import Response
-from starlette.types import Scope
 
 from app.api.router import api_router
 from app.core.config import get_settings
@@ -20,6 +18,7 @@ from app.services.infra.model_manifest import (
     preload_manifest_models,
 )
 from app.storage import get_storage
+from app.storage.media import VersionedMediaFiles
 from app.tasks import task_manager
 from app.version import APP_VERSION
 
@@ -29,16 +28,6 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
 logger = logging.getLogger(__name__)
-
-
-class VersionedMediaFiles(StaticFiles):
-    """Allow content-versioned artifacts to stay in the browser cache."""
-
-    async def get_response(self, path: str, scope: Scope) -> Response:
-        response = await super().get_response(path, scope)
-        if response.status_code in {200, 206, 304} and b"v=" in scope.get("query_string", b""):
-            response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
-        return response
 
 
 def provision_models_from_manifest() -> None:
@@ -82,13 +71,27 @@ def provision_models_from_manifest() -> None:
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    from app.services.execution import configure_native_threads
+    configure_native_threads()
     initialize_database()
     provision_models_from_manifest()
     task_manager.start()
     task_manager.recover_interrupted()
-    yield
-    for running in list(task_manager.running.values()):
-        running.cancel()
+    stop_maintenance = asyncio.Event()
+    async def maintain_history():
+        from app.services.history_assets import collect_idle_history_assets
+        while not stop_maintenance.is_set():
+            try:
+                await asyncio.wait_for(stop_maintenance.wait(), timeout=600)
+            except TimeoutError:
+                await asyncio.to_thread(collect_idle_history_assets)
+    maintenance = asyncio.create_task(maintain_history())
+    try:
+        yield
+    finally:
+        stop_maintenance.set()
+        await maintenance
+        await task_manager.shutdown()
 
 
 app = FastAPI(

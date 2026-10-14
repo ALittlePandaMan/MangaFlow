@@ -2,6 +2,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+import pytest
 from app.services.base import ProviderState
 from app.services.inpainting import masking as masking_module
 from app.services.inpainting.masking import (
@@ -36,12 +37,13 @@ def test_mask_generation_and_morphology(tmp_path: Path) -> None:
     assert mask_is_empty(path)
 
 
-def test_text_mask_fills_tight_polygon_on_uniform_background(tmp_path: Path) -> None:
+@pytest.mark.parametrize("background,ink", [(235, 20), (20, 235)])
+def test_text_mask_prefers_glyphs_on_uniform_background(tmp_path: Path, background, ink) -> None:
     image_path = tmp_path / "page.png"
     mask_path = tmp_path / "text-mask.png"
-    image = np.full((100, 100, 3), 235, dtype=np.uint8)
-    cv2.rectangle(image, (38, 25), (43, 75), (20, 20, 20), -1)
-    cv2.rectangle(image, (55, 25), (60, 75), (20, 20, 20), -1)
+    image = np.full((100, 100, 3), background, dtype=np.uint8)
+    cv2.rectangle(image, (38, 25), (43, 75), (ink, ink, ink), -1)
+    cv2.rectangle(image, (55, 25), (60, 75), (ink, ink, ink), -1)
     cv2.imwrite(str(image_path), image)
     metadata = create_text_mask(
         image_path,
@@ -51,10 +53,11 @@ def test_text_mask_fills_tight_polygon_on_uniform_background(tmp_path: Path) -> 
     )
     mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
     masked = cv2.countNonZero(mask)
-    assert 3000 < masked < 4000
+    assert 600 < masked < 1200
     assert mask[50, 40] == 255
-    assert mask[50, 30] == 255
-    assert metadata["method"] == "uniform_background_polygon"
+    assert mask[50, 30] == 0
+    assert metadata["method"] == "local_background_glyph"
+    assert metadata["fallback_reason"] is None
     assert metadata["suggested_region_type"] == "background_complex"
 
 
@@ -197,7 +200,8 @@ def test_text_mask_preserves_enclosed_label_background(tmp_path: Path) -> None:
     assert metadata["method"] == "enclosed_background_color"
 
 
-def test_text_mask_uses_expanded_polygon_for_large_stylized_text(tmp_path: Path) -> None:
+@pytest.mark.parametrize("segmented", [False, True])
+def test_stylized_text_uses_polygon_only_after_segmentation_failure(tmp_path: Path, segmented) -> None:
     image_path = tmp_path / "title.png"
     mask_path = tmp_path / "title-mask.png"
     rng = np.random.default_rng(7)
@@ -207,13 +211,93 @@ def test_text_mask_uses_expanded_polygon_for_large_stylized_text(tmp_path: Path)
     cv2.imwrite(str(image_path), image)
 
     polygon = [[25, 35], [195, 35], [195, 100], [25, 100]]
-    metadata = create_text_mask(image_path, polygon, mask_path, expand=2)
+    probability = np.zeros(image.shape[:2], np.float32)
+    if segmented:
+        cv2.putText(probability, "TITLE", (35, 85), cv2.FONT_HERSHEY_DUPLEX, 1.4, 1., 8)
+    metadata = create_text_mask(image_path, polygon, mask_path, expand=2, text_probability=probability)
     mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
 
-    assert metadata["method"] == "stylized_text_polygon"
-    assert metadata["coverage"] == 1.0
-    assert metadata["mask_expansion"] > 1.0
-    assert mask[32, 110] == 255
+    if segmented:
+        assert metadata["method"] == "learned_glyph"
+        assert metadata["glyph_source"] == "model"
+        assert metadata["fallback_reason"] is None
+        assert .1 < metadata["coverage"] < .7
+        assert mask[40, 190] == 0
+    else:
+        assert metadata["method"] == "segmentation_fallback_polygon"
+        assert metadata["fallback_reason"] == "no_reliable_glyphs"
+        assert metadata["coverage"] == 1.0
+    assert mask[32, 110] == 0  # Even fallback cannot grow beyond the frame.
+
+
+@pytest.mark.parametrize("conservative", [False, True])
+@pytest.mark.parametrize("probability_value", [None, 0., 1.])
+def test_polygon_fallback_requires_failed_local_and_model_segmentation(tmp_path, conservative, probability_value):
+    image_path = tmp_path / "blank.png"
+    output = tmp_path / "mask.png"
+    cv2.imwrite(str(image_path), np.full((100, 100, 3), 235, np.uint8))
+    probability = None if probability_value is None else np.full((100, 100), probability_value, np.float32)
+    metadata = create_text_mask(image_path, [[25, 15], [75, 15], [75, 85], [25, 85]], output,
+        conservative=conservative, text_probability=probability)
+    mask = cv2.imread(str(output), cv2.IMREAD_GRAYSCALE)
+    assert metadata["method"] == "segmentation_fallback_polygon"
+    assert metadata["fallback_reason"] == "no_reliable_glyphs"
+    assert metadata["coverage"] == 1.
+    assert mask[50, 30] == 255
+    assert mask[50, 20] == 0
+
+
+def test_failed_local_segmentation_does_not_hide_successful_model_mask(tmp_path):
+    image_path = tmp_path / "low-contrast.png"
+    output = tmp_path / "mask.png"
+    cv2.imwrite(str(image_path), np.full((100, 100, 3), 235, np.uint8))
+    probability = np.zeros((100, 100), np.float32)
+    probability[30:70, 38:44] = 1.
+    metadata = create_text_mask(image_path, [[25, 15], [75, 15], [75, 85], [25, 85]], output,
+        text_probability=probability)
+    mask = cv2.imread(str(output), cv2.IMREAD_GRAYSCALE)
+    assert metadata["method"] == "learned_glyph"
+    assert metadata["fallback_reason"] is None
+    assert mask[50, 40] == 255
+    assert mask[50, 30] == 0
+
+
+def test_clear_text_is_segmented_even_with_artwork_in_sampling_ring(tmp_path):
+    image_path = tmp_path / "dialogue.png"
+    output = tmp_path / "mask.png"
+    rng = np.random.default_rng(9)
+    image = rng.integers(35, 210, size=(180, 150, 3), dtype=np.uint8)
+    image[20:161, 35:106] = 240
+    cv2.putText(image, "TEST", (40, 65), cv2.FONT_HERSHEY_SIMPLEX, .6, (15, 15, 15), 1, cv2.LINE_AA)
+    cv2.putText(image, "TEST", (40, 115), cv2.FONT_HERSHEY_SIMPLEX, .6, (15, 15, 15), 1, cv2.LINE_AA)
+    cv2.imwrite(str(image_path), image)
+    metadata = create_text_mask(image_path, [[35, 20], [105, 20], [105, 160], [35, 160]], output)
+    mask = cv2.imread(str(output), cv2.IMREAD_GRAYSCALE)
+    assert metadata["method"] == "enclosed_background_color"
+    assert metadata["clear_glyphs"] is True
+    assert metadata["fallback_reason"] is None
+    assert .05 < metadata["coverage"] < .5
+    assert mask[85, 70] == 0
+
+
+@pytest.mark.parametrize("uniform", [False, True])
+def test_model_evidence_rejects_disconnected_artwork(tmp_path, uniform):
+    rng = np.random.default_rng(9)
+    image = rng.integers(35, 210, size=(180, 150, 3), dtype=np.uint8)
+    if uniform:
+        image[:] = 240
+    image[20:161, 35:106] = 240
+    image[40:90, 45:51] = 15  # Lettering.
+    image[115:140, 85:95] = 15  # Unrelated illustration.
+    probability = np.zeros(image.shape[:2], np.float32)
+    probability[40:90, 45:51] = 1.
+    output = tmp_path / "mask.png"
+    metadata = create_text_mask(Path("unused"), [[35, 20], [105, 20], [105, 160], [35, 160]], output,
+        source_image=image, text_probability=probability)
+    mask = cv2.imread(str(output), cv2.IMREAD_GRAYSCALE)
+    assert metadata["fallback_reason"] is None
+    assert mask[60, 48] == 255
+    assert mask[125, 90] == 0
 
 
 def test_balloon_constraint_clips_ellipse_to_resolution_adaptive_safe_interior() -> None:

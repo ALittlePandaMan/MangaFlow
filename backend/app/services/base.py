@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
@@ -40,6 +41,15 @@ T = TypeVar("T")
 class ModelProvider(ABC, Generic[T]):
     capabilities: ProviderCapabilities
 
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        capability = getattr(cls, "capabilities", None)
+        if capability and capability.name in {"manga-ocr", "paddleocr", "lama", "hybrid"}:
+            from app.services.execution import serialized_model_call
+            for name in ("load", "unload", "detect", "recognize", "inpaint"):
+                if name in cls.__dict__:
+                    setattr(cls, name, serialized_model_call(cls.__dict__[name]))
+
     def __init__(self, config: dict[str, Any] | None = None) -> None:
         self.config = config or {}
         self.state = ProviderState.UNLOADED
@@ -50,10 +60,15 @@ class ModelProvider(ABC, Generic[T]):
         self.state = ProviderState.READY
 
     def unload(self) -> None:
-        self.state = ProviderState.UNLOADED
+        from app.services.execution import execution_runtime
+        slot = execution_runtime().model_slot() if self.capabilities.name in {"manga-ocr", "paddleocr", "lama", "hybrid"} else nullcontext()
+        with slot, self._load_lock:
+            self.state = ProviderState.UNLOADED
 
     def ensure_loaded(self) -> None:
-        with self._load_lock:
+        from app.services.execution import execution_runtime
+        slot = execution_runtime().model_slot() if self.capabilities.name in {"manga-ocr", "paddleocr", "lama", "hybrid"} else nullcontext()
+        with slot, self._load_lock:
             if self.state == ProviderState.READY:
                 return
             try:

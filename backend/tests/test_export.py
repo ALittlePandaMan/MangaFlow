@@ -312,6 +312,7 @@ def test_source_project_archive_can_be_imported_for_further_editing(client) -> N
     imported_regions = client.get(f"/api/images/{imported_pages[0]['id']}/regions").json()
     assert len(imported_regions) == 1
     restored = imported_regions[0]
+    assert restored['id'] != created_region['id']
     for field in (
         "region_key", "polygon", "bbox", "translated_polygon", "translated_bbox",
         "source_text", "translated_text", "orientation", "font_size", "font_family",

@@ -37,6 +37,7 @@ def test_translation_context_uses_previous_page_in_same_project_and_opt_in_image
     from app.services.translation.providers import OpenAICompatibleTranslator
 
     contexts = []
+
     class CaptureTranslator(OpenAICompatibleTranslator):
         async def translate_regions(self, regions, **kwargs):
             contexts.append(kwargs["context"])
@@ -44,19 +45,32 @@ def test_translation_context_uses_previous_page_in_same_project_and_opt_in_image
 
     provider = CaptureTranslator({"include_page_image": include_image})
     original = PipelineProcessor._provider
+
     def use_capture(processor, kind, requested):
         return (provider, "capture") if kind == "translation" else original(processor, kind, requested)
+
     monkeypatch.setattr(PipelineProcessor, "_provider", use_capture)
     project = client.post("/api/projects", json={"name": "context-scope"}).json()
     other = client.post("/api/projects", json={"name": "unrelated"}).json()
     pages = []
-    for project_id, name, source in [(project["id"], "1.png", "previous page"), (other["id"], "secret.png", "unrelated page"), (project["id"], "2.png", "current page")]:
-        page = client.post(f"/api/projects/{project_id}/images", files={"files": (name, solid_page(), "image/png")}).json()[0]
-        region = client.post(f"/api/images/{page['id']}/regions", json={"polygon": [[10,10],[80,10],[80,80],[10,80]]}).json()
+    for project_id, name, source in [
+        (project["id"], "1.png", "previous page"),
+        (other["id"], "secret.png", "unrelated page"),
+        (project["id"], "2.png", "current page"),
+    ]:
+        page = client.post(
+            f"/api/projects/{project_id}/images", files={"files": (name, solid_page(), "image/png")}
+        ).json()[0]
+        region = client.post(
+            f"/api/images/{page['id']}/regions", json={"polygon": [[10, 10], [80, 10], [80, 80], [10, 80]]}
+        ).json()
         response = client.patch(f"/api/regions/{region['id']}", json={"source_text": source})
         assert response.status_code == 200
         pages.append(page)
-    task = client.post(f"/api/images/{pages[-1]['id']}/process", json={"start_stage": "translation", "end_stage": "translation", "force": True}).json()
+    task = client.post(
+        f"/api/images/{pages[-1]['id']}/process",
+        json={"start_stage": "translation", "end_stage": "translation", "force": True},
+    ).json()
     task = wait_for_task(client, task["id"])
     assert task["status"] == "COMPLETED", task
     assert contexts[0]["previous_page"]["page_id"] == pages[0]["id"]
@@ -85,8 +99,9 @@ def wait_for_task(client, task_id: str) -> dict:
 
 
 class RecordingColorInpainter:
-    def __init__(self, colors: list[tuple[int, int, int]]) -> None:
+    def __init__(self, colors: list[tuple[int, int, int]], *, threshold: int = 8) -> None:
         self.colors = colors
+        self.threshold = threshold
         self.calls: list[np.ndarray] = []
         self.fail_after: int | None = None
 
@@ -99,7 +114,7 @@ class RecordingColorInpainter:
             raise RuntimeError("intentional inpainting failure")
         color = self.colors[len(self.calls)]
         self.calls.append(mask.copy())
-        image[mask > 8] = color
+        image[mask > self.threshold] = color
         output_path.parent.mkdir(parents=True, exist_ok=True)
         Image.fromarray(image).save(output_path, "PNG")
         return output_path
@@ -387,7 +402,7 @@ def test_balloon_grouped_region_masks_only_its_source_text_polygons(client, monk
                             "method": "balloon_instance",
                             "source_count": 2,
                             "source_polygons": source_polygons,
-                        }
+                        },
                     },
                     balloon_mask=bubble_mask,
                     balloon_mask_origin=(10, 5),
@@ -403,9 +418,11 @@ def test_balloon_grouped_region_masks_only_its_source_text_polygons(client, monk
         if kind == "detection":
             return detector, "grouped-detector"
         if kind == "inpainting":
+
             class NoModelNeeded:
                 def inpaint(self, *_args):
                     raise AssertionError("A verified flat balloon should not need model inference")
+
             return NoModelNeeded(), "unused-for-flat-balloon"
         return original_provider(processor, kind, requested)
 
@@ -534,7 +551,102 @@ def test_outside_balloon_region_uses_conservative_glyph_mask(client, monkeypatch
     assert mask[50, 30] == 0
 
 
-def test_manual_mask_edit_invalidates_clean_page_and_automatic_constraint(client, monkeypatch) -> None:
+@pytest.mark.parametrize("grouped", [False, True])
+def test_generated_mask_is_clipped_to_current_polygon_after_expansion(client, monkeypatch, grouped):
+    import hashlib
+
+    from app.core.database import SessionLocal
+    from app.models import TextRegion
+    from app.pipeline import processor as processor_module
+
+    project = client.post("/api/projects", json={"name": "strict-mask-boundary"}).json()
+    page = client.post(
+        f"/api/projects/{project['id']}/images", files={"files": ("page.png", solid_page(), "image/png")}
+    ).json()[0]
+    polygon = [[30, 10], [80, 30], [60, 80], [10, 60]]
+    region = client.post(f"/api/images/{page['id']}/regions", json={"polygon": polygon}).json()
+    if grouped:
+        with SessionLocal() as db:
+            stored = db.get(TextRegion, region["id"])
+            stored.layout_data = {
+                "detection": {
+                    "line_grouping": {
+                        "method": "balloon_instance",
+                        "source_polygons": [polygon, [[70, 20], [110, 20], [110, 70], [70, 70]]],
+                    }
+                }
+            }
+            db.commit()
+    raw = np.full((100, 180), 255, np.uint8)
+    calls = []
+
+    def expanded_mask(_source, polygons, output, **_kwargs):
+        calls.append(polygons)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        cv2.imwrite(str(output), raw)
+        return {
+            "method": "balloon_glyph",
+            "repair": {
+                "strategy": "uniform_fill",
+                "color_rgb": [255, 255, 255],
+                "mask_sha256": hashlib.sha256(raw.tobytes()).hexdigest(),
+            },
+        }
+
+    monkeypatch.setattr(processor_module, "create_text_mask", expanded_mask)
+    monkeypatch.setattr(processor_module, "create_text_mask_union", expanded_mask)
+    task = client.post(
+        f"/api/images/{page['id']}/process",
+        json={"start_stage": "mask", "end_stage": "mask", "force": True, "options": {"text_segmentation": False}},
+    ).json()
+    assert wait_for_task(client, task["id"])["status"] == "COMPLETED"
+    current = client.get(f"/api/images/{page['id']}/regions").json()[0]
+    mask = np.asarray(Image.open(BytesIO(client.get(current["mask_url"]).content)))
+    boundary = np.zeros_like(raw)
+    cv2.fillPoly(boundary, [np.asarray(polygon, np.int32)], 255)
+    assert np.array_equal(mask, boundary)  # Not the axis-aligned bounding box.
+    assert len(calls) == 1
+    assert calls[0] == (polygon if not grouped else [polygon, [[70, 20], [110, 20], [110, 70], [70, 70]]])
+    generation = current["layout_data"]["mask_generation"]
+    assert generation["region_boundary"]["clipped_pixels"] > 0
+    assert generation["repair"]["mask_sha256"] == hashlib.sha256(mask.tobytes()).hexdigest()
+    assert generation["automatic_mask_sha256"] == hashlib.sha256(mask.tobytes()).hexdigest()
+
+
+def test_manual_frame_still_uses_learned_text_segmentation(client, monkeypatch):
+    from app.pipeline import processor as processor_module
+
+    probability = np.zeros((100, 180), np.float32)
+    probability[25:65, 40:46] = 1.0
+    monkeypatch.setattr(
+        processor_module, "text_probability", lambda *_args: (probability, {"status": "ready", "model": "test"})
+    )
+    monkeypatch.setattr(
+        processor_module, "refine_probability", lambda *_args, **_kwargs: (probability, {"status": "ready"})
+    )
+    project = client.post("/api/projects", json={"name": "manual-frame-segmentation"}).json()
+    page = client.post(
+        f"/api/projects/{project['id']}/images", files={"files": ("page.png", solid_page(), "image/png")}
+    ).json()[0]
+    created = client.post(
+        f"/api/images/{page['id']}/regions", json={"polygon": [[25, 10], [80, 10], [80, 80], [25, 80]]}
+    ).json()
+    assert created["layout_data"]["manual"] is True
+    task = client.post(
+        f"/api/images/{page['id']}/process", json={"start_stage": "mask", "end_stage": "mask", "force": True}
+    ).json()
+    assert wait_for_task(client, task["id"])["status"] == "COMPLETED"
+    current = client.get(f"/api/images/{page['id']}/regions").json()[0]
+    mask = np.asarray(Image.open(BytesIO(client.get(current["mask_url"]).content)))
+    generation = current["layout_data"]["mask_generation"]
+    assert generation["text_segmentation"]["status"] == "ready"
+    assert generation["method"] == "learned_glyph"
+    assert generation["fallback_reason"] is None
+    assert mask[45, 42] == 255
+    assert mask[45, 70] == 0
+
+
+def test_manual_mask_edit_preserves_clean_page_and_marks_only_the_mask_pending(client, monkeypatch) -> None:
     inpainter = RecordingColorInpainter([(20, 180, 60)])
     original_provider = PipelineProcessor._provider
 
@@ -563,7 +675,9 @@ def test_manual_mask_edit_invalidates_clean_page_and_automatic_constraint(client
         json={"start_stage": "inpainting", "end_stage": "inpainting", "force": True},
     ).json()
     assert wait_for_task(client, repaired["id"])["status"] == "COMPLETED"
-    assert client.get(f"/api/images/{page['id']}").json()["clean_url"]
+    clean_url = client.get(f"/api/images/{page['id']}").json()["clean_url"]
+    assert clean_url
+    clean_bytes = client.get(clean_url).content
 
     edited = client.post(
         f"/api/regions/{region['id']}/mask/operation",
@@ -572,13 +686,94 @@ def test_manual_mask_edit_invalidates_clean_page_and_automatic_constraint(client
     assert edited.status_code == 200, edited.text
     edited_region = edited.json()
 
-    assert client.get(f"/api/images/{page['id']}").json()["clean_url"] is None
+    assert client.get(f"/api/images/{page['id']}").json()["clean_url"] == clean_url
+    assert client.get(clean_url).content == clean_bytes
+    assert edited_region["layout_data"]["mask_generation"]["repair_pending"] is True
     assert edited_region["layout_data"]["mask_generation"]["method"] == "manual_mask"
     assert edited_region["layout_data"]["mask_generation"]["constraint"] == {
         "version": 1,
         "status": "manual",
         "reason": "manual_mask_edit",
     }
+
+
+@pytest.mark.parametrize("empty", [False, True])
+@pytest.mark.parametrize("selected", [False, True])
+def test_forced_repair_preserves_manual_mask_and_original(client, monkeypatch, empty, selected):
+    inpainter = RecordingColorInpainter([(20, 180, 60)])
+    original_provider = PipelineProcessor._provider
+
+    def provider(processor, kind, requested):
+        return (inpainter, "recording") if kind == "inpainting" else original_provider(processor, kind, requested)
+
+    monkeypatch.setattr(PipelineProcessor, "_provider", provider)
+    project = client.post("/api/projects", json={"name": "manual-mask-rerun"}).json()
+    page = client.post(
+        f"/api/projects/{project['id']}/images", files={"files": ("page.png", solid_page(120, 100), "image/png")}
+    ).json()[0]
+    region = client.post(f"/api/images/{page['id']}/regions", json={"bbox": [20, 20, 60, 60]}).json()
+    original_bytes = client.get(page["original_url"]).content
+    mask = Image.new("RGBA", (120, 100), (255, 255, 255, 0))
+    if not empty:
+        ImageDraw.Draw(mask).rectangle((40, 35, 55, 60), fill=(255, 255, 255, 255))
+    encoded = BytesIO()
+    mask.save(encoded, "PNG")
+    encoded.seek(0)
+    response = client.put(
+        f"/api/regions/{region['id']}/mask",
+        files={"file": ("mask.png", encoded, "image/png")},
+        data={"expected_updated_at": region["updated_at"]},
+    )
+    assert response.status_code == 200, response.text
+    saved = response.json()
+    saved_bytes = client.get(saved["mask_url"]).content
+    if selected:
+        response = client.post(f"/api/regions/{region['id']}/inpaint", json={"force": True})
+    else:
+        response = client.post(
+            f"/api/images/{page['id']}/process", json={"start_stage": "mask", "end_stage": "inpainting", "force": True}
+        )
+    assert response.status_code == 202, response.text
+    completed = wait_for_task(client, response.json()["id"])
+    assert completed["status"] == "COMPLETED", completed
+    current = client.get(f"/api/images/{page['id']}/regions").json()[0]
+    assert current["mask_url"] == saved["mask_url"]
+    assert client.get(current["mask_url"]).content == saved_bytes
+    assert current["layout_data"]["mask_generation"]["method"] == "manual_mask"
+    assert current["layout_data"]["mask_generation"]["repair_pending"] is False
+    assert client.get(page["original_url"]).content == original_bytes
+    clean_url = client.get(f"/api/images/{page['id']}").json()["clean_url"]
+    with Image.open(BytesIO(client.get(clean_url).content)) as clean:
+        assert clean.getpixel((25, 25))[:3] == (90, 100, 110)
+        assert clean.getpixel((45, 45))[:3] == ((90, 100, 110) if empty else (20, 180, 60))
+
+
+def test_mask_upload_checks_version_lock_and_preserves_previous_asset(client):
+    project = client.post("/api/projects", json={"name": "mask-version"}).json()
+    page = client.post(
+        f"/api/projects/{project['id']}/images", files={"files": ("page.png", solid_page(120, 100), "image/png")}
+    ).json()[0]
+    region = client.post(f"/api/images/{page['id']}/regions", json={"bbox": [20, 20, 60, 60]}).json()
+    url = f"/api/regions/{region['id']}/mask"
+
+    def upload(version):
+        return client.put(
+            url,
+            data={"expected_updated_at": version},
+            files={"file": ("mask.png", rectangular_mask(120, 100, (35, 30, 65, 70)), "image/png")},
+        )
+
+    first = upload(region["updated_at"])
+    assert first.status_code == 200, first.text
+    saved = first.json()
+    previous = client.get(saved["mask_url"]).content
+    assert upload(region["updated_at"]).status_code == 409
+    second = upload(saved["updated_at"])
+    assert second.status_code == 200, second.text
+    assert second.json()["mask_url"] != saved["mask_url"]
+    assert client.get(saved["mask_url"]).content == previous
+    locked = client.patch(f"/api/regions/{region['id']}", json={"locked": True}).json()
+    assert upload(locked["updated_at"]).status_code == 409
 
 
 def test_ocr_commits_incremental_region_progress(client, monkeypatch) -> None:
@@ -919,9 +1114,7 @@ def test_rerun_stages_preserve_source_and_translated_geometry(client, monkeypatc
         "rotation",
         "perspective_warp",
     )
-    expected_geometry = {
-        region["id"]: {field: region[field] for field in geometry_fields} for region in regions
-    }
+    expected_geometry = {region["id"]: {field: region[field] for field in geometry_fields} for region in regions}
     region_ids = [region["id"] for region in regions]
     requests = [
         {"start_stage": "ocr", "end_stage": "ocr", "options": {"region_ids": region_ids}},
@@ -936,9 +1129,7 @@ def test_rerun_stages_preserve_source_and_translated_geometry(client, monkeypatc
         ).json()
         task = wait_for_task(client, task["id"])
         assert task["status"] == "COMPLETED", task
-        persisted = {
-            region["id"]: region for region in client.get(f"/api/images/{page['id']}/regions").json()
-        }
+        persisted = {region["id"]: region for region in client.get(f"/api/images/{page['id']}/regions").json()}
         for region_id, geometry in expected_geometry.items():
             assert {field: persisted[region_id][field] for field in geometry_fields} == geometry
 
@@ -946,7 +1137,10 @@ def test_rerun_stages_preserve_source_and_translated_geometry(client, monkeypatc
     assert [region["translated_text"] for region in persisted.values()] == ["translated-1", "translated-2"]
 
 
-def test_region_inpaint_only_reprocesses_selected_mask_and_clears_its_old_area(client, monkeypatch) -> None:
+@pytest.mark.parametrize("history_clean", [False, True])
+def test_region_inpaint_only_reprocesses_selected_mask_and_clears_its_old_area(
+    client, monkeypatch, history_clean
+) -> None:
     fake_inpainter = RecordingColorInpainter([(20, 180, 40), (210, 40, 50)])
     original_provider = PipelineProcessor._provider
 
@@ -991,6 +1185,16 @@ def test_region_inpaint_only_reprocesses_selected_mask_and_clears_its_old_area(c
     with Image.open(BytesIO(client.get(initial_page["clean_url"]).content)) as image:
         clean_before = np.asarray(image.convert("RGB")).copy()
 
+    if history_clean:
+        client.patch(f"/api/regions/{regions[0]['id']}", json={"font_size": 38})
+        head = client.get(f"/api/projects/{project['id']}/history").json()
+        restored = client.post(
+            f"/api/projects/{project['id']}/history/undo",
+            json={"expected_entry_id": head["undo_id"], "current_image_id": page["id"]},
+        ).json()
+        initial_page = restored["page"]
+        assert "/history/assets/" in initial_page["clean_url"]
+
     unchanged = client.patch(f"/api/regions/{regions[0]['id']}", json={"polygon": polygons[0]})
     assert unchanged.status_code == 200, unchanged.text
     assert client.get(f"/api/images/{page['id']}").json()["clean_url"] == initial_page["clean_url"]
@@ -1025,6 +1229,236 @@ def test_region_inpaint_only_reprocesses_selected_mask_and_clears_its_old_area(c
     with Image.open(BytesIO(client.get(failed_page["clean_url"]).content)) as image:
         clean_after_failure = np.asarray(image.convert("RGB")).copy()
     assert np.array_equal(clean_after_failure, clean_after)
+
+
+@pytest.mark.parametrize("new_box", [(25, 25, 40, 50), (60, 20, 95, 65), None])
+def test_changed_manual_mask_repair_keeps_other_clean_pixels_and_is_reversible(client, monkeypatch, new_box):
+    inpainter = RecordingColorInpainter([(20, 180, 40), (210, 40, 50)], threshold=0)
+    original_provider = PipelineProcessor._provider
+    monkeypatch.setattr(
+        PipelineProcessor,
+        "_provider",
+        lambda processor, kind, requested: (
+            (inpainter, "recording") if kind == "inpainting" else original_provider(processor, kind, requested)
+        ),
+    )
+    project = client.post("/api/projects", json={"name": "pending-mask-repair"}).json()
+    page = client.post(
+        f"/api/projects/{project['id']}/images", files={"files": ("page.png", solid_page(), "image/png")}
+    ).json()[0]
+    regions = [
+        client.post(f"/api/images/{page['id']}/regions", json={"bbox": box}).json()
+        for box in ([15, 20, 30, 40], [125, 20, 30, 40])
+    ]
+    for region, box in zip(regions, [(15, 20, 45, 60), (125, 20, 155, 60)], strict=True):
+        mask_file = rectangular_mask(180, 100, box)
+        if region["id"] == regions[1]["id"]:
+            soft = Image.open(mask_file).copy()
+            ImageDraw.Draw(soft).rectangle((122, 20, 124, 60), fill=4)
+            mask_file = BytesIO()
+            soft.save(mask_file, "PNG")
+            mask_file.seek(0)
+        uploaded = client.put(f"/api/regions/{region['id']}/mask", files={"file": ("mask.png", mask_file, "image/png")})
+        assert uploaded.status_code == 200, uploaded.text
+    initial = client.post(
+        f"/api/images/{page['id']}/process", json={"start_stage": "inpainting", "end_stage": "inpainting"}
+    ).json()
+    assert wait_for_task(client, initial["id"])["status"] == "COMPLETED"
+    before_page = client.get(f"/api/images/{page['id']}").json()
+    before_bytes = client.get(before_page["clean_url"]).content
+    before_regions = client.get(f"/api/images/{page['id']}/regions").json()
+    if new_box is None:
+        encoded = BytesIO()
+        Image.new("L", (180, 100), 0).save(encoded, "PNG")
+        encoded.seek(0)
+    else:
+        encoded = rectangular_mask(180, 100, new_box)
+    edited = client.put(
+        f"/api/regions/{regions[0]['id']}/mask", files={"file": ("mask.png", encoded, "image/png")}
+    ).json()
+    assert edited["layout_data"]["mask_generation"]["repair_pending"] is True
+    assert client.get(f"/api/images/{page['id']}").json()["clean_url"] == before_page["clean_url"]
+    saved_mask = client.get(edited["mask_url"]).content
+    task = client.post(
+        f"/api/images/{page['id']}/process",
+        json={
+            "start_stage": "inpainting",
+            "end_stage": "inpainting",
+            "force": True,
+            "options": {"region_ids": [edited["id"]], "repair_geometry": "source"},
+        },
+    ).json()
+    assert wait_for_task(client, task["id"])["status"] == "COMPLETED"
+    after_regions = client.get(f"/api/images/{page['id']}/regions").json()
+    assert after_regions[0]["mask_url"] == edited["mask_url"]
+    assert after_regions[0]["layout_data"]["mask_generation"]["repair_pending"] is False
+    assert {key: value for key, value in after_regions[1].items() if key != "editor_history"} == {
+        key: value for key, value in before_regions[1].items() if key != "editor_history"
+    }
+    assert client.get(after_regions[0]["mask_url"]).content == saved_mask
+    clean_url = client.get(f"/api/images/{page['id']}").json()["clean_url"]
+    with Image.open(BytesIO(client.get(clean_url).content)) as clean:
+        assert clean.getpixel((140, 40)) == (20, 180, 40)
+        assert clean.getpixel((123, 40)) == (20, 180, 40)  # Keep low-alpha repairs too.
+        assert clean.getpixel((16, 21)) == (90, 100, 110)  # Erased old mask is restored.
+        if new_box is not None:
+            x, y, right, bottom = new_box
+            assert clean.getpixel(((x + right) // 2, (y + bottom) // 2)) == (210, 40, 50)
+    assert all(mask[40, 140] == 0 for mask in inpainter.calls[1:])
+    head = client.get(f"/api/projects/{project['id']}/history").json()
+    restored = client.post(
+        f"/api/projects/{project['id']}/history/undo",
+        json={"expected_entry_id": head["undo_id"], "current_image_id": page["id"]},
+    ).json()
+    assert restored["regions"][0]["layout_data"]["mask_generation"]["repair_pending"] is True
+    assert client.get(restored["page"]["clean_url"]).content == before_bytes
+    # Undo restores immutable history assets, not the live clean/clean.png.
+    # Repeating the mask-exit repair must reuse that composite as well.
+    assert "/history/assets/" in restored["page"]["clean_url"]
+    inpainter.colors.append((30, 40, 200))
+    repeated = client.post(
+        f"/api/images/{page['id']}/process",
+        json={
+            "start_stage": "inpainting",
+            "end_stage": "inpainting",
+            "force": True,
+            "options": {"region_ids": [edited["id"]], "repair_geometry": "source"},
+        },
+    ).json()
+    assert wait_for_task(client, repeated["id"])["status"] == "COMPLETED"
+    repeated_page = client.get(f"/api/images/{page['id']}").json()
+    with Image.open(BytesIO(client.get(repeated_page["clean_url"]).content)) as clean:
+        # Compare all untouched pixels, not just a single sample in the bubble.
+        before = np.asarray(Image.open(BytesIO(before_bytes)).convert("RGB"))
+        after = np.asarray(clean.convert("RGB"))
+        assert np.array_equal(after[:, 110:], before[:, 110:])
+        assert clean.getpixel((16, 21)) == (90, 100, 110)
+
+
+def test_legacy_edited_mask_without_pending_flag_is_exposed_for_auto_repair(client, monkeypatch):
+    from app.core.database import SessionLocal
+    from app.models import TextRegion
+
+    inpainter = RecordingColorInpainter([(20, 180, 40)])
+    original_provider = PipelineProcessor._provider
+    monkeypatch.setattr(
+        PipelineProcessor,
+        "_provider",
+        lambda processor, kind, requested: (
+            (inpainter, "recording") if kind == "inpainting" else original_provider(processor, kind, requested)
+        ),
+    )
+    project = client.post("/api/projects", json={"name": "legacy-pending-mask"}).json()
+    page = client.post(
+        f"/api/projects/{project['id']}/images", files={"files": ("page.png", solid_page(), "image/png")}
+    ).json()[0]
+    region = client.post(f"/api/images/{page['id']}/regions", json={"bbox": [15, 20, 30, 40]}).json()
+    client.put(
+        f"/api/regions/{region['id']}/mask",
+        files={"file": ("mask.png", rectangular_mask(180, 100, (15, 20, 45, 60)), "image/png")},
+    )
+    with SessionLocal() as db:
+        old = db.get(TextRegion, region["id"])
+        layout = dict(old.layout_data)
+        generation = dict(layout["mask_generation"])
+        generation.pop("repair_pending")
+        old.layout_data = {**layout, "mask_generation": generation}
+        db.commit()
+    current = client.get(f"/api/images/{page['id']}/regions").json()[0]
+    assert current["layout_data"]["mask_generation"]["repair_pending"] is True
+    task = client.post(
+        f"/api/images/{page['id']}/process",
+        json={"start_stage": "inpainting", "end_stage": "inpainting", "options": {"region_ids": [region["id"]]}},
+    ).json()
+    assert wait_for_task(client, task["id"])["status"] == "COMPLETED"
+    repaired = client.get(f"/api/images/{page['id']}/regions").json()[0]
+    assert repaired["layout_data"]["mask_generation"]["repair_pending"] is False
+    assert client.get(f"/api/images/{page['id']}").json()["clean_url"]
+
+
+def test_pending_manual_mask_survives_a_failed_partial_repair(client, monkeypatch):
+    inpainter = RecordingColorInpainter([(20, 180, 40)])
+    original_provider = PipelineProcessor._provider
+    monkeypatch.setattr(
+        PipelineProcessor,
+        "_provider",
+        lambda processor, kind, requested: (
+            (inpainter, "recording") if kind == "inpainting" else original_provider(processor, kind, requested)
+        ),
+    )
+    project = client.post("/api/projects", json={"name": "pending-mask-failure"}).json()
+    page = client.post(
+        f"/api/projects/{project['id']}/images", files={"files": ("page.png", solid_page(), "image/png")}
+    ).json()[0]
+    region = client.post(f"/api/images/{page['id']}/regions", json={"bbox": [15, 20, 30, 40]}).json()
+    client.put(
+        f"/api/regions/{region['id']}/mask",
+        files={"file": ("mask.png", rectangular_mask(180, 100, (15, 20, 45, 60)), "image/png")},
+    )
+    initial = client.post(
+        f"/api/images/{page['id']}/process", json={"start_stage": "inpainting", "end_stage": "inpainting"}
+    ).json()
+    assert wait_for_task(client, initial["id"])["status"] == "COMPLETED"
+    clean_url = client.get(f"/api/images/{page['id']}").json()["clean_url"]
+    before_bytes = client.get(clean_url).content
+    edited = client.post(
+        f"/api/regions/{region['id']}/mask/operation", json={"operation": "dilate", "amount": 3}
+    ).json()
+    inpainter.fail_after = 1
+    task = client.post(
+        f"/api/images/{page['id']}/process",
+        json={"start_stage": "inpainting", "end_stage": "inpainting", "options": {"region_ids": [region["id"]]}},
+    ).json()
+    assert wait_for_task(client, task["id"])["status"] == "FAILED"
+    current = client.get(f"/api/images/{page['id']}/regions").json()[0]
+    assert current["layout_data"]["mask_generation"]["repair_pending"] is True
+    assert current["mask_url"] == edited["mask_url"]
+    assert client.get(client.get(f"/api/images/{page['id']}").json()["clean_url"]).content == before_bytes
+
+
+@pytest.mark.parametrize("invalid_cache", ["missing", "foreign_history", "wrong_dimensions"])
+def test_partial_repair_never_discards_unselected_pixels_when_clean_cache_is_invalid(tmp_path, invalid_cache):
+    from app.storage.files import StorageManager
+
+    processor = PipelineProcessor(SimpleNamespace())
+    processor.storage = StorageManager(tmp_path)
+    directory = processor.storage.page_dir("project", "page")
+    original = directory / "original" / "page.png"
+    final = directory / "clean" / "clean.png"
+    Image.new("RGB", (180, 100), (90, 100, 110)).save(original)
+    Image.new("RGB", (180, 100), (20, 180, 40)).save(final)
+    before = final.read_bytes()
+    selected_mask = directory / "masks" / "selected.png"
+    other_mask = directory / "masks" / "other.png"
+    with Image.open(rectangular_mask(180, 100, (15, 20, 45, 60))) as mask:
+        mask.save(selected_mask)
+    with Image.open(rectangular_mask(180, 100, (125, 20, 155, 60))) as mask:
+        mask.save(other_mask)
+    selected = SimpleNamespace(
+        id="selected", region_key="R001", pixel_mask_path=processor.storage.relative(selected_mask)
+    )
+    other = SimpleNamespace(id="other", region_key="R002", pixel_mask_path=processor.storage.relative(other_mask))
+    if invalid_cache == "foreign_history":
+        cached = processor.storage.project_dir("another-project") / "history" / "assets" / "clean.png"
+        cached.parent.mkdir(parents=True)
+        Image.new("RGB", (180, 100), "red").save(cached)
+    else:
+        cached = directory / "clean" / "invalid.png"
+        if invalid_cache == "wrong_dimensions":
+            Image.new("RGB", (20, 20), "red").save(cached)
+    page = SimpleNamespace(
+        id="page",
+        project_id="project",
+        original_path=processor.storage.relative(original),
+        clean_path=processor.storage.relative(cached),
+        regions=[selected, other],
+        metadata_json={},
+    )
+    provider = RecordingColorInpainter([(210, 40, 50)])
+    with pytest.raises(ValueError):
+        processor._inpaint_selected(page, provider, [selected], directory)
+    assert provider.calls == []
+    assert final.read_bytes() == before
 
 
 def test_multi_region_inpaint_only_sends_selected_mask_union_to_provider(client, monkeypatch) -> None:
@@ -1088,8 +1522,8 @@ def test_multi_region_inpaint_only_sends_selected_mask_union_to_provider(client,
         expected_geometry[region["id"]] = {
             "bbox": updated["bbox"],
             "polygon": updated["polygon"],
-            "translated_bbox": updated["translated_bbox"],
-            "translated_polygon": updated["translated_polygon"],
+            "translated_bbox": updated["bbox"],
+            "translated_polygon": updated["polygon"],
         }
 
     rerun = client.post(
@@ -1104,9 +1538,7 @@ def test_multi_region_inpaint_only_sends_selected_mask_union_to_provider(client,
     rerun = wait_for_task(client, rerun["id"])
     assert rerun["status"] == "COMPLETED", rerun
 
-    persisted_regions = {
-        region["id"]: region for region in client.get(f"/api/images/{page['id']}/regions").json()
-    }
+    persisted_regions = {region["id"]: region for region in client.get(f"/api/images/{page['id']}/regions").json()}
     for region_id, geometry in expected_geometry.items():
         assert {
             "bbox": persisted_regions[region_id]["bbox"],
@@ -1193,22 +1625,21 @@ def test_mask_to_render_pipeline_and_export(client, monkeypatch) -> None:
 
     deleted = client.delete(f"/api/regions/{region_response.json()['id']}")
     assert deleted.status_code == 200, deleted.text
-    delete_task = deleted.json()["rebuild_task"]
-    assert delete_task["payload"]["start_stage"] == "inpainting"
-    assert delete_task["payload"]["end_stage"] == "rendering"
-    for _ in range(300):
-        delete_task = client.get(f"/api/tasks/{delete_task['id']}").json()
-        if delete_task["status"] in {"COMPLETED", "FAILED"}:
-            break
-        time.sleep(0.03)
-    assert delete_task["status"] == "COMPLETED", delete_task
+    assert deleted.json()["rebuild_task"] is None
     assert client.get(f"/api/images/{page['id']}/regions").json() == []
     restored = client.get(f"/api/images/{page['id']}").json()
-    assert restored["clean_url"] and restored["rendered_url"] and restored["text_layer_url"]
-    assert restored["text_layer_region_ids"] == []
+    assert restored["clean_url"] and restored["rendered_url"] is None and restored["text_layer_url"] is None
     original = Image.open(BytesIO(client.get(restored["original_url"]).content)).convert("RGB")
     clean = Image.open(BytesIO(client.get(restored["clean_url"]).content)).convert("RGB")
     assert ImageChops.difference(original, clean).getbbox() is None
+
+    # Cached translated outputs are invalidated rather than blocking deletion;
+    # export still rebuilds the current text layer without invoking inpainting.
+    exported = client.post(f"/api/projects/{project['id']}/export", json={"formats": ["translated", "text_layer"]})
+    assert exported.status_code == 200, exported.text
+    restored = client.get(f"/api/images/{page['id']}").json()
+    assert restored["rendered_url"] and restored["text_layer_url"]
+    assert restored["text_layer_region_ids"] == []
 
     reset = client.post(f"/api/images/{page['id']}/reset")
     assert reset.status_code == 200, reset.text

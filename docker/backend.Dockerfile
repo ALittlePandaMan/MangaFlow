@@ -24,6 +24,8 @@ RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
 # PyTorch base image already ships the library in Conda, so register that copy
 # instead of downloading a duplicate Ubuntu package during every image build.
 RUN ln -sf /opt/conda/lib/libgomp.so.1 /usr/local/lib/libgomp.so.1 && ldconfig
+COPY backend/requirements/execution.txt /tmp/requirements-execution.txt
+RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked pip install -r /tmp/requirements-execution.txt
 COPY VERSION /app/VERSION
 COPY backend/requirements/classification.txt /tmp/requirements-classification.txt
 # Transformers 5 must not replace the Transformers 4 used by MangaOCR.

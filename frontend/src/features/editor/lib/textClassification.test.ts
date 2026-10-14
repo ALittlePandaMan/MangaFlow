@@ -4,6 +4,10 @@ import {classificationNeedsDetection} from './textClassification'
 const summary = {version: 1, status: 'completed', excluded_count: 3, policy: {enabled: true, filter_sfx: true, min_sfx_confidence: 0.6}}
 
 describe('classification policy changes', () => {
+  it('offers detection again after an unavailable classification run', () => {
+    expect(classificationNeedsDetection({...summary,status:'unavailable'}, {})).toBe(true)
+    expect(classificationNeedsDetection({...summary,status:'disabled',policy:{...summary.policy,enabled:false}}, {text_classification:false})).toBe(false)
+  })
   it('does not repeat detection when the saved policy is current', () => {
     expect(classificationNeedsDetection(summary, {})).toBe(false)
   })

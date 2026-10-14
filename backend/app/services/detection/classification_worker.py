@@ -11,10 +11,9 @@ from functools import lru_cache
 from pathlib import Path
 
 import numpy as np
-from PIL import Image
-
 from app.services.detection.classification import MODEL_SHA256
 from app.services.detection.text_roles import CLASS_NAMES, LayoutPrediction, classify_text_polygons
+from PIL import Image
 
 PROTOCOL = "mangaflow-text-classifier-v1"
 

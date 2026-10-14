@@ -1,4 +1,6 @@
 import type { DeviceProfile, FontResource, ImagePage, ModelBootstrapEntry, ModelConfiguration, ModelDescriptor, ProcessingTask, Project, QualityIssue, SetupStatus, TextRegion } from '../types'
+import type {EditorHistoryResult, EditorHistoryState} from '../types'
+import type {ExecutionPolicy, ExecutionStatus} from '../types'
 
 export class ApiError extends Error {
   constructor(public status: number, message: string) {
@@ -34,7 +36,18 @@ const responseFilename = (response: Response, fallback: string) => {
 }
 
 export const api = {
+  execution: {
+    get: () => request<ExecutionStatus>('/execution'),
+    update: (policy: ExecutionPolicy) => request<ExecutionStatus>('/execution', {method:'PUT',body:json(policy)}),
+  },
+  history: {
+    state: (id: string) => request<EditorHistoryState>(`/projects/${id}/history`),
+    apply: (id: string, direction: 'undo' | 'redo', entryId: number, currentImageId?: string | null, operationId?:string) => request<EditorHistoryResult>(`/projects/${id}/history/${direction}`, {
+      method:'POST', body:json({expected_entry_id:entryId,current_image_id:currentImageId,...(operationId ? {operation_id:operationId} : {})}),
+    }),
+  },
   projects: {
+    reorderImages: (id: string, imageIds: string[]) => request<ImagePage[]>(`/projects/${id}/images/order`, {method:'POST',body:json(imageIds)}),
     list: () => request<Project[]>('/projects'),
     get: (id: string) => request<Project>(`/projects/${id}`),
     create: (payload: Partial<Project>) => request<Project>('/projects', { method: 'POST', body: json(payload) }),
@@ -91,19 +104,25 @@ export const api = {
     }),
   },
   regions: {
+    maskHistory:(id:string) => request<{region_updated_at:string,history:EditorHistoryState,
+      undo:Array<{id:number,x:number,y:number,width:number,height:number,before_url:string,after_url:string}>,
+      redo:Array<{id:number,x:number,y:number,width:number,height:number,before_url:string,after_url:string}>}>(`/regions/${id}/mask-history`),
+    updateMany: (changes: Array<{id:string,patch:Partial<TextRegion>}>) => request<TextRegion[]>('/regions/bulk-update', {method:'POST',body:json(changes)}),
     create: (imageId: string, payload: Partial<TextRegion>) => request<TextRegion>(`/images/${imageId}/regions`, { method: 'POST', body: json(payload) }),
     update: (id: string, payload: Partial<TextRegion>) => request<TextRegion>(`/regions/${id}`, { method: 'PATCH', body: json(payload) }),
-    remove: (id: string) => request<{region_id: string, rebuild_task: ProcessingTask | null}>(`/regions/${id}`, { method: 'DELETE' }),
-    removeMany: (ids: string[]) => request<{region_ids: string[], rebuild_task: ProcessingTask | null}>('/regions/bulk-delete', { method: 'POST', body: json(ids) }),
+    remove: (id: string) => request<{region_id: string, rebuild_task: ProcessingTask | null, page?: ImagePage,editor_history?:EditorHistoryState}>(`/regions/${id}`, { method: 'DELETE' }),
+    removeMany: (ids: string[]) => request<{region_ids: string[], rebuild_task: ProcessingTask | null, page?: ImagePage,editor_history?:EditorHistoryState}>('/regions/bulk-delete', { method: 'POST', body: json(ids) }),
     copy: (id: string) => request<TextRegion>(`/regions/${id}/copy`, { method: 'POST' }),
     split: (id: string, axis = 'auto') => request<TextRegion[]>(`/regions/${id}/split?axis=${axis}`, { method: 'POST' }),
     merge: (ids: string[]) => request<{region: TextRegion, rebuild_task: ProcessingTask | null}>('/regions/merge', { method: 'POST', body: json(ids) }),
     stage: (id: string, stage: string, options: Record<string, unknown> = {}) => request<ProcessingTask>(`/regions/${id}/${stage}`, {
       method: 'POST', body: json({ ...defaultProcess, provider: options.provider || null, options, force: true }),
     }),
-    mask: async (id: string, blob: Blob) => {
+    mask: async (id: string, blob: Blob, expectedUpdatedAt?: string, bounds?: {x:number,y:number}) => {
       const form = new FormData()
       form.append('file', blob, 'mask.png')
+      if (expectedUpdatedAt) form.append('expected_updated_at', expectedUpdatedAt)
+      if (bounds) {form.append('x',String(bounds.x));form.append('y',String(bounds.y))}
       return request<TextRegion>(`/regions/${id}/mask`, { method: 'PUT', body: form })
     },
     maskOperation: (id: string, operation: string, amount: number) => request<TextRegion>(`/regions/${id}/mask/operation`, {
@@ -122,6 +141,7 @@ export const api = {
     action: (id: string, action: 'pause' | 'resume' | 'retry' | 'cancel') => request<ProcessingTask>(`/tasks/${id}/${action}`, { method: 'POST' }),
   },
   models: {
+    retryClassification: (id: string) => request<{status:string}>(`/models/config/${id}/classification/retry`, {method:'POST'}),
     list: () => request<{available: ModelDescriptor[], configured: ModelConfiguration[]}>('/models'),
     deviceProfile: () => request<DeviceProfile>('/models/device-profile'),
     setupStatus: () => request<SetupStatus>('/models/setup-status'),

@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Circle, Group, Line, Rect } from 'react-konva'
 import {RegionLabel} from './RegionLabel'
 import {canvasPalette} from '../lib/canvasPalette'
+import {createParallelEdgeResize, parallelEdgeCursor, resizeParallelEdge, type ParallelEdgeResize} from '../lib/parallelEdgeResize'
 
 type Point = [number, number]
 
@@ -18,7 +19,7 @@ interface Props {
   onSelect: () => void
   onContextMenu: (event: Konva.KonvaEventObject<MouseEvent>) => void
   onPreview?: (polygon: number[][], rotationDelta?: number) => void
-  onCommit: (polygon: number[][], rotationDelta?: number) => Promise<void>
+  onCommit: (polygon: number[][], rotationDelta?: number) => void | Promise<void>
 }
 
 type ReshapeDrag = {
@@ -28,7 +29,7 @@ type ReshapeDrag = {
   winding: number
   minimumEdgeLength: number
   midpoint?: Point
-  movementAxis?: 'horizontal' | 'vertical'
+  edgeResize?: ParallelEdgeResize
 }
 
 type RotationDrag = {
@@ -208,11 +209,9 @@ const setCursor = (event: Konva.KonvaEventObject<Event>, cursor: string) => {
 }
 
 /**
- * Every polygon vertex has an independent handle. A mostly horizontal edge
- * moves vertically and a mostly vertical edge moves horizontally; both of its
- * endpoints receive the exact same offset so the original slope is preserved.
- * This covers OCR quadrilaterals and manually drawn regions without flattening
- * either shape back into a rectangle.
+ * Corner handles reshape freely. Edge handles offset their boundary along its
+ * normal while its endpoints slide along adjacent edges, preserving all edge
+ * directions instead of shearing a rotated rectangle during compression.
  */
 export function RegionPolygonEditor({polygon, pageWidth, pageHeight, scale, labelScale, label, labelColor, visible, onSelect, onContextMenu, onPreview, onCommit}: Props) {
   const editorRef = useRef<Konva.Group>(null)
@@ -349,27 +348,27 @@ export function RegionPolygonEditor({polygon, pageWidth, pageHeight, scale, labe
     event.cancelBubble = true
     const start = copyPoints(pointsRef.current)
     const nextIndex = (index + 1) % start.length
-    const edgeX = start[nextIndex][0] - start[index][0]
-    const edgeY = start[nextIndex][1] - start[index][1]
+    const edgeResize = createParallelEdgeResize(start, index)
     editingRef.current = true
     reshapeRef.current = {
       kind: 'edge', index, start, winding: Math.sign(signedArea(start)), minimumEdgeLength: minimumEdgeConstraint(start),
       midpoint: midpoint(start[index], start[nextIndex]),
-      movementAxis: Math.abs(edgeX) >= Math.abs(edgeY) ? 'vertical' : 'horizontal',
+      edgeResize: edgeResize ?? undefined,
     }
   }
 
   const moveEdge = (event: Konva.KonvaEventObject<DragEvent>) => {
     event.cancelBubble = true
     const drag = reshapeRef.current
-    if (!drag || drag.kind !== 'edge' || !drag.midpoint || !drag.movementAxis) return
+    if (!drag || drag.kind !== 'edge' || !drag.midpoint) return
+    if (!drag.edgeResize) {
+      event.target.position({x: drag.midpoint[0], y: drag.midpoint[1]})
+      return
+    }
     const deltaX = event.target.x() - drag.midpoint[0]
     const deltaY = event.target.y() - drag.midpoint[1]
-    const offset: Point = drag.movementAxis === 'vertical' ? [0, deltaY] : [deltaX, 0]
-    const candidate = copyPoints(drag.start)
+    const candidate = resizeParallelEdge(drag.edgeResize, [deltaX, deltaY])
     const nextIndex = (drag.index + 1) % candidate.length
-    candidate[drag.index] = [candidate[drag.index][0] + offset[0], candidate[drag.index][1] + offset[1]]
-    candidate[nextIndex] = [candidate[nextIndex][0] + offset[0], candidate[nextIndex][1] + offset[1]]
     const next = constrainPolygon(drag.start, candidate, pageWidth, pageHeight, drag.winding, drag.minimumEdgeLength)
     preview(next)
     const nextMidpoint = midpoint(next[drag.index], next[nextIndex])
@@ -454,7 +453,6 @@ export function RegionPolygonEditor({polygon, pageWidth, pageHeight, scale, labe
       const center = midpoint(point, next)
       const edgeLength = Math.hypot(next[0] - point[0], next[1] - point[1])
       const angle = Math.atan2(next[1] - point[1], next[0] - point[0]) * 180 / Math.PI
-      const horizontalEdge = Math.abs(next[0] - point[0]) >= Math.abs(next[1] - point[1])
       const hitLength = Math.max(EDGE_HANDLE_LENGTH / scale, edgeLength - CORNER_SIZE * 1.5 / scale)
       return <Group key={`edge-${index}`}>
         <Rect
@@ -465,7 +463,7 @@ export function RegionPolygonEditor({polygon, pageWidth, pageHeight, scale, labe
           draggable
           onContextMenu={onContextMenu}
           onDragStart={event => beginEdgeDrag(event, index)} onDragMove={moveEdge} onDragEnd={endEdgeDrag}
-          onMouseEnter={event => setCursor(event, horizontalEdge ? 'ns-resize' : 'ew-resize')} onMouseLeave={event => setCursor(event, 'default')}
+          onMouseEnter={event => setCursor(event, parallelEdgeCursor(point, next))} onMouseLeave={event => setCursor(event, 'default')}
         />
         <Rect
           x={center[0]} y={center[1]}

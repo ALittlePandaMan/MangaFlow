@@ -10,6 +10,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 STALE_CLEAN_PATH_KEY = "_stale_clean_path"
+TRANSLATION_GEOMETRY_SYNC_KEY = "translation_geometry_sync"
 
 SNAPSHOT_FIELDS = (
     "polygon",
@@ -55,6 +56,59 @@ def save_revision(db: Session, region: TextRegion, action: str) -> None:
     db.add(RegionRevision(region_id=region.id, action=action, snapshot=region_snapshot(region)))
 
 
+def _legacy_geometry_sync_pending(db: Session, region: TextRegion) -> bool:
+    """Recover unsynchronized source edits without resetting custom layouts.
+
+    Old releases did not store a pending flag. Revision pairs describe the
+    actual changes, including a later manual target edit that resolves them.
+    No evidence of a source edit means an independent target is preserved.
+    """
+    if region.bbox == region.translated_bbox and region.polygon == region.translated_polygon:
+        return False
+    snapshots = list(db.scalars(
+        select(RegionRevision.snapshot)
+        .where(RegionRevision.region_id == region.id)
+        .order_by(RegionRevision.created_at)
+    ).all())
+    snapshots.append(region_snapshot(region))
+    pending = False
+    for before, after in zip(snapshots, snapshots[1:], strict=False):
+        if any(before.get(field) != after.get(field) for field in ("bbox", "polygon")):
+            pending = True
+        if any(before.get(field) != after.get(field) for field in (
+            "translated_bbox", "translated_polygon", "rotation", "perspective_warp",
+        )):
+            pending = False
+    return pending
+
+
+def synchronize_translation_geometry_after_repair(db: Session, region: TextRegion) -> bool:
+    """Confirm changed source geometry only after its repair succeeds."""
+    layout = dict(region.layout_data or {})
+    previous = layout.get(TRANSLATION_GEOMETRY_SYNC_KEY)
+    state = previous if isinstance(previous, dict) else {}
+    pending = state.get("pending") is True if state else _legacy_geometry_sync_pending(db, region)
+    revision = state.get("revision", 0)
+    revision = revision if isinstance(revision, int) and revision >= 0 else 0
+    if pending:
+        save_revision(db, region, "translation_geometry_synced")
+        region.translated_bbox = deepcopy(region.bbox)
+        region.translated_polygon = deepcopy(region.polygon)
+        # Source vertices already encode their shape/angle. Transforms for
+        # the old target must not be reapplied to the newly synchronized one.
+        region.rotation = 0.0
+        region.perspective_warp = False
+        revision += 1
+    layout[TRANSLATION_GEOMETRY_SYNC_KEY] = {
+        **state,
+        "version": 1, "pending": False, "revision": revision,
+        "direction": "source_to_translated" if pending else state.get("direction", "source_to_translated"),
+        "source_bbox": deepcopy(region.bbox), "source_polygon": deepcopy(region.polygon),
+    }
+    region.layout_data = layout
+    return pending
+
+
 def _without_automatic_grouping(layout_data: dict[str, Any] | None) -> dict[str, Any]:
     output = deepcopy(layout_data or {})
     detection = output.get("detection")
@@ -77,8 +131,10 @@ def next_region_key(db: Session, image_id: str) -> str:
 
 
 def create_region(db: Session, page: ImagePage, data: RegionCreate) -> TextRegion:
-    values = data.model_dump(exclude={"region_key", "auto_font_size"}, mode="json")
+    values = data.model_dump(exclude={"region_key", "id", "auto_font_size"}, mode="json")
     auto_size = data.auto_font_size if "auto_font_size" in data.model_fields_set else "font_size" not in data.model_fields_set
+    if data.id is not None:
+        values["id"] = str(data.id)
     if not values["bbox"] and values["polygon"]:
         values["bbox"] = polygon_to_bbox(values["polygon"])
     if not values["polygon"] and values["bbox"]:
@@ -110,6 +166,7 @@ def update_region(db: Session, region: TextRegion, data: RegionUpdate, action: s
         "polygon": deepcopy(region.polygon),
         "bbox": deepcopy(region.bbox),
     }
+    source_text_before = region.source_text
     changes = data.model_dump(exclude_unset=True, mode="json")
     auto_size = changes.pop("auto_font_size", None)
     if auto_size is not None or ("font_size" in changes and changes["font_size"] != region.font_size):
@@ -136,12 +193,54 @@ def update_region(db: Session, region: TextRegion, data: RegionUpdate, action: s
         region.pixel_mask_path = None
         region.inpainted_path = None
         region.layout_data = {**_without_automatic_grouping(region.layout_data), "manual": True}
+        sync = region.layout_data.get(TRANSLATION_GEOMETRY_SYNC_KEY, {})
+        region.layout_data = {
+            **region.layout_data,
+            TRANSLATION_GEOMETRY_SYNC_KEY: {
+                **(sync if isinstance(sync, dict) else {}),
+                "version": 1, "pending": True, "direction": "source_to_translated",
+            },
+            "ocr_geometry_stale": bool(region.source_text.strip()),
+        }
+    if "source_text" in changes and changes["source_text"] != source_text_before:
+        region.layout_data = {**(region.layout_data or {}), "ocr_geometry_stale": False}
     if "translated_polygon" in changes and "translated_bbox" not in changes and region.translated_polygon:
         region.translated_bbox = polygon_to_bbox(region.translated_polygon)
     elif "translated_bbox" in changes and "translated_polygon" not in changes and region.translated_bbox:
         region.translated_polygon = bbox_to_polygon(region.translated_bbox)
     db.flush()
     return region
+
+
+def synchronize_source_geometry_before_repair(db: Session, region: TextRegion) -> bool:
+    """An explicit target-view repair adopts its frame before generating masks.
+
+    Ordinary target edits remain independent. This synchronization is complete
+    even if the later repair fails; retries must not reset target transforms.
+    """
+    target_bbox = deepcopy(region.translated_bbox or region.bbox)
+    target_polygon = deepcopy(region.translated_polygon or region.polygon)
+    previous = (region.layout_data or {}).get(TRANSLATION_GEOMETRY_SYNC_KEY)
+    state = previous if isinstance(previous, dict) else {}
+    changed = region.bbox != target_bbox or region.polygon != target_polygon
+    if not changed and state.get("pending") is not True:
+        return False
+    source_before = {"bbox": deepcopy(region.bbox), "polygon": deepcopy(region.polygon)}
+    update_region(db, region, RegionUpdate(bbox=target_bbox, polygon=target_polygon), action="source_geometry_synced")
+    revision = state.get("revision", 0)
+    revision = revision if isinstance(revision, int) and revision >= 0 else 0
+    region.layout_data = {
+        **(region.layout_data or {}),
+        TRANSLATION_GEOMETRY_SYNC_KEY: {
+            "version": 1, "pending": False, "revision": revision + 1,
+            "direction": "translated_to_source",
+            "previous_source_bbox": source_before["bbox"], "previous_source_polygon": source_before["polygon"],
+            "source_bbox": deepcopy(region.bbox), "source_polygon": deepcopy(region.polygon),
+            "translated_bbox": target_bbox, "translated_polygon": target_polygon,
+        },
+    }
+    db.flush()
+    return changed
 
 
 def copy_region(db: Session, region: TextRegion, offset: float = 12) -> TextRegion:

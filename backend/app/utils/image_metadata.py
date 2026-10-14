@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from PIL import Image
 
@@ -19,4 +21,19 @@ def load_rgb_with_metadata(path: Path) -> tuple[Image.Image, dict[str, Any]]:
 
 def save_png_with_metadata(image: Image.Image, path: Path, metadata: dict[str, Any], *, compress_level: int = 6) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    image.save(path, "PNG", compress_level=compress_level, **metadata)
+    temporary = path.with_name(f".{path.stem}-{uuid4().hex}.png")
+    try:
+        image.save(temporary, "PNG", compress_level=compress_level, **metadata)
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def atomic_copy(source: Path, destination: Path) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_name(f".{destination.name}-{uuid4().hex}.tmp")
+    try:
+        shutil.copy2(source, temporary)
+        temporary.replace(destination)
+    finally:
+        temporary.unlink(missing_ok=True)

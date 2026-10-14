@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import shutil
 import time
 from collections.abc import Callable
 from contextlib import closing
 from copy import deepcopy
+from functools import partial
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import cv2
 import numpy as np
@@ -32,6 +33,7 @@ from app.services.detection.artifacts import (
 from app.services.detection.grouping import MIN_TRUSTED_BALLOON_CONFIDENCE
 from app.services.detection.panels import detect_panel_frames, panel_reading_order
 from app.services.detection.text_roles import partition_text_roles
+from app.services.execution import execution_runtime
 from app.services.infra.model_manifest import persist_model_settings
 from app.services.infra.model_provisioning import ensure_recommended_config
 from app.services.inpainting import create_text_mask, create_text_mask_union, load_text_mask_source
@@ -49,16 +51,52 @@ from app.services.ocr.cloud import CloudMultimodalOCRProvider
 from app.services.ocr.concurrency import OCRJob, recognize_regions
 from app.services.ocr.generic import GenericCloudOCRProvider
 from app.services.quality import evaluate_page
-from app.services.regions import STALE_CLEAN_PATH_KEY, save_revision
+from app.services.regions import (
+    STALE_CLEAN_PATH_KEY,
+    save_revision,
+    synchronize_source_geometry_before_repair,
+    synchronize_translation_geometry_after_repair,
+)
 from app.services.registry import registry
 from app.services.rendering.pillow_renderer import PillowRenderer
 from app.services.translation.context import page_context, page_image_data_url
 from app.services.translation.providers import OpenAICompatibleTranslator
 from app.storage import get_storage
 from app.utils.geometry import bbox_to_polygon, intersection_area
-from app.utils.image_metadata import load_rgb_with_metadata, save_png_with_metadata
+from app.utils.image_metadata import atomic_copy, load_rgb_with_metadata, save_png_with_metadata
 
 logger = logging.getLogger(__name__)
+
+
+def _generate_mask_job(source, output, polygon, source_polygons, arguments, constraint, segmentation):
+    """CPU worker: plain values/read-only arrays only, no ORM or session."""
+    if source_polygons:
+        metadata = create_text_mask_union(source, source_polygons, output, **arguments)
+    else:
+        metadata = create_text_mask(source, polygon, output, **arguments)
+    if constraint is not None:
+        metadata["constraint"] = constraint
+    metadata["text_segmentation"] = segmentation
+    generated = cv2.imread(str(output), cv2.IMREAD_GRAYSCALE)
+    if generated is None or generated.shape != arguments["source_image"].shape[:2]:
+        raise ValueError("Generated mask dimensions must match the original page")
+    boundary = np.zeros_like(generated)
+    cv2.fillPoly(boundary, [np.rint(np.asarray(polygon)).astype(np.int32)], 255)
+    clipped = int(np.count_nonzero((generated > 0) & (boundary == 0)))
+    if clipped:
+        digest = hashlib.sha256(generated.tobytes()).hexdigest()
+        generated = cv2.bitwise_and(generated, boundary)
+        if not cv2.imwrite(str(output), generated):
+            raise ValueError("Cannot write bounded text mask")
+        fill = metadata.get("repair")
+        if isinstance(fill, dict) and fill.get("mask_sha256") == digest:
+            metadata["repair"] = {**fill, "mask_sha256": hashlib.sha256(generated.tobytes()).hexdigest()}
+        metadata["mask_expansion"] = round(cv2.countNonZero(generated) / max(1, cv2.countNonZero(boundary)), 4)
+    metadata["region_boundary"] = {"version": 1, "status": "clipped" if clipped else "within", "clipped_pixels": clipped}
+    metadata["automatic_mask_sha256"] = hashlib.sha256(generated.tobytes()).hexdigest()
+    return metadata
+
+
 STAGES = ["detection", "ocr", "translation", "mask", "inpainting", "rendering"]
 PAGE_RUNNING_STATUS = {
     "detection": PageStatus.DETECTING.value,
@@ -221,8 +259,10 @@ class PipelineProcessor:
         self._page_status_before_stage: str | None = None
         self._page_error_before_stage: str | None = None
         self._last_progress_commit = 0.0
+        self._ocr_attempted_ids: set[str] = set()
 
     async def execute(self, task_id: str) -> None:
+        self._ocr_attempted_ids.clear()
         self._active_task_id = task_id
         task = self._task(task_id)
         page = self.db.scalar(
@@ -248,9 +288,13 @@ class PipelineProcessor:
         force = bool(payload.get("force", False))
         region_id = task.region_id
         options = payload.get("options", {})
+        repair_geometry = options.get("repair_geometry", "source")
+        if repair_geometry not in {"source", "translated"}:
+            raise ValueError("Invalid repair geometry: expected source or translated")
         raw_region_ids = options.get("region_ids", []) if isinstance(options, dict) else []
         region_ids = {str(value) for value in raw_region_ids} if isinstance(raw_region_ids, list) and raw_region_ids else None
         for index, stage in enumerate(stages):
+            stage_started = time.monotonic()
             self.db.refresh(task)
             self._page_status_before_stage = page.status
             self._page_error_before_stage = page.error_message
@@ -272,6 +316,16 @@ class PipelineProcessor:
                 metadata.pop("ocr_exempt", None)
                 page.metadata_json = metadata
             self.db.commit()
+            if repair_geometry == "translated" and "inpainting" in stages and (
+                stage == "mask" or (stage == "inpainting" and "mask" not in stages)
+            ):
+                # Validate the complete selection before changing any frame.
+                for region in self._regions(page, region_id, region_ids):
+                    synchronize_source_geometry_before_repair(self.db, region)
+                if stage == "inpainting":
+                    # Direct inpainting requests also need fresh masks after
+                    # adopting a target frame; never repair with the old ROI.
+                    self.generate_masks(page, force=True, region_id=region_id, region_ids=region_ids, options=options)
             if stage == "detection":
                 self.detect(page, payload.get("provider"), force=force)
             elif stage == "ocr":
@@ -293,7 +347,11 @@ class PipelineProcessor:
                 )
             elif stage == "translation":
                 await self.translate(
-                    page, payload.get("provider"), force=force, region_id=region_id, region_ids=region_ids, options=options
+                    page, payload.get("provider"), force=force, region_id=region_id, region_ids=region_ids, options=options,
+                    progress=lambda completed, total, message, stage_index=index, stage_count=len(stages): self._commit_stage_progress(
+                        task, stage_index=stage_index, stage_count=stage_count,
+                        completed=completed, total=total, message=message,
+                    ),
                 )
             elif stage == "mask":
                 self.generate_masks(page, force=force, region_id=region_id, region_ids=region_ids, options=options)
@@ -321,6 +379,7 @@ class PipelineProcessor:
             if task.status in {TaskStatus.CANCELLING.value, TaskStatus.CANCELLED.value}:
                 self._finish_interrupted_page(page)
                 raise TaskCancelled("Task cancelled")
+            execution_runtime().record_stage(task.id, stage, time.monotonic() - stage_started)
         failed_tasks = list(
             self.db.scalars(
                 select(ProcessingTask).where(
@@ -492,6 +551,7 @@ class PipelineProcessor:
             if progress:
                 progress(0, 0, "OCR 0/0")
             return
+        self._ocr_attempted_ids.update(region.id for region in pending_regions)
         if progress:
             progress(0, total, f"Loading OCR model · 0/{total}")
         provider.ensure_loaded()
@@ -535,7 +595,7 @@ class PipelineProcessor:
             reasons.append("low_ocr_confidence")
         values = {
             "source_text": result.text, "confidence": result.confidence, "orientation": result.orientation,
-            "layout_data": {**(region.layout_data or {}), "source_orientation": result.orientation, "ocr": result.metadata},
+            "layout_data": {**(region.layout_data or {}), "source_orientation": result.orientation, "ocr": result.metadata, "ocr_geometry_stale": False},
             "review_reasons": sorted(set(reasons)), "needs_review": bool(reasons),
         }
         if expected_version is not None:
@@ -614,16 +674,49 @@ class PipelineProcessor:
         region_id: str | None,
         options: dict[str, Any],
         region_ids: set[str] | None = None,
+        progress: Callable[[int, int, str], None] | None = None,
     ) -> None:
         self._invalidate_outputs(page, clean=False)
-        provider, resolved_name = self._provider("translation", provider_name)
         selected = [
             region
             for region in self._regions(page, region_id, region_ids)
             if (not region.locked or bool((region_id or region_ids) and force))
-            and region.source_text.strip()
             and (force or not region.translated_text.strip())
         ]
+        selected_ids = {region.id for region in selected}
+        missing_ids = {
+            region.id for region in selected
+            if not region.source_text.strip() and region.id not in self._ocr_attempted_ids
+        }
+        if missing_ids:
+            # Reuse the configured OCR provider, crops, concurrency and edit
+            # guards. The translation provider name is NOT an OCR provider.
+            # Scope was filtered above, including whole-page lock protection.
+            self._check_interruption()
+            self.ocr(
+                page, None, force=True, region_id=None, region_ids=missing_ids, options=options,
+                progress=(lambda completed, total, message: progress(
+                    round(40 * completed / max(1, total)), 100, f"翻译前自动识别 · {message}",
+                )) if progress else None,
+            )
+            self._check_interruption()
+            self.db.flush()
+            # Cloud OCR commits independently and may skip concurrent edits /
+            # deletions. Re-read the surviving selection before translating.
+            self.db.expire(page, ["regions"])
+            selected = [
+                region for region in page.regions if region.id in selected_ids
+                and (not region.locked or bool((region_id or region_ids) and force))
+                and (force or not region.translated_text.strip())
+            ]
+        selected = [region for region in selected if region.source_text.strip()]
+        if not selected:
+            if progress:
+                progress(100, 100, "没有可翻译的原文；空白区域已跳过")
+            return
+        if progress:
+            progress(40 if missing_ids else 0, 100, f"正在翻译 {len(selected)} 个区域…")
+        provider, resolved_name = self._provider("translation", provider_name)
         inputs = [(region.region_key, region.source_text) for region in selected]
         context = {
             **(page.project.translation_context or {}),
@@ -677,6 +770,9 @@ class PipelineProcessor:
             )
         self.db.flush()
 
+        if progress:
+            progress(100, 100, "翻译完成")
+
     def generate_masks(
         self,
         page: ImagePage,
@@ -696,7 +792,11 @@ class PipelineProcessor:
         regions = [
             region
             for region in self._regions(page, region_id, region_ids)
-            if not (region.pixel_mask_path and not force)
+            # A forced repair refreshes automatic masks, not deliberate brush /
+            # eraser edits (including a completely erased, empty mask).
+            if not (region.pixel_mask_path and (
+                not force or (region.layout_data or {}).get("mask_generation", {}).get("method") == "manual_mask"
+            ))
         ]
         if not regions:
             return
@@ -746,9 +846,11 @@ class PipelineProcessor:
             and geometry_source.get("width") == page.width
             and geometry_source.get("height") == page.height
         )
+        jobs, outputs = [], []
+        generation = uuid4().hex
         for region in regions:
             self._check_interruption()
-            output = page_directory / "masks" / f"{region.id}.png"
+            output = page_directory / "masks" / f"{region.id}-{generation}.png"
             layout_data = region.layout_data or {}
             detection = layout_data.get("detection", {})
             is_manual = bool(layout_data.get("manual")) or "detection" not in layout_data
@@ -878,32 +980,21 @@ class PipelineProcessor:
                 "balloon_context": balloon_context,
                 "conservative": conservative_mask,
                 "sample_exclusion": sample_exclusion,
-                "text_probability": probability if not is_manual else None,
+                "text_probability": probability,
             }
-            if valid_source_polygons:
-                metadata = create_text_mask_union(
-                    source,
-                    valid_source_polygons,
-                    output,
-                    **mask_arguments,
-                )
-            else:
-                metadata = create_text_mask(
-                    source,
-                    region.polygon,
-                    output,
-                    **mask_arguments,
-                )
-            if constraint_note is not None:
-                metadata["constraint"] = constraint_note
-            metadata["text_segmentation"] = segmentation if not is_manual else {"status": "manual"}
-            if not is_manual:
-                generated_mask = cv2.imread(str(output), cv2.IMREAD_GRAYSCALE)
-                metadata["automatic_mask_sha256"] = hashlib.sha256(generated_mask.tobytes()).hexdigest()
+            jobs.append(partial(_generate_mask_job, source, output, deepcopy(region.polygon),
+                deepcopy(valid_source_polygons), mask_arguments, constraint_note, segmentation))
+            outputs.append(output)
+        # Collect before writing, so a slow worker never holds a DB write lock.
+        with closing(execution_runtime().map_cpu(jobs, check=self._check_interruption,
+                estimate=page.width * page.height * 48, units=page.width * page.height / 1_000_000)) as results:
+            generated = dict(results)
+        self._check_interruption()
+        for index, region in enumerate(regions):
             save_revision(self.db, region, "mask_generated")
-            region.pixel_mask_path = self.storage.relative(output)
+            region.pixel_mask_path = self.storage.relative(outputs[index])
             region.region_type = "background_complex"
-            region.layout_data = {**(region.layout_data or {}), "mask_generation": metadata}
+            region.layout_data = {**(region.layout_data or {}), "mask_generation": generated[index]}
         self.db.flush()
 
     def inpaint(
@@ -956,9 +1047,14 @@ class PipelineProcessor:
                     save_revision(self.db, region, "inpainted")
                     region.inpainted_path = self.storage.relative(intermediate)
 
-        shutil.copy2(current, final)
+        self._check_interruption()
+        atomic_copy(current, final)
         page.clean_path = self.storage.relative(final)
         self._record_artifact_version(page, "clean", final)
+        for region in selected_regions:
+            if region.pixel_mask_path:
+                synchronize_translation_geometry_after_repair(self.db, region)
+                self._mark_mask_repaired(region)
         self.db.flush()
 
     def _inpaint_selected(
@@ -998,26 +1094,31 @@ class PipelineProcessor:
             cached_clean_path = stale_path if isinstance(stale_path, str) else None
         if cached_clean_path and unselected_mask is not None:
             clean_path = self.storage.absolute(cached_clean_path)
-            clean_root = (page_directory / "clean").resolve()
-            try:
-                clean_path.relative_to(clean_root)
-                clean_path_is_local = True
-            except ValueError:
-                clean_path_is_local = False
-                logger.warning("Ignoring stale clean path outside page directory for %s", page.id)
-            if clean_path_is_local and clean_path.is_file():
-                clean, _ = load_rgb_with_metadata(clean_path)
-                if clean.size != original.size:
-                    raise ValueError("Clean image dimensions must match the original page")
-                preserve = np.where(unselected_mask > 8, 255, 0).astype(np.uint8)
-                source = Image.composite(clean, original, Image.fromarray(preserve))
+            # Undo/redo restores immutable project history assets. They are
+            # equally valid clean composites; silently dropping them would
+            # reset every unselected repair to the original image.
+            allowed_roots = (
+                (page_directory / "clean").resolve(),
+                (self.storage.project_dir(page.project_id) / "history" / "assets").resolve(),
+            )
+            if not any(clean_path.is_relative_to(root) for root in allowed_roots):
+                raise ValueError("无法安全读取上次净图，已停止局部修复，避免丢失其他区域的修复结果")
+            if not clean_path.is_file():
+                raise ValueError("上次净图文件缺失，已停止局部修复，避免丢失其他区域的修复结果")
+            clean, _ = load_rgb_with_metadata(clean_path)
+            if clean.size != original.size:
+                raise ValueError("Clean image dimensions must match the original page")
+            # Soft/antialiased manual masks can affect pixels below 8 too.
+            # Copy those repaired pixels exactly, without blending them again.
+            preserve = np.where(unselected_mask > 0, 255, 0).astype(np.uint8)
+            source = Image.composite(clean, original, Image.fromarray(preserve))
 
         suffix = self._active_task_id or "manual"
         source_path = page_directory / "versions" / f"selected-inpaint-source-{suffix}.png"
         mask_path = page_directory / "versions" / f"selected-inpaint-mask-{suffix}.png"
         intermediate = page_directory / "versions" / f"inpaint-selected-{suffix}.png"
         final = page_directory / "clean" / "clean.png"
-        save_png_with_metadata(source, source_path, metadata)
+        save_png_with_metadata(source, source_path, metadata, compress_level=1)
 
         current = source_path
         if selected_mask is not None:
@@ -1032,12 +1133,29 @@ class PipelineProcessor:
                 save_revision(self.db, region, "inpainted")
                 region.inpainted_path = self.storage.relative(intermediate)
 
-        shutil.copy2(current, final)
+        self._check_interruption()
+        atomic_copy(current, final)
         page.clean_path = self.storage.relative(final)
         self._record_artifact_version(page, "clean", final)
+        for region in selected_regions:
+            if region.pixel_mask_path:
+                synchronize_translation_geometry_after_repair(self.db, region)
+                self._mark_mask_repaired(region)
         self.db.flush()
         source_path.unlink(missing_ok=True)
         mask_path.unlink(missing_ok=True)
+
+    @staticmethod
+    def _mark_mask_repaired(region: TextRegion) -> None:
+        layout = dict(region.layout_data or {})
+        generation = dict(layout.get("mask_generation", {}))
+        if generation.get("repair_pending") or (
+            generation.get("method") == "manual_mask" and "repair_pending" not in generation
+        ):
+            # Clear only after the replacement clean image has been written.
+            # Failure/cancellation before that point must remain retryable.
+            generation["repair_pending"] = False
+            region.layout_data = {**layout, "mask_generation": generation}
 
     def _repair_masks(
         self, provider: Any, source: Path, combined: Path, output: Path, regions: list[TextRegion],

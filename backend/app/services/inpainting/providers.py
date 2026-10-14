@@ -126,14 +126,30 @@ class SimpleLaMaInpainter(Inpainter):
             self._model = SimpleLama(device=torch.device(self._device))
 
     def inpaint(self, image_path: Path, mask_path: Path, output_path: Path, region_type: str) -> Path:
-        self.ensure_loaded()
         image, metadata = load_rgb_with_metadata(image_path)
         with Image.open(mask_path) as mask_source:
             mask = mask_source.convert("L")
         if image.size != mask.size:
             raise ValueError("Mask dimensions must match the image")
+        bounds = mask.getbbox()
+        if bounds is None:
+            save_png_with_metadata(image, output_path, metadata)
+            return output_path
+        self.ensure_loaded()
+        # Local repairs do not need inference over millions of unrelated page
+        # pixels. Keep >=128 px of context and a >=512 px native-resolution
+        # crop; never downsample text or alter pixels outside the saved mask.
+        x0,y0,x1,y1 = bounds
+        crop_width = min(image.width,max(512,x1-x0+256))
+        crop_height = min(image.height,max(512,y1-y0+256))
+        left = max(0,min(image.width-crop_width,(x0+x1-crop_width)//2))
+        top = max(0,min(image.height-crop_height,(y0+y1-crop_height)//2))
+        box = (left,top,left+crop_width,top+crop_height)
+        if self.config.get("crop_context") is False or crop_width*crop_height >= image.width*image.height*.85:
+            box = (0,0,image.width,image.height)
+        model_image,model_mask = image.crop(box),mask.crop(box)
         try:
-            result = self._model(image, mask)
+            result = self._model(model_image, model_mask)
         except Exception as exc:
             if self._device == "cpu" or not is_accelerator_error(exc):
                 raise
@@ -145,13 +161,17 @@ class SimpleLaMaInpainter(Inpainter):
             from simple_lama_inpainting import SimpleLama
 
             self._model = SimpleLama(device=torch.device(self._device))
-            result = self._model(image, mask)
+            result = self._model(model_image, model_mask)
         # The reference model pads inputs to a multiple of eight. Never let that
         # implementation detail change page dimensions between pipeline regions.
         # Some model versions also slightly alter pixels outside the mask, so
         # explicitly composite only the requested repair area over the input.
-        generated = result.convert("RGB").crop((0, 0, image.width, image.height))
-        composited = Image.composite(generated, image, mask)
+        if result.width < model_image.width or result.height < model_image.height:
+            raise ValueError("Inpainting returned an undersized image")
+        generated = result.convert("RGB").crop((0, 0, model_image.width, model_image.height))
+        repaired = Image.composite(generated, model_image, model_mask)
+        composited = image.copy()
+        composited.paste(repaired,box[:2])
         save_png_with_metadata(composited, output_path, metadata)
         return output_path
 

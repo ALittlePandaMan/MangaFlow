@@ -12,6 +12,20 @@ const props = {pages: <aside><button>第一页</button></aside>, canvas: <main>�
 
 afterEach(() => vi.unstubAllGlobals())
 describe('responsive editor panels', () => {
+  it('keeps the sidebars visible at 1000px and folds them below 960px', () => {
+    let width = 1000
+    const listeners = new Set<() => void>()
+    vi.stubGlobal('matchMedia', (query: string) => ({matches: width < Number(query.match(/\d+/)?.[0]), addEventListener: (_: string, fn: () => void) => listeners.add(fn), removeEventListener: (_: string, fn: () => void) => listeners.delete(fn)}))
+    render(<EditorWorkspace {...props}/>)
+    expect(screen.getByRole('button', {name:'第一页'})).toBeVisible()
+    expect(screen.getByLabelText('译文草稿')).toBeVisible()
+    expect(screen.queryByRole('navigation', {name:'工作台面板'})).not.toBeInTheDocument()
+    act(() => {width = 960; listeners.forEach(fn => fn())})
+    expect(screen.queryByRole('navigation', {name:'工作台面板'})).not.toBeInTheDocument()
+    act(() => {width = 959.5; listeners.forEach(fn => fn())})
+    expect(screen.getByRole('navigation', {name:'工作台面板'})).toBeVisible()
+    expect(screen.queryByRole('button', {name:'第一页'})).not.toBeInTheDocument()
+  })
   it('places page navigation at both ends and disables unavailable directions', () => {
     media()
     const next = vi.fn(), previous = vi.fn()
@@ -54,5 +68,14 @@ describe('responsive editor panels', () => {
     rerender(<EditorWorkspace {...props} pageId="b"/>)
     expect(screen.getByRole('button', {name: '页面'})).toHaveAttribute('aria-expanded', 'false')
     expect(screen.queryByRole('button', {name: '第一页'})).not.toBeInTheDocument()
+  })
+  it('reveals an unsaved-mask confirmation instead of covering it with the page sheet', () => {
+    media()
+    const {rerender} = render(<EditorWorkspace {...props}/>)
+    fireEvent.click(screen.getByRole('button', {name:'页面'}))
+    expect(screen.getByRole('button', {name:'第一页'})).toBeVisible()
+    rerender(<EditorWorkspace {...props} canvasPromptOpen/>)
+    expect(screen.queryByRole('button', {name:'第一页'})).not.toBeInTheDocument()
+    expect(screen.getByRole('button', {name:'页面'})).toHaveAttribute('aria-expanded','false')
   })
 })

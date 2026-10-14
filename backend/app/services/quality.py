@@ -38,6 +38,9 @@ def evaluate_page(page: ImagePage, failed_tasks: list[ProcessingTask] | None = N
         if not region.source_text.strip():
             reasons.append("empty_source_text")
             add("empty_source_text", "OCR did not produce source text", region)
+        if (region.layout_data or {}).get("ocr_geometry_stale"):
+            reasons.append("ocr_geometry_stale")
+            add("ocr_geometry_stale", "原文框范围已修改，请按新框重新 OCR 并核对后再翻译", region)
         for hint in ocr_review_hints(region.source_text):
             reasons.append(hint)
             add(hint, "OCR 结果存在异常重复或无效字符，请核对原图", region)

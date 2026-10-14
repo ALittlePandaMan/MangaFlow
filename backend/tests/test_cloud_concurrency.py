@@ -130,7 +130,10 @@ async def test_translation_can_be_cancelled_during_shared_cooldown(monkeypatch):
     config = {"base_url": "https://mock.example/v1", "model": "vision", "api_key": "synthetic"}
     budget = budgets.request_budget(config)
     budget.cooldown_until = time.monotonic() + 60
-    monkeypatch.setattr(httpx, "AsyncClient", lambda **_: pytest.fail("Must not send during cooldown"))
+    async def unexpected_request(*args, **kwargs):
+        pytest.fail("Must not send during cooldown")
+    # Creating/reusing a client is harmless; network dispatch must wait.
+    monkeypatch.setattr(httpx.AsyncClient, "post", unexpected_request)
     checks = 0
     def cancel():
         nonlocal checks
@@ -274,7 +277,16 @@ def test_pipeline_discards_late_result_after_manual_edit(client, monkeypatch, ch
     try:
         task = client.post(f"/api/images/{page['id']}/process", json={"start_stage": "ocr", "end_stage": "ocr", "provider": "stale-test", "force": True}).json()
         assert started.wait(5)
-        assert client.patch(f"/api/regions/{region['id']}", json=change).status_code == 200
+        # The editor now deliberately blocks edits while a page task runs.
+        assert client.patch(f"/api/regions/{region['id']}", json=change).status_code == 409
+        # Keep testing the provider's CAS guard against an external writer.
+        from app.core.database import SessionLocal
+        from app.models import TextRegion
+        with SessionLocal() as db:
+            row = db.get(TextRegion, region['id'])
+            for key, value in change.items():
+                setattr(row, key, value)
+            db.commit()
     finally:
         release.set()
     assert wait_for_task(client, task["id"])["status"] == "COMPLETED"

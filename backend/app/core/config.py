@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -32,7 +32,11 @@ class Settings(BaseSettings):
     database_url: str | None = None
     max_upload_mb: int = 100
     ocr_review_threshold: float = 0.65
-    task_concurrency: int = 1
+    task_concurrency: int = Field(default=4, ge=1, le=8)
+    execution_mode: Literal["auto", "fixed", "serial"] = "auto"
+    cpu_workers: int = Field(default=4, ge=1, le=8)
+    memory_reserve_mb: int = Field(default=1024, ge=256, le=16384)
+    native_threads: int = Field(default=2, ge=1, le=16)
     default_font_path: str | None = None
     auto_provision_models: bool = True
     text_segmentation_enabled: bool = True

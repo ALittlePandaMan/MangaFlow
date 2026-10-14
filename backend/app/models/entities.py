@@ -178,3 +178,21 @@ class RegionRevision(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     region: Mapped[TextRegion] = relationship(back_populates="revisions")
+
+
+class EditorHistoryEntry(Base):
+    __tablename__ = "editor_history"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    # Keep history after an image is deleted; undo recreates that exact ID.
+    image_id: Mapped[str | None] = mapped_column(String(36), index=True)
+    scope: Mapped[str] = mapped_column(String(16), default="page")
+    action: Mapped[str] = mapped_column(String(100))
+    before: Mapped[dict[str, Any]] = mapped_column(JSON)
+    after: Mapped[dict[str, Any]] = mapped_column(JSON)
+    region_ids: Mapped[list[str]] = mapped_column(JSON, default=list)
+    applied: Mapped[bool] = mapped_column(Boolean, default=True)
+    pending: Mapped[bool] = mapped_column(Boolean, default=False)
+    task_id: Mapped[str | None] = mapped_column(String(36), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

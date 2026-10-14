@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import atexit
 import json
+import logging
 import os
 import queue
 import subprocess
+import time
 from pathlib import Path
 from threading import RLock, Thread
 from typing import Any
@@ -22,6 +24,7 @@ MODEL_REVISION = "aed55fdb8ca953c6bec33cf6ed6dd52a9b72bfa2"
 MODEL_REPOSITORY = "mayocream/koharu-layout-rfdetr-seg-2xl-1152"
 MODEL_SHA256 = "9bf6d2cbd7793c956d8c857bb1672a396eb7f100eb0682f86830d05e31168efb"
 MODEL_RELATIVE_PATH = "text-classification/koharu-layout-rfdetr-seg-2xl-1152.safetensors"
+logger = logging.getLogger(__name__)
 
 
 def classifier_python(options: dict[str, Any]) -> Path:
@@ -43,6 +46,7 @@ class LayoutTextClassifier:
         self._messages: queue.Queue[Any] = queue.Queue()
         self._lock = RLock()
         self._unavailable: str | None = None
+        self._retry_after = 0.0
         atexit.register(self.close)
 
     def _read_stdout(self, process: subprocess.Popen[str], messages: queue.Queue[Any]) -> None:
@@ -91,8 +95,9 @@ class LayoutTextClassifier:
         with self._lock:
             if not self.options.get("enabled", True):
                 return self._mark(regions, "disabled", "configuration_disabled")
-            if self._unavailable:
+            if self._unavailable and time.monotonic() < self._retry_after:
                 return self._mark(regions, "unavailable", self._unavailable)
+            self._unavailable = None
             try:
                 if self._process is None:
                     self._start()
@@ -116,8 +121,17 @@ class LayoutTextClassifier:
                 # Do not silently remove dialogue on missing models, OOM or
                 # transport failures. Circuit-break repeated cold starts.
                 self._unavailable = str(exc)[:160]
+                self._retry_after = time.monotonic() + 60
+                logger.warning("Text classification unavailable; retaining all candidates: %s", self._unavailable)
                 self.close()
                 return self._mark(regions, "unavailable", self._unavailable)
+
+    def reset(self) -> None:
+        """Explicit recovery, without restarting Paddle or changing page content."""
+        with self._lock:
+            self.close()
+            self._unavailable = None
+            self._retry_after = 0.0
 
     def policy(self) -> dict[str, Any]:
         return {

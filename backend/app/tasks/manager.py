@@ -3,16 +3,18 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from sqlalchemy import select
 
-from app.core.config import get_settings
 from app.core.database import SessionLocal
 from app.models import ProcessingTask
 from app.models.enums import TaskStatus
 from app.pipeline.processor import PipelineProcessor, TaskCancelled, TaskPaused
+from app.services.execution import execution_runtime
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +27,10 @@ class _TaskAttempt:
     cancelled: bool = False
     started: bool = False
     wrapper: asyncio.Task[None] | None = None
+    page_id: str = ""
+    estimate: int = 0
+    kind: str = "full"
+    units: float = 1.0
 
 
 class TaskManager:
@@ -32,7 +38,9 @@ class TaskManager:
 
     def __init__(self) -> None:
         self.running: dict[str, asyncio.Task[None]] = {}
-        self.semaphore = asyncio.Semaphore(get_settings().task_concurrency)
+        self.executor: ThreadPoolExecutor | None = None
+        self.page_locks: dict[str, asyncio.Lock] = {}
+        self.stopping = False
         self.loop: asyncio.AbstractEventLoop | None = None
         self.pending: set[str] = set()
         self.workers_started: set[str] = set()
@@ -41,13 +49,36 @@ class TaskManager:
 
     def start(self) -> None:
         self.loop = asyncio.get_running_loop()
-        # Test clients and development reloads may create a fresh event loop.
-        # A semaphore that waited on the previous loop cannot be reused.
-        self.semaphore = asyncio.Semaphore(get_settings().task_concurrency)
+        # Test clients and reloads may create a fresh event loop.
+        self.page_locks = {}
+        self.stopping = False
+        self.executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="mangaflow-page")
+
+    async def shutdown(self) -> None:
+        # Never release page/resource ownership while its thread still writes.
+        # Queued DB rows remain queued for recovery on the next startup.
+        self.stopping = True
+        for _identifier, attempt in list(self.attempts.items()):
+            if not attempt.started and attempt.wrapper:
+                attempt.wrapper.cancel()
+        if self.running:
+            await asyncio.gather(*list(self.running.values()), return_exceptions=True)
+        if self.executor:
+            self.executor.shutdown(wait=True)
+            self.executor = None
 
     def dispatch(self, task_id: str) -> None:
         if self.loop is None:
             raise RuntimeError("Task manager has not been started by the application lifespan")
+        if self.stopping:
+            return
+        with SessionLocal() as db:
+            task = db.get(ProcessingTask, task_id)
+            if task is None:
+                return
+            page_id = task.image_id
+            pixels = task.page.width * task.page.height if task.page else 1_000_000
+            kind = str((task.payload or {}).get("start_stage") or task.task_type)
         with self.lock:
             current = self.attempts.get(task_id)
             if current and not current.cancelled and (
@@ -55,6 +86,10 @@ class TaskManager:
             ):
                 return
             attempt = _TaskAttempt(generation=(current.generation + 1) if current else 1)
+            attempt.page_id = page_id
+            attempt.estimate = 128 * 1024**2 + pixels * 48
+            attempt.kind = kind
+            attempt.units = max(.25, pixels / 1_000_000)
             self.attempts[task_id] = attempt
             self.pending.add(task_id)
         self.loop.call_soon_threadsafe(self._schedule, task_id, attempt)
@@ -80,12 +115,23 @@ class TaskManager:
             self.running[task_id] = wrapper
 
     async def _run(self, task_id: str, attempt: _TaskAttempt) -> None:
-        async with self.semaphore:
+        # Wait for this page BEFORE taking global capacity. A long same-page
+        # queue must not starve independent pages. Locks live on this loop only.
+        page_lock = self.page_locks.setdefault(attempt.page_id, asyncio.Lock())
+        async with page_lock:
+            runtime = execution_runtime()
+            while not runtime.pages.try_acquire(attempt.estimate):
+                if self.stopping or attempt.cancelled:
+                    return
+                await asyncio.sleep(.1)
+            started = time.monotonic()
+            failed = True
             with self.lock:
                 # A cancelled queued attempt may still reach this point after
                 # the same persisted task has already been retried. Only the
                 # newest dispatch is allowed to observe that task row.
                 if self.attempts.get(task_id) is not attempt or attempt.cancelled:
+                    runtime.pages.release(0, attempt.estimate)
                     return
                 attempt.started = True
                 self.workers_started.add(task_id)
@@ -94,8 +140,16 @@ class TaskManager:
             # prevents even the initial 202 response and task polling from being
             # served until inference finishes, which surfaces as an Nginx 504.
             try:
-                await asyncio.to_thread(self._run_blocking, task_id)
+                future = self.loop.run_in_executor(self.executor, self._run_blocking, task_id)
+                try:
+                    outcome = await asyncio.shield(future)
+                    failed = outcome == TaskStatus.FAILED.value
+                except asyncio.CancelledError:
+                    # asyncio cancellation does not kill a running native call.
+                    await asyncio.shield(future)
+                    raise
             finally:
+                runtime.pages.release(time.monotonic() - started, attempt.estimate, kind=attempt.kind, units=attempt.units, failed=failed)
                 with self.lock:
                     attempt.started = False
                     reconcile_cancellation = attempt.cancelled
@@ -121,11 +175,18 @@ class TaskManager:
                 self.pending.discard(task_id)
                 self.workers_started.discard(task_id)
                 self.attempts.pop(task_id, None)
+            if not any(item.page_id == attempt.page_id for item in self.attempts.values()):
+                page_lock = self.page_locks.get(attempt.page_id)
+                if page_lock and not page_lock.locked():
+                    self.page_locks.pop(attempt.page_id, None)
 
     @staticmethod
-    def _run_blocking(task_id: str) -> None:
+    def _run_blocking(task_id: str) -> str | None:
+        from app.services.editor_history import begin_task_history, finish_task_history
         db = SessionLocal()
         processor: PipelineProcessor | None = None
+        history_entry_id: int | None = None
+        task = None
         try:
             task = db.get(ProcessingTask, task_id)
             if task is None:
@@ -134,16 +195,22 @@ class TaskManager:
                 TaskManager._finish_cancelled_task(task)
                 db.commit()
                 return
+            if task.status != TaskStatus.QUEUED.value or task.pause_requested:
+                # A task paused while waiting must not silently resume.
+                return
             task.status = TaskStatus.RUNNING.value
             task.pause_requested = False
             task.started_at = datetime.now(timezone.utc)
             task.finished_at = None
             task.error_message = None
             db.commit()
+            history_entry_id = begin_task_history(db, task)
             # Translation stages are asynchronous, so give the worker thread a
             # private event loop while keeping the web server loop responsive.
             processor = PipelineProcessor(db)
             asyncio.run(processor.execute(task_id))
+            finish_task_history(db, task_id, history_entry_id)
+            history_entry_id = None
             db.refresh(task)
             if task.status in {TaskStatus.CANCELLING.value, TaskStatus.CANCELLED.value}:
                 TaskManager._finish_cancelled_task(task)
@@ -192,7 +259,13 @@ class TaskManager:
                     task.page.current_stage = None
                 db.commit()
         finally:
+            if history_entry_id is not None:
+                try:
+                    finish_task_history(db, task_id, history_entry_id)
+                except Exception:
+                    logger.exception("Could not finalize editor history for task %s", task_id)
             db.close()
+        return task.status if task is not None else None
 
     @staticmethod
     def _finish_cancelled_task(task: ProcessingTask) -> None:
@@ -292,6 +365,8 @@ class TaskManager:
                 db.scalars(select(ProcessingTask).where(ProcessingTask.status == TaskStatus.QUEUED.value)).all()
             )
             db.commit()
+            from app.services.editor_history import recover_task_history
+            recover_task_history(db)
         for task in queued:
             self.dispatch(task.id)
 

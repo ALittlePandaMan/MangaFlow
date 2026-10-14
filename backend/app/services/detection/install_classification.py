@@ -6,10 +6,9 @@ import hashlib
 import os
 from uuid import uuid4
 
-from huggingface_hub import hf_hub_download
-
 from app.core.config import get_settings
 from app.services.detection.classification import MODEL_RELATIVE_PATH, MODEL_REPOSITORY, MODEL_REVISION, MODEL_SHA256
+from huggingface_hub import hf_hub_download
 
 
 def main() -> None:

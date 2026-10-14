@@ -7,6 +7,7 @@ export function classificationNeedsDetection(summary: ImagePage['text_classifica
   const filterSfx = options.filter_sfx !== false
   const confidence = Number(options.min_sfx_confidence ?? 0.6)
   if (!summary?.policy) return enabled
+  if (enabled && summary.status === 'unavailable') return true
   return summary.version !== 1 || summary.policy.enabled !== enabled
     || summary.policy.filter_sfx !== filterSfx || summary.policy.min_sfx_confidence !== confidence
 }

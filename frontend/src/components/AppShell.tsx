@@ -1,15 +1,16 @@
 import { BookOpen, Boxes, Check, CircleAlert, LockKeyhole, RefreshCw, Settings, Sparkles } from 'lucide-react'
-import { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react'
+import { createContext, lazy, Suspense, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { NavLink, Outlet } from 'react-router-dom'
 import { useGlobalDialog } from './GlobalDialog'
 import { PageLoader } from './LoadingUI'
 import {ThemeToggle} from './ThemeToggle'
-import { RecommendedConfigurationWizard } from '../pages/SettingsPage'
 import {useShortcutStore} from '../features/shortcuts/store'
 import { api } from '../services/api'
 import type { FontResource, ModelConfiguration, ModelDescriptor, SetupStatus } from '../types'
 import {buttonClass, cn, scrollbarClass} from '../ui'
 import packageMetadata from '../../package.json'
+
+const RecommendedConfigurationWizard = lazy(() => import('../pages/SettingsPage').then(module => ({default: module.RecommendedConfigurationWizard})))
 
 interface AppHeaderSlots {
   editorTarget: HTMLDivElement | null
@@ -33,13 +34,15 @@ export function AppShell() {
   const loadSetup = async () => {
     setSetupLoading(true); setSetupError('')
     try {
-      const [status, models, fontItems, preferences] = await Promise.all([
+      const [status, preferences] = await Promise.all([
         api.models.setupStatus(),
-        api.models.list(),
-        api.fonts.list(),
         api.preferences.get().catch(() => ({shortcuts:{}})),
       ])
-      setSetup(status); setAvailable(models.available); setConfigured(models.configured); setFonts(fontItems)
+      if (!status.ready) {
+        const [models, fontItems] = await Promise.all([api.models.list(), api.fonts.list()])
+        setAvailable(models.available); setConfigured(models.configured); setFonts(fontItems)
+      }
+      setSetup(status)
       if (Object.keys(preferences.shortcuts).length) useShortcutStore.getState().setShortcuts(preferences.shortcuts)
     } catch (reason) {
       setSetupError(reason instanceof Error ? reason.message : String(reason))
@@ -54,7 +57,7 @@ export function AppShell() {
   return <AppHeaderContext.Provider value={headerSlots}>
     <div className={cn('app-shell bg-app', scrollbarClass)}>
       <header className="app-header z-50 flex items-center border-b border-line-subtle bg-panel/95 backdrop-blur-xl">
-        <NavLink to="/projects" className="app-brand flex shrink-0 items-center gap-3 text-inherit no-underline outline-none focus-visible:ring-3 focus-visible:ring-accent/20" aria-label="MangaFlow 首页">
+        <NavLink to="/projects" className="app-brand flex shrink-0 items-center gap-3 text-inherit no-underline outline-none focus-visible:ring-3 focus-visible:ring-accent/20" title="MangaFlow 首页">
           <span className="grid size-9 place-items-center rounded-lg bg-ink text-lg font-bold text-app">漫</span>
           <span className="flex flex-col leading-none"><strong className="text-[17px] font-bold leading-tight tracking-[.2px]">MangaFlow</strong><small className="brand-subtitle mt-1 flex items-center gap-1.5 font-mono text-[9px] font-medium leading-[1.4] tracking-[1.3px] text-muted"><span>AI LETTERING STUDIO</span><span className="tracking-normal text-muted">v{packageMetadata.version}</span></small></span>
         </NavLink>
@@ -87,7 +90,7 @@ function RequiredSetupGate({status, available, configured, fonts, onReady}: {
       description:'工作台需要六项配置全部可用。系统将先检测当前设备，再安装所选模型并执行一次完整可用性检查。',
       size:'xlarge',
       dismissible:false,
-      content:({close}) => <RecommendedConfigurationWizard
+      content:({close}) => <Suspense fallback={<div className="h-64"><PageLoader label="正在加载配置向导"/></div>}><RecommendedConfigurationWizard
         available={available}
         configured={configured}
         fonts={fonts}
@@ -109,7 +112,7 @@ function RequiredSetupGate({status, available, configured, fonts, onReady}: {
           close()
           onReady(verified)
         }}
-      />,
+      /></Suspense>,
     })
   }, [available, configured, fonts, onReady, openDialog, status.first_run])
   return <div className="relative grid h-full min-h-0 place-items-center overflow-hidden bg-app p-8">

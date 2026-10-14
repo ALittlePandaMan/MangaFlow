@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Any, Literal
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -39,6 +40,7 @@ class ProjectRead(ORMModel):
     translation_context: dict[str, Any]
     settings: dict[str, Any]
     cover_url: str | None = None
+    cover_thumbnail_url: str | None = None
     created_at: datetime
     updated_at: datetime
     page_count: int = 0
@@ -46,6 +48,7 @@ class ProjectRead(ORMModel):
 
 class ImageRead(ORMModel):
     text_classification: dict[str, Any] | None = None
+    editor_history: dict[str, Any] | None = None
     id: str
     project_id: str
     filename: str
@@ -57,6 +60,8 @@ class ImageRead(ORMModel):
     error_message: str | None
     ocr_exempt: bool = False
     original_url: str | None = None
+    thumbnail_url: str | None = None
+    thumbnail_2x_url: str | None = None
     clean_url: str | None = None
     rendered_url: str | None = None
     text_layer_url: str | None = None
@@ -110,6 +115,7 @@ class RegionBase(BaseModel):
 
 
 class RegionCreate(RegionBase):
+    id: UUID | None = None
     region_key: str | None = None
 
 
@@ -144,6 +150,7 @@ class RegionUpdate(BaseModel):
 
 
 class RegionRead(ORMModel):
+    editor_history: dict[str, Any] | None = None
     id: str
     image_id: str
     region_key: str

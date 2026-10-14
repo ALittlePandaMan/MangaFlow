@@ -3,12 +3,11 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
-from PIL import Image
-
 from app.services.layout.engine import FontResolver, MangaLayoutEngine
 from app.services.layout.font_sizing import automatic_font_size
 from app.services.rendering import PillowRenderer
 from app.services.rendering.snapshot import render_input
+from PIL import Image
 from test_layout import available_font, simple_render_region
 
 

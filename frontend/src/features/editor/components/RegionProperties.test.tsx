@@ -75,10 +75,54 @@ describe('RegionProperties coordinate rotation', () => {
     expect(screen.getByRole('textbox',{name:'字号'})).toHaveValue('120')
   })
 
+  it('batches text alignment as one edit without changing boxes',() => {
+    const second={...region,id:'region-2',alignment:'right' as const}
+    const onUpdateMany=vi.fn(),onUpdate=vi.fn()
+    render(<RegionProperties selectedRegions={[region,second]} selectedCount={2} fontOptions={[]} onUpdate={onUpdate} onUpdateMany={onUpdateMany} onAction={vi.fn()}/>)
+    fireEvent.click(screen.getByRole('button',{name:'所选文字左对齐'}))
+    expect(onUpdateMany).toHaveBeenCalledWith([{id:region.id,patch:{alignment:'left'}},{id:second.id,patch:{alignment:'left'}}])
+    expect(onUpdate).not.toHaveBeenCalled()
+  })
+
+  it('aligns only translated boxes in translated view in one batch',() => {
+    useEditorStore.setState({view:'translated'})
+    const second={...region,id:'region-2',translated_bbox:[40,10,80,40],translated_polygon:[[40,10],[120,10],[120,50],[40,50]]}
+    const onUpdateMany=vi.fn()
+    render(<RegionProperties selectedRegions={[region,second]} selectedCount={2} fontOptions={[]} onUpdate={vi.fn()} onUpdateMany={onUpdateMany} onAction={vi.fn()}/>)
+    fireEvent.click(screen.getByRole('button',{name:'所选文本框靠左'}))
+    expect(onUpdateMany).toHaveBeenCalledWith([{id:second.id,patch:{translated_bbox:region.translated_bbox,translated_polygon:region.translated_polygon}}])
+  })
+
   it('does not display the internal OCR confidence', () => {
     renderProperties()
 
     expect(screen.queryByText('99%')).not.toBeInTheDocument()
+  })
+
+  it('groups direction with alignment and translated rotation without repair or canvas hints', () => {
+    const onUpdate = renderProperties()
+    const styles = screen.getByRole('heading', {name: '文字样式'}).closest('section')!
+    const content = screen.getByRole('heading', {name: '文本内容'}).closest('section')!
+    const direction = within(styles).getByRole('button', {name: '文字方向'})
+    const row = direction.closest('label')!.parentElement!
+
+    expect(within(content).queryByRole('button', {name: '文字方向'})).not.toBeInTheDocument()
+    expect(within(row).getByRole('button', {name: '文字对齐'})).toBeInTheDocument()
+    expect(within(row).getByRole('textbox', {name: '译文旋转角度'})).toBeInTheDocument()
+    expect(screen.queryByText(/背景修复/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/画布像素/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/方向键微调/)).not.toBeInTheDocument()
+
+    fireEvent.click(direction)
+    fireEvent.click(screen.getByRole('option', {name: '竖排'}))
+    expect(onUpdate).toHaveBeenCalledWith(region.id, {orientation: 'vertical'})
+  })
+
+  it('warns that changing the source frame requires OCR rather than implying repair recognizes text', () => {
+    const stale = {...region,layout_data:{ocr_geometry_stale:true}}
+    render(<RegionProperties region={stale} selectedRegions={[stale]} selectedCount={1} fontOptions={[]} onUpdate={vi.fn()} onAction={vi.fn()}/>)
+    expect(screen.getByRole('note')).toHaveTextContent('请按新框重新 OCR')
+    expect(screen.getByRole('note')).toHaveTextContent('修复只同步框的位置，不会重新识字')
   })
 
   it('uses the same 48px header height as the page list', () => {

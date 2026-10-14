@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from fastapi import HTTPException
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, object_session
 
 from app.models import ImagePage, ProcessingTask, Project, TextRegion
 from app.schemas.domain import ImageRead, ProjectRead, RegionRead
+from app.services.image_previews import preview_url
 from app.storage import get_storage
 
 
@@ -42,10 +43,12 @@ def project_read(project: Project) -> ProjectRead:
     cover_url = get_storage().media_url(cover_page.original_path) if cover_page else None
     if cover_url and cover_page:
         cover_url = f"{cover_url}?v={int(cover_page.created_at.timestamp() * 1000)}"
-    return result.model_copy(update={"page_count": len(project.pages), "cover_url": cover_url})
+    return result.model_copy(update={"page_count": len(project.pages), "cover_url": cover_url,
+        "cover_thumbnail_url": preview_url(cover_page, "cover") if cover_page else None})
 
 
-def image_read(page: ImagePage) -> ImageRead:
+def image_read(page: ImagePage, *, include_history: bool = False) -> ImageRead:
+    from app.services.editor_history import history_state
     storage = get_storage()
     result = ImageRead.model_validate(page)
     classification = (page.metadata_json or {}).get("text_classification")
@@ -74,8 +77,11 @@ def image_read(page: ImagePage) -> ImageRead:
     return result.model_copy(
         update={
             "text_classification": classification_summary,
+            "editor_history": history_state(object_session(page), page.id) if include_history and object_session(page) else None,
             "ocr_exempt": bool((page.metadata_json or {}).get("ocr_exempt", False)),
             "original_url": versioned(page.original_path, "original"),
+            "thumbnail_url": preview_url(page, "page"),
+            "thumbnail_2x_url": preview_url(page, "page-2x"),
             "clean_url": versioned(page.clean_path, "clean"),
             "rendered_url": versioned(page.rendered_path, "rendered"),
             "text_layer_url": versioned(page.text_layer_path, "text_layer"),
@@ -85,5 +91,16 @@ def image_read(page: ImagePage) -> ImageRead:
 
 
 def region_read(region: TextRegion) -> RegionRead:
+    from app.services.editor_history import history_state
     result = RegionRead.model_validate(region)
-    return result.model_copy(update={"mask_url": get_storage().media_url(region.pixel_mask_path)})
+    db = object_session(region)
+    layout = dict(region.layout_data or {})
+    generation = dict(layout.get("mask_generation", {}))
+    if (generation.get("method") == "manual_mask" and "repair_pending" not in generation
+            and region.pixel_mask_path and not region.inpainted_path):
+        # Older versions cleared inpainted_path after each mask edit but did
+        # not store a pending flag. Expose it without mutating a read request.
+        layout["mask_generation"] = {**generation, "repair_pending": True}
+    return result.model_copy(update={"mask_url": get_storage().media_url(region.pixel_mask_path),
+        "layout_data": layout,
+        "editor_history": history_state(db, region.image_id) if db else None})

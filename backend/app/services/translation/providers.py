@@ -102,6 +102,54 @@ class OpenAICompatibleTranslator(Translator):
         context: dict[str, Any],
         check_interruption: Callable[[], None] | None = None,
     ) -> dict[str, str]:
+        if not regions:
+            return {}
+        if len({key for key, _ in regions}) != len(regions):
+            raise ProviderError("Translation region IDs must be unique")
+        batches: list[list[tuple[str, str]]] = []
+        current: list[tuple[str, str]] = []
+        characters = 0
+        # Small pages remain one coherent request. Dense pages avoid huge
+        # responses/truncation; every chunk retains the same scene/glossary.
+        for item in regions:
+            if current and (len(current) >= 32 or characters + len(item[1]) > 8000):
+                batches.append(current)
+                current, characters = [], 0
+            current.append(item)
+            characters += len(item[1])
+        if current:
+            batches.append(current)
+        budget = request_budget(self.config)
+        budget.configure(self.config)
+        results: dict[str, str] = {}
+        async with httpx.AsyncClient(timeout=float(self.config.get("timeout", 90))) as client:
+            async def worker() -> None:
+                while batches:
+                    if check_interruption:
+                        check_interruption()
+                    batch = batches.pop(0)
+                    results.update(await self._translate_batch(client, batch, source_language=source_language,
+                        target_language=target_language, context=context, check_interruption=check_interruption))
+            workers = [asyncio.create_task(worker()) for _ in range(min(2, len(batches)))]
+            try:
+                await asyncio.gather(*workers)
+            finally:
+                for task in workers:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*workers, return_exceptions=True)
+        return {key: results[key] for key, _ in regions}
+
+    async def _translate_batch(
+        self,
+        client: httpx.AsyncClient,
+        regions: list[tuple[str, str]],
+        *,
+        source_language: str,
+        target_language: str,
+        context: dict[str, Any],
+        check_interruption: Callable[[], None] | None = None,
+    ) -> dict[str, str]:
         self.ensure_loaded()
         if not regions:
             return {}
@@ -110,7 +158,6 @@ class OpenAICompatibleTranslator(Translator):
         base_url = normalize_api_base_url(raw_base_url)
         model = str(self.config.get("model", "qwen2.5:7b"))
         api_key = str(self.config.get("api_key") or "")
-        timeout = float(self.config.get("timeout", 90))
         retries = int(self.config.get("retries", 2))
         expected_ids = {region_id for region_id, _ in regions}
         region_lines = "\n".join(f"[{region_id}] {text}" for region_id, text in regions)
@@ -147,38 +194,48 @@ class OpenAICompatibleTranslator(Translator):
             attach_page_image(payload, protocol, page_image)
         last_error: Exception | None = None
         budget = request_budget(self.config)
+        completed: dict[str, str] = {}
         for attempt in range(retries + 1):
             if check_interruption:
                 check_interruption()
             while not budget.try_acquire():
                 if check_interruption:
                     check_interruption()
-                await asyncio.sleep(.1)
+                await asyncio.sleep(budget.poll_interval())
             started = time.monotonic()
             budget_error = None
             try:
-                async with httpx.AsyncClient(timeout=timeout) as client:
-                    response = await client.post(
-                        endpoint,
-                        headers=headers,
-                        json=payload,
-                    )
-                    if check_interruption:
-                        check_interruption()
-                    if not 200 <= response.status_code < 300:
-                        status = response.status_code
-                        raise ProviderError(f"翻译请求失败（HTTP {status}），请检查接口配置和服务状态。", retryable=status in {408, 429} or status >= 500, status_code=status, retry_after=retry_after_seconds(response.headers.get("Retry-After")))
+                response = await client.post(
+                    endpoint,
+                    headers=headers,
+                    json=payload,
+                )
+                if check_interruption:
+                    check_interruption()
+                if not 200 <= response.status_code < 300:
+                    status = response.status_code
+                    raise ProviderError(f"翻译请求失败（HTTP {status}），请检查接口配置和服务状态。", retryable=status in {408, 429} or status >= 500, status_code=status, retry_after=retry_after_seconds(response.headers.get("Retry-After")))
                 body = response.json()
                 content = self._extract_content(body, protocol)
                 translations = self._parse(content)
                 received_ids = set(translations)
-                if received_ids != expected_ids:
-                    missing = sorted(expected_ids - received_ids)
-                    extra = sorted(received_ids - expected_ids)
-                    raise ProviderError(f"Translation ID mismatch; missing={missing}, extra={extra}", retryable=True)
-                if any(not isinstance(value, str) or not value.strip() for value in translations.values()):
-                    raise ProviderError("Translation response contains empty or non-string values", retryable=True)
-                return {key: value.strip() for key, value in translations.items()}
+                requested_ids = expected_ids - set(completed)
+                if received_ids - requested_ids:
+                    raise ProviderError(f"Translation ID mismatch; extra={sorted(received_ids - requested_ids)}", retryable=True)
+                completed.update({key:value.strip() for key,value in translations.items() if isinstance(value,str) and value.strip()})
+                missing = expected_ids - set(completed)
+                if not missing:
+                    return completed
+                # Retain successful entries and retry only missing/empty IDs,
+                # instead of generating the entire dense page again.
+                retry_instructions = {**instructions,"required_output":{key:"translated text" for key in sorted(missing)}}
+                retry_lines = "\n".join(f"[{key}] {text}" for key,text in regions if key in missing)
+                endpoint, headers, payload = self._build_request(protocol=protocol,base_url=base_url,api_key=api_key,model=model,
+                    system_prompt=system_prompt,user_prompt=json.dumps(retry_instructions,ensure_ascii=False)+"\n\n"+retry_lines,
+                    expected_ids=missing,temperature=float(self.config.get("temperature",0.2)),max_tokens=int(self.config.get("max_tokens",4096)))
+                if self.config.get("include_page_image") is True and isinstance(page_image,str):
+                    attach_page_image(payload,protocol,page_image)
+                raise ProviderError(f"Translation response missing or empty IDs: {sorted(missing)}",retryable=True)
             except (httpx.HTTPError, KeyError, IndexError, TypeError, json.JSONDecodeError, ProviderError) as exc:
                 budget_error = exc if isinstance(exc, ProviderError) else ProviderError("翻译接口连接或返回格式异常。", retryable=True, status_code=0 if isinstance(exc, httpx.RequestError) else None)
                 last_error = budget_error
@@ -288,4 +345,6 @@ class OpenAICompatibleTranslator(Translator):
             parsed = parsed["translations"]
         if not isinstance(parsed, dict):
             raise ProviderError("Translation response must be a JSON object", retryable=True)
-        return {str(key).strip("[]"): str(value) for key, value in parsed.items()}
+        if any(not isinstance(value,str) for value in parsed.values()):
+            raise ProviderError("Translation response contains non-string values",retryable=True)
+        return {str(key).strip("[]"): value for key, value in parsed.items()}

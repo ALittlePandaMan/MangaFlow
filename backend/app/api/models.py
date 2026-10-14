@@ -65,6 +65,20 @@ def get_device_profile() -> dict:
     return device_profile()
 
 
+@router.post("/models/config/{config_id}/classification/retry")
+def retry_text_classification(config_id: str, db: Session = Depends(get_db)) -> dict:
+    item = db.get(ModelConfig, config_id)
+    if item is None:
+        raise HTTPException(404, "Model configuration not found")
+    if item.kind != "detection" or item.provider != "paddleocr":
+        raise HTTPException(422, "此配置不支持文字分类")
+    from app.services.execution import execution_runtime
+    provider = registry.create(item.kind, item.provider, item.config)
+    with execution_runtime().model_slot(), provider._load_lock:
+        provider._text_classifier.reset()
+    return {"status": "reset", "message": "下次检测时重试分类；页面内容未改动"}
+
+
 @router.get("/models/setup-status")
 def get_setup_status(db: Session = Depends(get_db)) -> dict:
     return setup_status_report(db)

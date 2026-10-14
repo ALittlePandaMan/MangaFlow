@@ -299,7 +299,9 @@ def _import_page(
             "locked": bool(region_data.get("locked", False)),
             "visible": bool(region_data.get("visible", True)),
         })
-        values = validated.model_dump(mode="json", exclude={"region_key", "auto_font_size"})
+        # Imports allocate new identities; RegionCreate also has an optional
+        # client-generated ID, which must not be passed a second time here.
+        values = validated.model_dump(mode="json", exclude={"id", "region_key", "auto_font_size"})
         region = TextRegion(id=str(uuid.uuid4()), image_id=page.id, region_key=region_key, **values)
         region.layout_data = _dictionary(region_data.get("layout"))
         region.needs_review = bool(region_data.get("needs_review", False))

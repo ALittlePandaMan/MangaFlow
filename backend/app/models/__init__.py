@@ -1,4 +1,5 @@
 from app.models.entities import (
+    EditorHistoryEntry,
     ImagePage,
     ModelConfig,
     ProcessingTask,
@@ -9,6 +10,7 @@ from app.models.entities import (
 )
 
 __all__ = [
+    "EditorHistoryEntry",
     "Project",
     "ImagePage",
     "TextRegion",

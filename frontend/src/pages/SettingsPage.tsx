@@ -1,6 +1,7 @@
 import { Check, ChevronRight, CircleAlert, Cpu, Download, Keyboard, KeyRound, Pencil, RefreshCw, Server, Sparkles, Trash2, Type, Upload } from 'lucide-react'
 import { FormEvent, useEffect, useRef, useState } from 'react'
 import {GenericOCRFields} from '../components/GenericOCRFields'
+import {ExecutionSettings} from '../components/ExecutionSettings'
 import {OCRConcurrencyFields} from '../components/OCRConcurrencyFields'
 import {NumberControl, SelectControl} from '../components/FormControls'
 import { useGlobalDialog } from '../components/GlobalDialog'
@@ -66,6 +67,12 @@ export function SettingsPage() {
       }}/>,
     })
   }
+  const showExecutionDialog = () => openDialog({
+    title:'性能与并发',
+    description:'按设备余量调节页面并发和 CPU 线程，保留页面顺序与撤销记录。',
+    size:'large',
+    content:({close}) => <ExecutionSettings onCancel={close}/>,
+  })
   const installRecommended = async (selections: RecommendationSelection[], preload: boolean): Promise<ModelBootstrapEntry[]> => {
     setInstalling(true)
     setError('')
@@ -133,6 +140,7 @@ export function SettingsPage() {
       <article className={configCard}><div className={configIcon}><Type aria-hidden="true"/></div><div className={configBody}><span className="text-[10px] font-medium uppercase leading-[normal] tracking-[.8px] text-muted">排版资源</span><h3 className="my-1.5 text-base font-semibold leading-[1.35]">字体</h3><p className="m-0 text-[11px] leading-[normal] text-muted">{DEFAULT_FONT_FAMILIES.length + fonts.length} 种字体可用</p><div className="mt-3.5 flex flex-wrap gap-1.5"><i className={tag}><Check size={12}/>{DEFAULT_FONT_FAMILIES.length} 种内置</i>{fonts.length > 0 && <i className={tag}>{fonts.length} 种自定义</i>}</div></div><div className="col-start-2 row-start-2 flex justify-end"><button className={iconButtonClass} title="编辑字体配置" aria-label="编辑字体配置" onClick={showFontDialog}><Pencil size={16}/></button></div></article>
     </div></div>
     <div className="mt-10"><h2 className="mb-4 mt-0 text-lg font-semibold">操作偏好</h2><article className="preferences-card grid min-h-[124px] grid-cols-[44px_minmax(0,1fr)_auto] items-center gap-4 rounded-2xl border border-line bg-panel p-5 [box-shadow:var(--shadow-card)]"><div className={configIcon}><Keyboard aria-hidden="true"/></div><div className="min-w-0"><span className="text-[10px] font-medium uppercase leading-[normal] tracking-[.8px] text-muted">编辑器控制</span><h3 className="my-1.5 text-base font-semibold leading-[1.35]">快捷键</h3><p className="m-0 text-[12px] leading-relaxed text-muted">{SHORTCUT_DEFINITIONS.length} 项操作可自定义，包含工具、视图、区域、页面流程与导入导出。</p></div><button className={buttonClass} onClick={showShortcutDialog}><Keyboard aria-hidden="true" size={16}/>编辑快捷键</button></article></div>
+    <div className="mt-6"><article className="grid grid-cols-[44px_minmax(0,1fr)_auto] items-center gap-4 rounded-2xl border border-line bg-panel p-5 max-[480px]:grid-cols-[44px_minmax(0,1fr)]"><div className={configIcon}><Cpu aria-hidden="true"/></div><div><h3 className="my-1.5 text-base font-semibold">性能与并发</h3><p className="m-0 text-xs leading-6 text-muted">自动调节页面任务与 CPU 计算线程，也可固定上限或切换串行。</p></div><button className={buttonClass} onClick={showExecutionDialog}>调整性能</button></article></div>
   </section>
 }
 

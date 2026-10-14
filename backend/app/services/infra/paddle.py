@@ -4,9 +4,8 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-from PIL import Image
-
 from app.services.base import ProviderError
+from PIL import Image
 
 
 def load_paddle_image(image_path: Path) -> np.ndarray:

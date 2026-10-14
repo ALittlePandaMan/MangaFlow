@@ -86,7 +86,7 @@ def repair_masks(
     temporary_source = output_path.with_name(f".{output_path.stem}.flat-source.png")
     temporary_mask = output_path.with_name(f".{output_path.stem}.complex-mask.png")
     try:
-        save_png_with_metadata(prepared, temporary_source, metadata)
+        save_png_with_metadata(prepared, temporary_source, metadata, compress_level=1)
         if not cv2.imwrite(str(temporary_mask), np.where(complex_area, 255, 0).astype(np.uint8)):
             raise ValueError("Cannot write complex repair mask")
         provider.inpaint(temporary_source, temporary_mask, output_path, "background_complex")

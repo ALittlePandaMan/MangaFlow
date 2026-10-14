@@ -13,7 +13,7 @@ class Base(DeclarativeBase):
 
 
 settings = get_settings()
-connect_args = {"check_same_thread": False} if settings.resolved_database_url.startswith("sqlite") else {}
+connect_args = {"check_same_thread": False, "timeout": 30} if settings.resolved_database_url.startswith("sqlite") else {}
 engine = create_engine(settings.resolved_database_url, connect_args=connect_args, pool_pre_ping=True)
 SessionLocal = sessionmaker(bind=engine, expire_on_commit=False, autoflush=False)
 
@@ -24,6 +24,7 @@ if settings.resolved_database_url.startswith("sqlite"):
     def _enable_sqlite_foreign_keys(dbapi_connection: object, _: object) -> None:
         cursor = dbapi_connection.cursor()  # type: ignore[attr-defined]
         cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.execute("PRAGMA busy_timeout=30000")
         cursor.close()
 
 
@@ -39,6 +40,9 @@ def initialize_database() -> None:
     # Importing registers every mapped class before metadata creation.
     from app.models import entities  # noqa: F401
 
+    if settings.resolved_database_url.startswith("sqlite"):
+        with engine.connect() as connection:
+            connection.exec_driver_sql("PRAGMA journal_mode=WAL")
     Base.metadata.create_all(bind=engine)
     # create_all does not add columns to databases created by older releases.
     # Keep this small compatibility migration here until formal migrations are introduced.

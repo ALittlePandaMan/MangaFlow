@@ -8,6 +8,7 @@ import cv2
 import numpy as np
 from app.services.inpainting.background import (
     balloon_background,
+    dominant_background,
     outline_guard,
     paper_background,
     paper_structure_guard,
@@ -15,7 +16,7 @@ from app.services.inpainting.background import (
 from app.services.inpainting.text_segmentation import learned_text_mask
 from PIL import Image, ImageDraw
 
-MASK_ALGORITHM_VERSION = 2
+MASK_ALGORITHM_VERSION = 4
 
 
 def load_text_mask_source(image_path: Path) -> tuple[np.ndarray, np.ndarray]:
@@ -134,6 +135,16 @@ def create_text_mask(
 
     crop_lab = lab[y : y + box_height, x : x + box_width]
     crop_region = region[y : y + box_height, x : x + box_width]
+    # A hand-adjusted frame is still a text search area, not a solid erase
+    # brush. Establish clear foreground from the dominant INSIDE colour so
+    # neighbouring artwork in the sampling ring cannot turn dialogue into a
+    # stylized title. This works for dark-on-light and light-on-dark lettering.
+    inner_background, inner_support = dominant_background(inside_samples)
+    inner_distances = np.linalg.norm(crop_lab - inner_background, axis=2)
+    clear_candidate = np.where((inner_distances >= max(12., color_threshold)) & (crop_region > 0), 255, 0).astype(np.uint8)
+    ink_ratio = cv2.countNonZero(clear_candidate) / max(1, cv2.countNonZero(crop_region))
+    clear_candidate = _filter_text_components(clear_candidate, int(cv2.countNonZero(crop_region)))
+    clear_glyphs = inner_support >= .6 and .005 <= ink_ratio <= .4 and cv2.countNonZero(clear_candidate) >= 3
     distances = np.min(
         np.linalg.norm(crop_lab[:, :, None, :] - mask_centers[None, None, :, :], axis=3),
         axis=2,
@@ -145,6 +156,9 @@ def create_text_mask(
         adaptive_threshold = float(color_threshold)
     candidate = np.where((distances >= adaptive_threshold) & (crop_region > 0), 255, 0).astype(np.uint8)
     candidate = _filter_text_components(candidate, int(cv2.countNonZero(crop_region)))
+    if clear_glyphs:
+        candidate = clear_candidate
+        adaptive_threshold = max(12., float(color_threshold))
 
     coverage = cv2.countNonZero(candidate) / max(1, cv2.countNonZero(crop_region))
     if coverage > 0.48 and paper is None:
@@ -152,71 +166,54 @@ def create_text_mask(
         candidate = np.where((distances >= stricter) & (crop_region > 0), 255, 0).astype(np.uint8)
         candidate = _filter_text_components(candidate, int(cv2.countNonZero(crop_region)))
         adaptive_threshold = stricter
-    glyph_evidence = candidate.copy()
-    if cv2.countNonZero(candidate) == 0 and not conservative:
-        # Low-contrast edge case: retaining the old polygon behavior is safer than an empty mask.
-        candidate = crop_region.copy()
-
-    candidate = cv2.morphologyEx(candidate, cv2.MORPH_CLOSE, np.ones((2, 2), np.uint8))
-    stylized_complex = (
-        not conservative
-        and not uniform_background
-        and not enclosed_background
-        and box_width * box_height >= 750
-        and min(box_width, box_height) >= 12
+    # Every frame must try glyph segmentation, including manual frames and
+    # display lettering. Color distance alone on textured artwork is not
+    # reliable evidence; a learned prediction can still succeed there.
+    color_pixels = cv2.countNonZero(candidate)
+    color_reliable = color_pixels >= 3 and color_pixels <= cv2.countNonZero(crop_region) * .65 and (
+        clear_glyphs or paper is not None or enclosed_background or (uniform_background and dominant_ratio >= .6)
     )
-    method = "conservative_glyph" if conservative else "local_color_distance"
-    if uniform_background and not enclosed_background and not conservative:
-        # The detector already returns a tight text-line polygon. On a locally
-        # uniform bubble/background, filling the complete polygon reliably
-        # removes anti-aliasing, furigana and outlines without harming detail.
-        candidate = crop_region.copy()
-        method = "uniform_background_polygon"
-    elif expand > 0:
-        dynamic_expand = max(int(expand), min(6, round(min(box_width, box_height) * 0.065)))
-        size = dynamic_expand * 2 + 1
+    if not color_reliable:
+        candidate = np.zeros_like(candidate)
+    glyph_evidence = candidate.copy()
+    method = "conservative_glyph" if conservative else "enclosed_background_color" if enclosed_background else "local_background_glyph" if clear_glyphs else "local_color_distance"
+    if expand > 0:
+        # Expand only the antialiased fringe, not in proportion to the whole
+        # frame: large closing/filling kernels turn dense glyphs into a box.
+        size = min(6, int(expand)) * 2 + 1
         candidate = cv2.dilate(
             candidate,
             cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (size, size)),
             iterations=1,
         )
-        if not enclosed_background:
-            close_size = max(3, min(11, dynamic_expand * 2 + 1))
-            candidate = cv2.morphologyEx(
-                candidate,
-                cv2.MORPH_CLOSE,
-                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (close_size, close_size)),
-            )
-            candidate = _fill_holes(candidate)
-        else:
-            method = "enclosed_background_color"
     candidate = cv2.bitwise_and(candidate, crop_region)
     mask = np.zeros((height, width), dtype=np.uint8)
     mask[y : y + box_height, x : x + box_width] = candidate
-    mask_expansion = 1.0
-    if stylized_complex:
-        # Large display lettering commonly contains shadows, strokes and
-        # multi-color outlines. A color-selected glyph mask leaves those
-        # decorations behind, while LaMa performs much better when it can
-        # rebuild the complete, slightly padded title area in one pass.
-        dynamic_expand = max(int(expand), 5, min(10, round(min(box_width, box_height) * 0.1)))
-        size = dynamic_expand * 2 + 1
-        mask = cv2.dilate(
-            region,
-            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (size, size)),
-            iterations=1,
-        )
-        method = "stylized_text_polygon"
-        mask_expansion = cv2.countNonZero(mask) / max(1, cv2.countNonZero(region))
-
     full_glyph_evidence = np.zeros((height, width), dtype=np.uint8)
     full_glyph_evidence[y : y + box_height, x : x + box_width] = glyph_evidence
     learned_pixels = 0
+    learned_available = False
     if text_probability is not None:
         learned = learned_text_mask(text_probability, region, expand=expand, allow_outside=balloon_mask is not None)
+        learned_available = cv2.countNonZero(learned) > 0
+        if learned_available and paper is None:
+            # Without verified plain paper, disconnected dark lines are not
+            # extra characters. Recover fringe near model-confirmed text only.
+            support = cv2.dilate(learned, np.ones((3, 3), np.uint8))
+            mask = cv2.bitwise_and(mask, support)
+            full_glyph_evidence = cv2.bitwise_and(full_glyph_evidence, support)
         learned_pixels = cv2.countNonZero(cv2.bitwise_and(learned, cv2.bitwise_not(mask)))
         mask = cv2.bitwise_or(mask, learned)
         full_glyph_evidence = cv2.bitwise_or(full_glyph_evidence, learned)
+    fallback_reason = None
+    if not color_reliable and learned_available:
+        method = "learned_glyph"
+    elif not color_reliable and not learned_available:
+        # Only failure of BOTH segmentation sources authorizes a polygon
+        # fallback. It still obeys the frame, balloon and structure guards.
+        mask = region.copy()
+        method = "segmentation_fallback_polygon"
+        fallback_reason = "no_reliable_glyphs"
     if glyph_output_path is not None:
         glyph_output_path.parent.mkdir(parents=True, exist_ok=True)
         if not cv2.imwrite(str(glyph_output_path), full_glyph_evidence):
@@ -246,7 +243,7 @@ def create_text_mask(
             cv2.countNonZero(cv2.bitwise_and(mask, region)) / max(1, cv2.countNonZero(region)),
             4,
         ),
-        "mask_expansion": round(mask_expansion, 4),
+        "mask_expansion": round(cv2.countNonZero(mask) / max(1, cv2.countNonZero(region)), 4),
         "threshold": round(adaptive_threshold, 2),
         "background_dominant_ratio": round(dominant_ratio, 3),
         "background_residual": round(background_residual, 2),
@@ -254,6 +251,9 @@ def create_text_mask(
         "inside_dominant_ratio": round(inside_dominant_ratio, 3),
         "suggested_region_type": "background_complex",
         "learned_added_pixels": learned_pixels,
+        "clear_glyphs": bool(clear_glyphs),
+        "glyph_source": "combined" if color_reliable and learned_available else "local_color" if color_reliable else "model" if learned_available else None,
+        "fallback_reason": fallback_reason,
     }
     if constraint_metadata is not None:
         metadata["constraint"] = constraint_metadata
@@ -801,6 +801,10 @@ def _dominant_colors(samples: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     if cluster_count == 1:
         return np.median(compact, axis=0, keepdims=True), np.asarray([len(compact)], dtype=np.int32)
     criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.2)
+    # OpenCV's RNG is thread-local. Bind each clustering to its samples so
+    # changing worker assignment / completion order cannot change the mask.
+    seed = int.from_bytes(hashlib.sha256(compact.tobytes()).digest()[:4], "little") & 0x7FFFFFFF
+    cv2.setRNGSeed(seed)
     _, labels, centers = cv2.kmeans(compact, cluster_count, None, criteria, 3, cv2.KMEANS_PP_CENTERS)
     counts = np.bincount(labels.ravel(), minlength=cluster_count)
     order = np.argsort(counts)[::-1]
@@ -822,14 +826,6 @@ def _filter_text_components(mask: np.ndarray, region_area: int) -> np.ndarray:
         if 1 <= area <= maximum_area:
             output[labels == label] = 255
     return output
-
-
-def _fill_holes(mask: np.ndarray) -> np.ndarray:
-    padded = cv2.copyMakeBorder(mask, 1, 1, 1, 1, cv2.BORDER_CONSTANT, value=0)
-    flooded = padded.copy()
-    cv2.floodFill(flooded, None, (0, 0), 255)
-    holes = cv2.bitwise_not(flooded)[1:-1, 1:-1]
-    return cv2.bitwise_or(mask, holes)
 
 
 def process_mask(source: Path, destination: Path, operation: str, amount: int = 3) -> Path:

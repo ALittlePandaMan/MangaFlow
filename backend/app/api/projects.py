@@ -16,6 +16,7 @@ from app.models import ImagePage, ProcessingTask, Project
 from app.models.enums import TaskStatus
 from app.pipeline.processor import PipelineProcessor
 from app.schemas.domain import ExportRequest, ImageRead, ProjectCreate, ProjectRead, ProjectUpdate
+from app.services.editor_history import capture_project_state, record_project_edit
 from app.services.exporting import export_project, import_project_archive
 from app.services.rendering.pillow_renderer import RENDER_OUTPUT_VERSION
 from app.storage import StorageError, get_storage
@@ -94,6 +95,7 @@ def upload_images(
     require_project(db, project_id)
     if not files:
         raise HTTPException(400, "At least one image is required")
+    before = capture_project_state(db, project_id, [], editing=True)
     storage = get_storage()
     maximum = get_settings().max_upload_mb * 1024 * 1024
     current_max_order = db.scalar(select(func.max(ImagePage.order_index)).where(ImagePage.project_id == project_id))
@@ -127,6 +129,7 @@ def upload_images(
             )
             db.add(page)
             pages.append(page)
+        record_project_edit(db, project_id, before, "导入图片", created_page_ids, created_page_ids[0])
         db.commit()
     except StorageError as exc:
         db.rollback()
@@ -148,6 +151,24 @@ def list_images(project_id: str, db: Session = Depends(get_db)) -> list[ImageRea
         db.scalars(select(ImagePage).where(ImagePage.project_id == project_id).order_by(ImagePage.order_index)).all()
     )
     return [image_read(page) for page in pages]
+
+
+@router.post("/projects/{project_id}/images/order", response_model=list[ImageRead])
+def reorder_images(project_id: str, image_ids: list[str], db: Session = Depends(get_db)):
+    require_project(db, project_id)
+    before = capture_project_state(db, project_id, [], editing=True)
+    pages = {page.id:page for page in db.scalars(select(ImagePage).where(ImagePage.project_id == project_id)).all()}
+    if len(set(image_ids)) != len(image_ids) or set(image_ids) != set(pages):
+        raise HTTPException(409, "图片列表已变化，请刷新后重新排序")
+    temporary = max((page.order_index for page in pages.values()), default=0) + len(pages) + 1
+    for index, page in enumerate(pages.values()):
+        page.order_index = temporary + index
+    db.flush()
+    for index, image_id in enumerate(image_ids):
+        pages[image_id].order_index = index
+    record_project_edit(db, project_id, before, "调整图片顺序", [], image_ids[0] if image_ids else None)
+    db.commit()
+    return [image_read(pages[image_id]) for image_id in image_ids]
 
 
 @router.get("/projects/{project_id}/fonts")

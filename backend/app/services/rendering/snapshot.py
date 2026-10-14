@@ -1,5 +1,6 @@
 """Visual inputs that bind a generated text layer to the editor's current state."""
 from copy import deepcopy
+
 from app.services.layout.font_sizing import uses_automatic_font_size
 
 VISUAL_FIELDS = (

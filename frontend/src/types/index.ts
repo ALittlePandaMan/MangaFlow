@@ -1,5 +1,25 @@
-export type ViewMode = 'original' | 'clean' | 'translated' | 'comparison'
-export type Tool = 'pan' | 'select' | 'rectangle' | 'polygon' | 'lasso'
+export type ViewMode = 'original' | 'clean' | 'translated' | 'comparison' | 'mask'
+export type Tool = 'pan' | 'select' | 'rectangle' | 'polygon' | 'lasso' | 'brush' | 'eraser'
+
+export interface EditorHistoryState {
+  project_id: string
+  image_id?: string
+  undo_count: number
+  redo_count: number
+  undo_id: number | null
+  redo_id: number | null
+  undo_label: string | null
+  redo_label: string | null
+  pending?: boolean
+}
+export interface EditorHistoryResult {
+  page: ImagePage | null
+  pages: ImagePage[]
+  regions: TextRegion[]
+  history: EditorHistoryState
+  region_ids: string[]
+  action: string
+}
 
 export interface Project {
   id: string
@@ -10,6 +30,7 @@ export interface Project {
   translation_context: Record<string, unknown>
   settings: Record<string, unknown>
   cover_url: string | null
+  cover_thumbnail_url?: string | null
   page_count: number
   created_at: string
   updated_at: string
@@ -22,6 +43,7 @@ export interface ImagePage {
     excluded_count: number
     policy?: {enabled: boolean; filter_sfx: boolean; min_sfx_confidence: number}
   } | null
+  editor_history?: EditorHistoryState | null
   id: string
   project_id: string
   filename: string
@@ -33,6 +55,8 @@ export interface ImagePage {
   error_message: string | null
   ocr_exempt: boolean
   original_url: string
+  thumbnail_url?: string | null
+  thumbnail_2x_url?: string | null
   clean_url: string | null
   rendered_url: string | null
   text_layer_url: string | null
@@ -42,6 +66,7 @@ export interface ImagePage {
 }
 
 export interface TextRegion {
+  editor_history?: EditorHistoryState | null
   id: string
   image_id: string
   region_key: string
@@ -188,4 +213,22 @@ export interface FontResource {
   filename: string
   path: string
   url?: string
+}
+export interface ExecutionPolicy {
+  mode: 'auto' | 'fixed' | 'serial'
+  max_pages: number
+  cpu_workers: number
+  memory_reserve_mb: number
+}
+
+export interface ExecutionStatus {
+  policy: ExecutionPolicy
+  pages: {active:number,limit:number,maximum:number,peak:number,reason:string}
+  cpu: {active:number,limit:number,maximum:number,peak:number,reason:string}
+  models: {active:number,limit:number,calls?:number,wait_seconds?:number,run_seconds?:number}
+  gpu?: {known:boolean; devices:Array<{index:number; name:string; total_bytes:number; used_bytes:number; free_bytes:number; utilization_percent:number|null}>; reason?:string}
+  stage_timings?: Array<{stage:string; samples:number; mean_seconds:number; p95_seconds:number}>
+  resources: {known:boolean,available_bytes:number,total_bytes:number,cpu_percent:number,cpu_cores:number,rss_bytes:number}
+  native_threads: number
+  recent_stages: Array<{task_id:string,stage:string,seconds:number}>
 }

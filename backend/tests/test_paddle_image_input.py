@@ -1,19 +1,16 @@
 from __future__ import annotations
 
+import sys
 from hashlib import sha256
 from io import BytesIO
-from pathlib import Path
 from types import SimpleNamespace
-import sys
 
 import numpy as np
 import pytest
-from PIL import Image
-
 from app.services.base import ProviderError, ProviderState
 from app.services.detection.providers import PaddleTextDetector
 from app.services.infra.paddle import load_paddle_image, predict_paddle_image
-
+from PIL import Image
 
 POLYGON = [[1, 2], [12, 2], [12, 18], [1, 18]]
 

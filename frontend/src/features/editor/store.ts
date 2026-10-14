@@ -29,6 +29,7 @@ const viewLayers: Record<ViewMode, LayerVisibility> = {
   clean: { original: false, detection: true, clean: true, translated: false },
   translated: { original: false, detection: true, clean: true, translated: true },
   comparison: { original: false, detection: false, clean: false, translated: false },
+  mask: { original: false, detection: false, clean: false, translated: false },
 }
 
 export const useEditorStore = create<EditorState>((set) => ({
@@ -38,7 +39,7 @@ export const useEditorStore = create<EditorState>((set) => ({
   viewReset: 0,
   selectedIds: [],
   layers: viewLayers.translated,
-  setView: view => set({ view, layers: { ...viewLayers[view] } }),
+  setView: view => set(state => ({ view, layers: { ...viewLayers[view] }, tool: view !== 'mask' && (state.tool === 'brush' || state.tool === 'eraser') ? 'select' : state.tool })),
   setTool: tool => set(state => {
     const createsRegion = tool === 'rectangle' || tool === 'polygon' || tool === 'lasso'
     return {

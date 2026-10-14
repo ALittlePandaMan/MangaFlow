@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import unicodedata
-from math import cos, sin, radians
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from functools import lru_cache
+from math import cos, radians, sin
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from PIL import ImageFont
 

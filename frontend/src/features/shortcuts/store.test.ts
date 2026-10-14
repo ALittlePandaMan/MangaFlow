@@ -9,6 +9,15 @@ describe('shortcut bindings', () => {
     expect(formatShortcut('Mod+Shift+KeyK')).toBe('Ctrl + Shift + K')
   })
 
+  it('uses A/D for image navigation without shadowing select-all or modified keys', () => {
+    expect(shortcutForEvent(keyboardEvent('KeyA'), DEFAULT_SHORTCUTS)).toBe('page.previous')
+    expect(shortcutForEvent(keyboardEvent('KeyD'), DEFAULT_SHORTCUTS)).toBe('page.next')
+    expect(shortcutForEvent(keyboardEvent('KeyA', {ctrlKey:true}), DEFAULT_SHORTCUTS)).toBe('edit.selectAll')
+    expect(shortcutForEvent(keyboardEvent('KeyD', {ctrlKey:true}), DEFAULT_SHORTCUTS)).toBeNull()
+    expect(shortcutConflicts(DEFAULT_SHORTCUTS).size).toBe(0)
+    expect(shortcutForEvent(keyboardEvent('PageDown'), {...DEFAULT_SHORTCUTS, 'page.next':'PageDown'})).toBe('page.next')
+  })
+
   it('matches ctrl and meta as the same command modifier', () => {
     expect(matchesShortcut(keyboardEvent('KeyZ', {ctrlKey:true}), 'Mod+KeyZ')).toBe(true)
     expect(matchesShortcut(keyboardEvent('KeyZ', {metaKey:true}), 'Mod+KeyZ')).toBe(true)

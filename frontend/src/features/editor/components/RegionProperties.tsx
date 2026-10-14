@@ -6,9 +6,10 @@ import {ColorControl, NumberControl, SelectControl} from '../../../components/Fo
 import {ButtonLoading} from '../../../components/LoadingUI'
 import {formatShortcut, shortcutToAria, useShortcutStore} from '../../shortcuts/store'
 import {isPerspectiveQuad, perspectiveQuadSize} from '../lib/perspectiveText'
+import { useEditorStore } from '../store'
+import {alignRegions, type BoxAlignment} from '../lib/regionEditing'
 import {hasCurrentComputedFont, sizeText, usesAutomaticFontSize} from '../lib/fontSizing'
 import {shapePreviewRegion} from '../lib/shapeText'
-import { useEditorStore } from '../store'
 
 const regionIconButtonClass = cn(buttonClass, '!size-8 !min-h-8 !p-0')
 
@@ -19,10 +20,11 @@ interface Props {
   fontOptions: string[]
   busyAction?: string | null
   onUpdate: (id: string, patch: Partial<TextRegion>) => void
+  onUpdateMany?: (changes: Array<{id:string,patch:Partial<TextRegion>}>) => void
   onAction: (action: string, options?: Record<string, unknown>) => void
 }
 
-export function RegionProperties({region, selectedRegions, selectedCount, fontOptions, busyAction, onUpdate, onAction}: Props) {
+export function RegionProperties({region, selectedRegions, selectedCount, fontOptions, busyAction, onUpdate, onUpdateMany, onAction}: Props) {
   const select = useEditorStore(state => state.select)
   const view = useEditorStore(state => state.view)
   const shortcuts = useShortcutStore(state => state.shortcuts)
@@ -63,14 +65,26 @@ export function RegionProperties({region, selectedRegions, selectedCount, fontOp
     : undefined
   const updateSelectedFontSize = (fontSize: number) => {
     const next = Math.max(1, Math.min(512, fontSize))
-    selectedRegions.forEach(item => onUpdate(item.id, {font_size: next, auto_font_size:false}))
+    const changes = selectedRegions.map(item => ({id:item.id,patch:{font_size:next,auto_font_size:false}}))
+    if (onUpdateMany) onUpdateMany(changes); else changes.forEach(item => onUpdate(item.id,item.patch))
   }
   const stepSelectedFontSize = (direction: 1 | -1) => {
-    selectedRegions.forEach((item,index) => onUpdate(item.id, {font_size: Math.max(1, Math.min(512, selectedFontSizes[index] + direction)), auto_font_size:false}))
+    const changes = selectedRegions.map((item,index) => ({id:item.id,patch:{font_size:Math.max(1,Math.min(512,selectedFontSizes[index] + direction)),auto_font_size:false}}))
+    if (onUpdateMany) onUpdateMany(changes); else changes.forEach(item => onUpdate(item.id,item.patch))
+  }
+  const commonAlignment = selectedRegions.every(item => item.alignment === selectedRegions[0]?.alignment) ? selectedRegions[0]?.alignment : undefined
+  const updateSelectedAlignment = (alignment: TextRegion['alignment']) => {
+    const changes = selectedRegions.map(item => ({id:item.id,patch:{alignment}}))
+    if (onUpdateMany) onUpdateMany(changes); else changes.forEach(item => onUpdate(item.id,item.patch))
+  }
+  const alignSelectedBoxes = (alignment: BoxAlignment) => {
+    const changes = alignRegions(selectedRegions,view === 'translated',alignment)
+    if (onUpdateMany) onUpdateMany(changes); else changes.forEach(item => onUpdate(item.id,item.patch))
   }
   return <aside className={cn('flex min-h-0 flex-col overflow-y-auto border-l border-line-subtle bg-panel [&>*]:shrink-0', scrollbarClass)}>
+    <fieldset disabled={!!busyAction} className="contents [&>*]:shrink-0">
     {selectedCount > 1 ? <div className="flex flex-1 flex-col justify-center gap-6 p-6">
-      <div className="flex items-center gap-3 text-accent"><Layers3 size={28}/><span className="flex min-w-0 flex-col gap-1"><strong className="text-sm text-ink">已选择 {selectedCount} 个区域</strong><small className="text-[10px] leading-relaxed text-muted">继续点击可增减选择，方向键可微调位置</small></span></div>
+      <div className="flex items-center gap-3 text-accent"><Layers3 size={28}/><span className="flex min-w-0 flex-col gap-1"><strong className="text-sm text-ink">已选择 {selectedCount} 个区域</strong><small className="text-[10px] leading-relaxed text-muted">拖动所选框可整组移动，方向键可微调位置</small></span></div>
       <div className="grid gap-2">
         <div className="rounded-xl border border-line-subtle bg-surface/60 p-3">
           <div className="mb-2 flex items-center justify-between gap-3"><span className="text-[10px] font-medium text-secondary">批量字号</span><small className="font-mono text-[9px] text-muted">{commonFontSize === undefined ? '混合字号' : `${commonFontSize}px`}</small></div>
@@ -81,6 +95,18 @@ export function RegionProperties({region, selectedRegions, selectedCount, fontOp
             onChange={updateSelectedFontSize} onStep={stepSelectedFontSize}
           />
           <small className="mt-2 block text-[9px] leading-relaxed text-muted">输入数值可统一字号；加减按钮会让所选文字同步增减。</small>
+        </div>
+        <div className="rounded-xl border border-line-subtle bg-surface/60 p-3">
+          <span className="mb-2 block text-[10px] font-medium text-secondary">文字对齐</span>
+          <div className="grid grid-cols-3 gap-1.5">
+            {([['left','左对齐'],['center','居中'],['right','右对齐']] as const).map(([value,label]) => <button key={value} type="button" aria-label={`所选文字${label}`} aria-pressed={commonAlignment === value} disabled={!!busyAction}
+              className={cn(buttonClass,'!min-h-8 !px-1 text-[10px]',commonAlignment === value && 'border-accent/40 bg-accent/10 text-accent')} onClick={() => updateSelectedAlignment(value)}>{label}</button>)}
+          </div>
+          <span className="mb-2 mt-3 block text-[10px] font-medium text-secondary">{view === 'translated' ? '译文框' : '原文框'}对齐</span>
+          <div className="grid grid-cols-3 gap-1.5">
+            {([['left','靠左'],['center','水平居中'],['right','靠右'],['top','靠上'],['middle','垂直居中'],['bottom','靠下']] as const).map(([value,label]) => <button key={value} type="button" aria-label={`所选文本框${label}`} disabled={!!busyAction || selectedRegions.filter(item => !item.locked).length < 2}
+              className={cn(buttonClass,'!min-h-8 !px-1 text-[10px]')} onClick={() => alignSelectedBoxes(value)}>{label}</button>)}
+          </div>
         </div>
         <div className="grid grid-cols-2 gap-2">
           <button className={`${buttonClass} !min-h-[34px] px-2 text-[10px]`} disabled={!!busyAction} title={`所选区域重新 OCR (${formatShortcut(shortcuts['region.ocr'])})`} aria-keyshortcuts={shortcutToAria(shortcuts['region.ocr'])} onClick={() => onAction('ocr')}>{busyAction === 'ocr' ? <ButtonLoading label="OCR 中…"/> : <><ScanText size={15}/>重新 OCR</>}</button>
@@ -96,9 +122,9 @@ export function RegionProperties({region, selectedRegions, selectedCount, fontOp
     </div> : !region ? <div className="flex min-h-[260px] flex-1 flex-col items-center justify-center p-8 text-center text-muted"><Scan size={30}/><p className="mt-3 text-[12px] leading-relaxed">选择一个文字区域以编辑属性</p></div> : <>
       <section className="flex h-12 shrink-0 items-center justify-between border-b border-line-subtle bg-surface px-3"><span className="font-mono text-xs font-semibold">{region.region_key}</span><div className="flex gap-1"><button className={regionIconButtonClass} title={region.visible ? '关闭：预览和导出时不显示译文' : '打开：预览和导出时显示译文'} aria-label={region.visible ? '关闭区域显示' : '打开区域显示'} onClick={() => onAction('visibility')}>{region.visible ? <Eye aria-hidden="true" size={16}/> : <EyeOff aria-hidden="true" size={16}/>}</button><button className={regionIconButtonClass} title={region.locked ? '解除锁定' : '锁定区域'} aria-label={region.locked ? '解除锁定' : '锁定区域'} onClick={() => onUpdate(region.id, {locked: !region.locked})}>{region.locked ? <Lock aria-hidden="true" size={16}/> : <LockOpen aria-hidden="true" size={16}/>}</button></div></section>
       <section className={sectionClass}><h3 className={headingClass}>文本内容</h3>
+        {region.layout_data.ocr_geometry_stale === true && <p role="note" className="mb-3 rounded-lg border border-accent/20 bg-accent/5 px-3 py-2 text-[11px] leading-relaxed text-secondary">原文框范围已修改，请按新框重新 OCR，核对原文后再翻译。修复只同步框的位置，不会重新识字。</p>}
         <label className={fieldClass}>原文<AutoResizeTextarea value={region.source_text} onChange={value => onUpdate(region.id, {source_text: value})} placeholder="OCR 原文" /></label>
         <label className={fieldClass}>译文<AutoResizeTextarea className="bg-accent/[.025] focus:bg-accent/[.04]" value={region.translated_text} onChange={value => onUpdate(region.id, {translated_text: value})} placeholder="输入译文" /></label>
-        <div className="grid min-w-0 grid-cols-2 gap-2"><label className={fieldClass}>方向<SelectControl compact ariaLabel="文字方向" value={region.orientation} options={[{value:'vertical', label:'竖排'}, {value:'horizontal', label:'横排'}, {value:'rotated', label:'旋转'}]} onChange={value => onUpdate(region.id, {orientation:value as TextRegion['orientation']})}/></label><p className="mb-1 mt-auto text-[12px] leading-5 text-muted">背景修复 · LaMa</p></div>
       </section>
       <section className={sectionClass}>
         <div className="mb-3 flex min-w-0 items-center justify-between gap-2">
@@ -116,7 +142,7 @@ export function RegionProperties({region, selectedRegions, selectedCount, fontOp
         <label className={fieldClass}>字体<SelectControl compact ariaLabel="字体" value={region.font_family} options={[...new Set([...fontOptions, region.font_family])].filter(Boolean).map(font => ({value:font, label:font}))} onChange={value => onUpdate(region.id, {font_family:value})}/></label>
         <div className="grid min-w-0 grid-cols-3 gap-1"><label className={fieldClass}>字号<NumberControl compact ariaLabel="字号" value={displayedFontSize} min={1} max={512} step={1} onChange={value => onUpdate(region.id, {font_size:value,auto_font_size:false})}/></label><label className={fieldClass}>行距<NumberControl compact ariaLabel="行距" value={region.line_spacing} min={0.5} max={3} step={0.05} onChange={value => onUpdate(region.id, {line_spacing:value})}/></label><label className={fieldClass}>字距<NumberControl compact ariaLabel="字距" value={region.character_spacing} min={-20} max={100} step={0.5} onChange={value => onUpdate(region.id, {character_spacing:value})}/></label></div>
         <div className="grid min-w-0 grid-cols-3 gap-1"><label className={fieldClass}>文字色<ColorControl compact ariaLabel="文字颜色" value={region.text_color} onChange={value => onUpdate(region.id, {text_color:value})}/></label><label className={fieldClass}>描边色<ColorControl compact ariaLabel="描边颜色" value={region.stroke_color} onChange={value => onUpdate(region.id, {stroke_color:value})}/></label><label className={fieldClass}>描边<NumberControl compact ariaLabel="描边宽度" value={region.stroke_width} min={0} max={20} step={0.5} onChange={value => onUpdate(region.id, {stroke_width:value})}/></label></div>
-        <div className="grid min-w-0 grid-cols-2 gap-2"><label className={fieldClass}>对齐<SelectControl compact ariaLabel="文字对齐" value={region.alignment} options={[{value:'left', label:'左对齐'}, {value:'center', label:'居中'}, {value:'right', label:'右对齐'}]} onChange={value => onUpdate(region.id, {alignment:value as TextRegion['alignment']})}/></label><label className={fieldClass}>译文旋转<NumberControl compact ariaLabel="译文旋转角度" value={region.rotation} min={-180} max={180} step={1} onChange={value => onUpdate(region.id, {rotation:value})}/></label></div>
+        <div className="grid min-w-0 grid-cols-3 gap-1"><label className={fieldClass}>方向<SelectControl compact ariaLabel="文字方向" value={region.orientation} options={[{value:'vertical', label:'竖排'}, {value:'horizontal', label:'横排'}, {value:'rotated', label:'旋转'}]} onChange={value => onUpdate(region.id, {orientation:value as TextRegion['orientation']})}/></label><label className={fieldClass}>对齐<SelectControl compact ariaLabel="文字对齐" value={region.alignment} options={[{value:'left', label:'左对齐'}, {value:'center', label:'居中'}, {value:'right', label:'右对齐'}]} onChange={value => onUpdate(region.id, {alignment:value as TextRegion['alignment']})}/></label><label className={fieldClass}>译文旋转<NumberControl compact ariaLabel="译文旋转角度" value={region.rotation} min={-180} max={180} step={1} onChange={value => onUpdate(region.id, {rotation:value})}/></label></div>
       </section>
       <details className={sectionClass}><summary className="cursor-pointer rounded text-[13px] font-semibold text-secondary outline-none focus-visible:ring-2 focus-visible:ring-accent/30">位置与旋转 · {view === 'translated' ? '译文框坐标' : '原文框坐标'}</summary>
         <div className="grid min-w-0 grid-cols-3 gap-1.5">
@@ -124,9 +150,9 @@ export function RegionProperties({region, selectedRegions, selectedCount, fontOp
           <label className={fieldClass}>Y 坐标<NumberControl compact ariaLabel="Y 坐标" step={1} disabled={region.locked} value={coordinateValue(coordinateBox![1])} onChange={value => setCoordinate('y', value)}/></label>
           <label className={fieldClass}>旋转角度<NumberControl compact ariaLabel={`${view === 'translated' ? '译文框' : '原文框'}旋转角度（度）`} min={-180} max={180} step={1} disabled={region.locked} value={coordinateRotation} onChange={setCoordinateRotation}/></label>
         </div>
-        <small className="mt-2 block font-mono text-[8px] text-muted">画布像素 · {coordinateValue(coordinateBox![2])} × {coordinateValue(coordinateBox![3])} px{region.locked ? ' · 已锁定' : ' · 方向键微调'}</small>
       </details>
     </>}
+    </fieldset>
   </aside>
 }
 

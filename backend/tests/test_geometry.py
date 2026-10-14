@@ -38,6 +38,23 @@ def test_quadrilateral_order_normalizes_unordered_corners() -> None:
     ]
 
 
+@pytest.mark.parametrize("quad", [
+    [[309,99], [331,92], [346,137], [326,144]],
+    [[272,107], [302,93], [352,200], [322,214]],
+    [[249,130], [277,117], [316,197], [290,210]],
+])
+def test_perspective_direction_is_independent_of_first_corner_and_winding(quad) -> None:
+    # Regression: the two tall left boxes were stored starting at TR, making
+    # the renderer mistake the long side for the top edge of the text tile.
+    for start in range(4):
+        cycled = quad[start:] + quad[:start]
+        for points in (cycled, list(reversed(cycled))):
+            before = [point[:] for point in points]
+            assert order_quadrilateral(points) == quad
+            assert points == before
+    assert order_quadrilateral([quad[2], quad[0], quad[3], quad[1]]) == quad
+
+
 def test_quadrilateral_order_rejects_concave_or_degenerate_geometry() -> None:
     assert order_quadrilateral([[0, 0], [100, 0], [30, 20], [0, 100]]) is None
     assert order_quadrilateral([[0, 0], [50, 0], [100, 0], [0, 100]]) is None

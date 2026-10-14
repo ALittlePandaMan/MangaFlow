@@ -1,16 +1,16 @@
 from __future__ import annotations
 
-from math import hypot, cos, sin, radians
+from functools import wraps
+from math import cos, hypot, radians, sin
 from pathlib import Path
 from typing import Any
-from functools import wraps
 
 import numpy as np
 from app.core.config import get_settings
 from app.services.base import ProviderCapabilities, Renderer
 from app.services.layout import FontResolver, MangaLayoutEngine
-from app.services.layout.shape import inscribed_text_box
 from app.services.layout.font_sizing import uses_automatic_font_size
+from app.services.layout.shape import inscribed_text_box
 from app.services.rendering.snapshot import render_input
 from app.utils.geometry import order_quadrilateral, perspective_coefficients
 from app.utils.image_metadata import load_rgb_with_metadata, save_png_with_metadata
@@ -295,7 +295,7 @@ class PillowRenderer(Renderer):
         denominators = [g*u+h*v+1 for u,v in points]
         if min(denominators) <= 1e-6:
             return None  # Do not project across a perspective horizon.
-        return [[(a*u+b*v+c)/z, (d*u+e*v+f)/z] for (u,v),z in zip(points,denominators)]
+        return [[(a*u+b*v+c)/z, (d*u+e*v+f)/z] for (u,v),z in zip(points,denominators,strict=True)]
 
     @staticmethod
     def _perspective_raster_scale(

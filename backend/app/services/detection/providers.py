@@ -4,7 +4,6 @@ import logging
 from pathlib import Path
 
 import cv2
-
 from app.services.base import DetectionResult, ProviderCapabilities, ProviderError, TextDetector
 from app.services.detection.bubbles import OnnxBubbleSegmenter
 from app.services.detection.classification import LayoutTextClassifier
