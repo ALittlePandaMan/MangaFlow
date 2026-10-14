@@ -4,6 +4,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+import pytest
 from app.services.base import ProviderState
 from app.services.detection.bubbles import BubbleInstance
 from app.services.detection.providers import OpenCVTextDetector, PaddleTextDetector
@@ -17,13 +18,21 @@ TEXT_POLYGONS = [
 
 
 class FakePaddleModel:
-    def predict(self, _image_path: str) -> list[dict[str, object]]:
+    def predict(self, image: np.ndarray) -> list[dict[str, object]]:
+        assert isinstance(image, np.ndarray) and image.shape[:2] == PAGE_SHAPE
         return [
             {
                 "dt_polys": TEXT_POLYGONS,
                 "dt_scores": [0.94, 0.87],
             }
         ]
+
+
+@pytest.fixture(autouse=True)
+def page_inputs(tmp_path: Path):
+    # Detection now validates/decode inputs even when the model is mocked.
+    for name in ("page.png", "page-2.png"):
+        assert cv2.imwrite(str(tmp_path / name), np.full((*PAGE_SHAPE, 3), 255, dtype=np.uint8))
 
 
 class FakeBubbleSegmenter:

@@ -8,7 +8,7 @@ from app.services.base import DetectionResult, ProviderCapabilities, ProviderErr
 from app.services.detection.bubbles import OnnxBubbleSegmenter
 from app.services.detection.grouping import MIN_TRUSTED_BALLOON_CONFIDENCE, group_text_regions_by_bubbles
 from app.services.infra.device import is_accelerator_error, release_paddle_cuda, resolve_paddle_device
-from app.services.infra.paddle import extract_paddle_lines
+from app.services.infra.paddle import extract_paddle_lines, load_paddle_image, predict_paddle_image
 from app.utils.geometry import bbox_to_polygon, polygon_to_bbox
 
 logger = logging.getLogger(__name__)
@@ -151,9 +151,10 @@ class PaddleTextDetector(TextDetector):
         )
 
     def detect(self, image_path: Path) -> list[DetectionResult]:
+        image = load_paddle_image(image_path)
         self.ensure_loaded()
         try:
-            raw = self._model.predict(str(image_path))
+            raw = predict_paddle_image(self._model, image)
         except Exception as exc:
             if self._device == "cpu" or not is_accelerator_error(exc):
                 raise
@@ -164,7 +165,7 @@ class PaddleTextDetector(TextDetector):
             from paddleocr import PaddleOCR
 
             self._model = self._create_model(PaddleOCR, self._device)
-            raw = self._model.predict(str(image_path))
+            raw = predict_paddle_image(self._model, image)
         output: list[DetectionResult] = []
         for item in extract_paddle_lines(raw):
             raw_polygon = item["polygon"]
