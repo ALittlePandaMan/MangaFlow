@@ -1,8 +1,10 @@
 import type {TextRegion} from '../../../types'
+import {usesAutomaticFontSize} from './fontSizing'
 
 // Derive the preview from saved geometry. Never persist another copy of editor
 // state, and immediately yield to user-authored target geometry or transforms.
 export function shapePreviewRegion(region: TextRegion): TextRegion | null {
+  if (!usesAutomaticFontSize(region)) return region
   const layout = region.layout_data
   if (!layout || (!layout.shape_layout_applied && !layout.render_skipped)) return region
   if (region.rotation || region.perspective_warp) return region

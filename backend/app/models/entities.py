@@ -105,6 +105,11 @@ class TextRegion(TimestampMixin, Base):
     layout_data: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     inpainted_path: Mapped[str | None] = mapped_column(Text)
 
+    @property
+    def auto_font_size(self) -> bool:
+        from app.services.layout.font_sizing import automatic_font_size
+        return automatic_font_size(self.layout_data, self.font_size)
+
     page: Mapped[ImagePage] = relationship(back_populates="regions")
     translations: Mapped[list[Translation]] = relationship(back_populates="region", cascade="all, delete-orphan")
     revisions: Mapped[list[RegionRevision]] = relationship(back_populates="region", cascade="all, delete-orphan")

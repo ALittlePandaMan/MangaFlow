@@ -1,6 +1,7 @@
 import {describe, expect, it} from 'vitest'
 import type {ImagePage, TextRegion} from '../../../types'
 import {currentTextLayer} from './renderedText'
+import {PERSPECTIVE_RENDER_OUTPUT_VERSION} from './perspectiveText'
 
 function fixture() {
   const region = {id: 'r1', bbox: [0, 0, 100, 100], polygon: [[0, 0], [100, 0], [100, 100]],
@@ -10,7 +11,7 @@ function fixture() {
     alignment: 'center', line_spacing: 1.15, character_spacing: 0, rotation: 0,
     perspective_warp: false, opacity: 1, visible: true, locked: false, reading_order: 1,
     layout_data: {}} as TextRegion
-  region.layout_data = {render_input: {...region, custom_font_path: null}}
+  region.layout_data = {render_output_version:PERSPECTIVE_RENDER_OUTPUT_VERSION, render_input: {...region, auto_font_size:true, custom_font_path: null}}
   const page = {text_layer_url: '/text.png?v=1', text_layer_region_ids: ['r1']} as ImagePage
   return {region, page}
 }
@@ -34,5 +35,14 @@ describe('export-identical text layer selection', () => {
     expect(currentTextLayer(page, [{...region, layout_data: {...region.layout_data, custom_font_path: 'new.ttf'}}])).toBeNull()
     expect(currentTextLayer(page, [{...region, layout_data: {}}])).toBeNull()
     expect(currentTextLayer({...page, text_layer_url: null}, [region])).toBeNull()
+  })
+  it('rejects old perspective output even when the visual inputs still match', () => {
+    const {region, page} = fixture()
+    region.perspective_warp = true
+    region.layout_data.render_input = {...region, auto_font_size:true, custom_font_path:null}
+    region.layout_data.render_output_version = PERSPECTIVE_RENDER_OUTPUT_VERSION - 1
+    expect(currentTextLayer(page, [region])).toBeNull()
+    region.layout_data.render_output_version = PERSPECTIVE_RENDER_OUTPUT_VERSION
+    expect(currentTextLayer(page, [region])).toBe('/text.png?v=1')
   })
 })

@@ -58,6 +58,23 @@ function renderProperties(onUpdate = vi.fn()) {
 describe('RegionProperties coordinate rotation', () => {
   beforeEach(() => useEditorStore.setState({view: 'original'}))
 
+  it('shows a computed editable font size without mode controls and preserves user adjustments', () => {
+    const onUpdate=renderProperties()
+    expect(screen.queryByRole('button',{name:'字号模式'})).not.toBeInTheDocument()
+    expect(screen.queryByText('自动适配所选字号')).not.toBeInTheDocument()
+    const size=screen.getByRole('textbox',{name:'字号'}) as HTMLInputElement
+    const computed=Number(size.value)
+    expect(computed).toBeGreaterThan(0)
+    fireEvent.click(screen.getByRole('button',{name:'字号增大'}))
+    expect(onUpdate).toHaveBeenCalledWith(region.id,{font_size:computed+1,auto_font_size:false})
+  })
+
+  it('shows the exact user font size even when it exceeds the frame', () => {
+    const adjusted={...region,font_size:120,auto_font_size:false}
+    render(<RegionProperties region={adjusted} selectedRegions={[adjusted]} selectedCount={1} fontOptions={[]} onUpdate={vi.fn()} onAction={vi.fn()}/>)
+    expect(screen.getByRole('textbox',{name:'字号'})).toHaveValue('120')
+  })
+
   it('does not display the internal OCR confidence', () => {
     renderProperties()
 

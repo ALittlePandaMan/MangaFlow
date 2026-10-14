@@ -17,6 +17,6 @@ def load_rgb_with_metadata(path: Path) -> tuple[Image.Image, dict[str, Any]]:
         return source.convert("RGB"), metadata
 
 
-def save_png_with_metadata(image: Image.Image, path: Path, metadata: dict[str, Any]) -> None:
+def save_png_with_metadata(image: Image.Image, path: Path, metadata: dict[str, Any], *, compress_level: int = 6) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    image.save(path, "PNG", **metadata)
+    image.save(path, "PNG", compress_level=compress_level, **metadata)

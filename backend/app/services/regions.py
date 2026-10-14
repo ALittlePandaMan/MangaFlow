@@ -77,7 +77,8 @@ def next_region_key(db: Session, image_id: str) -> str:
 
 
 def create_region(db: Session, page: ImagePage, data: RegionCreate) -> TextRegion:
-    values = data.model_dump(exclude={"region_key"}, mode="json")
+    values = data.model_dump(exclude={"region_key", "auto_font_size"}, mode="json")
+    auto_size = data.auto_font_size if "auto_font_size" in data.model_fields_set else "font_size" not in data.model_fields_set
     if not values["bbox"] and values["polygon"]:
         values["bbox"] = polygon_to_bbox(values["polygon"])
     if not values["polygon"] and values["bbox"]:
@@ -91,7 +92,7 @@ def create_region(db: Session, page: ImagePage, data: RegionCreate) -> TextRegio
     region = TextRegion(
         image_id=page.id,
         region_key=data.region_key or next_region_key(db, page.id),
-        layout_data={"manual": True},
+        layout_data={"manual": True, "auto_font_size": auto_size},
         **values,
     )
     db.add(region)
@@ -110,6 +111,9 @@ def update_region(db: Session, region: TextRegion, data: RegionUpdate, action: s
         "bbox": deepcopy(region.bbox),
     }
     changes = data.model_dump(exclude_unset=True, mode="json")
+    auto_size = changes.pop("auto_font_size", None)
+    if auto_size is not None or ("font_size" in changes and changes["font_size"] != region.font_size):
+        region.layout_data = {**(region.layout_data or {}), "auto_font_size": auto_size if auto_size is not None else False}
     for field, value in changes.items():
         setattr(region, field, value)
     if "region_type" in changes:

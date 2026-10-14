@@ -1,11 +1,13 @@
 import { Eraser, Eye, EyeOff, Languages, Layers3, Lock, LockOpen, Merge, Scan, ScanLine, ScanText, TextCursorInput, Trash2, X } from 'lucide-react'
-import { useLayoutEffect, useRef } from 'react'
+import { useLayoutEffect, useMemo, useRef } from 'react'
 import type { TextRegion } from '../../../types'
 import {buttonClass, cn, dangerButtonClass, primaryButtonClass, scrollbarClass, textareaClass} from '../../../ui'
 import {ColorControl, NumberControl, SelectControl} from '../../../components/FormControls'
 import {ButtonLoading} from '../../../components/LoadingUI'
 import {formatShortcut, shortcutToAria, useShortcutStore} from '../../shortcuts/store'
-import {isPerspectiveQuad} from '../lib/perspectiveText'
+import {isPerspectiveQuad, perspectiveQuadSize} from '../lib/perspectiveText'
+import {hasCurrentComputedFont, sizeText, usesAutomaticFontSize} from '../lib/fontSizing'
+import {shapePreviewRegion} from '../lib/shapeText'
 import { useEditorStore } from '../store'
 
 const regionIconButtonClass = cn(buttonClass, '!size-8 !min-h-8 !p-0')
@@ -54,15 +56,17 @@ export function RegionProperties({region, selectedRegions, selectedCount, fontOp
       : {polygon: nextPolygon, bbox: nextBbox})
   }
   const canWarpPerspective = Boolean(region && isPerspectiveQuad(region.translated_polygon))
-  const commonFontSize = selectedRegions.length && selectedRegions.every(item => item.font_size === selectedRegions[0].font_size)
-    ? selectedRegions[0].font_size
+  const displayedFontSize = useMemo(() => region ? currentFontSize(region) : undefined, [region])
+  const selectedFontSizes = useMemo(() => selectedRegions.map(currentFontSize), [selectedRegions])
+  const commonFontSize = selectedFontSizes.length && selectedFontSizes.every(size => size === selectedFontSizes[0])
+    ? selectedFontSizes[0]
     : undefined
   const updateSelectedFontSize = (fontSize: number) => {
-    const next = Math.max(1, Math.min(300, fontSize))
-    selectedRegions.forEach(item => onUpdate(item.id, {font_size: next}))
+    const next = Math.max(1, Math.min(512, fontSize))
+    selectedRegions.forEach(item => onUpdate(item.id, {font_size: next, auto_font_size:false}))
   }
   const stepSelectedFontSize = (direction: 1 | -1) => {
-    selectedRegions.forEach(item => onUpdate(item.id, {font_size: Math.max(1, Math.min(300, item.font_size + direction))}))
+    selectedRegions.forEach((item,index) => onUpdate(item.id, {font_size: Math.max(1, Math.min(512, selectedFontSizes[index] + direction)), auto_font_size:false}))
   }
   return <aside className={cn('flex min-h-0 flex-col overflow-y-auto border-l border-line-subtle bg-panel [&>*]:shrink-0', scrollbarClass)}>
     {selectedCount > 1 ? <div className="flex flex-1 flex-col justify-center gap-6 p-6">
@@ -73,7 +77,7 @@ export function RegionProperties({region, selectedRegions, selectedCount, fontOp
           <NumberControl
             key={selectedRegions.map(item => item.id).sort().join(':')}
             compact ariaLabel="批量字号" value={commonFontSize} mixed={commonFontSize === undefined}
-            placeholder="多种字号" min={1} max={300} step={1} disabled={!!busyAction}
+            placeholder="多种字号" min={1} max={512} step={1} disabled={!!busyAction}
             onChange={updateSelectedFontSize} onStep={stepSelectedFontSize}
           />
           <small className="mt-2 block text-[9px] leading-relaxed text-muted">输入数值可统一字号；加减按钮会让所选文字同步增减。</small>
@@ -110,7 +114,7 @@ export function RegionProperties({region, selectedRegions, selectedCount, fontOp
           ><ScanLine size={12}/><span>随形透视</span></button>
         </div>
         <label className={fieldClass}>字体<SelectControl compact ariaLabel="字体" value={region.font_family} options={[...new Set([...fontOptions, region.font_family])].filter(Boolean).map(font => ({value:font, label:font}))} onChange={value => onUpdate(region.id, {font_family:value})}/></label>
-        <div className="grid min-w-0 grid-cols-3 gap-1"><label className={fieldClass}>字号<NumberControl compact ariaLabel="字号" value={region.font_size} min={1} max={300} step={1} onChange={value => onUpdate(region.id, {font_size:value})}/></label><label className={fieldClass}>行距<NumberControl compact ariaLabel="行距" value={region.line_spacing} min={0.5} max={3} step={0.05} onChange={value => onUpdate(region.id, {line_spacing:value})}/></label><label className={fieldClass}>字距<NumberControl compact ariaLabel="字距" value={region.character_spacing} min={-20} max={100} step={0.5} onChange={value => onUpdate(region.id, {character_spacing:value})}/></label></div>
+        <div className="grid min-w-0 grid-cols-3 gap-1"><label className={fieldClass}>字号<NumberControl compact ariaLabel="字号" value={displayedFontSize} min={1} max={512} step={1} onChange={value => onUpdate(region.id, {font_size:value,auto_font_size:false})}/></label><label className={fieldClass}>行距<NumberControl compact ariaLabel="行距" value={region.line_spacing} min={0.5} max={3} step={0.05} onChange={value => onUpdate(region.id, {line_spacing:value})}/></label><label className={fieldClass}>字距<NumberControl compact ariaLabel="字距" value={region.character_spacing} min={-20} max={100} step={0.5} onChange={value => onUpdate(region.id, {character_spacing:value})}/></label></div>
         <div className="grid min-w-0 grid-cols-3 gap-1"><label className={fieldClass}>文字色<ColorControl compact ariaLabel="文字颜色" value={region.text_color} onChange={value => onUpdate(region.id, {text_color:value})}/></label><label className={fieldClass}>描边色<ColorControl compact ariaLabel="描边颜色" value={region.stroke_color} onChange={value => onUpdate(region.id, {stroke_color:value})}/></label><label className={fieldClass}>描边<NumberControl compact ariaLabel="描边宽度" value={region.stroke_width} min={0} max={20} step={0.5} onChange={value => onUpdate(region.id, {stroke_width:value})}/></label></div>
         <div className="grid min-w-0 grid-cols-2 gap-2"><label className={fieldClass}>对齐<SelectControl compact ariaLabel="文字对齐" value={region.alignment} options={[{value:'left', label:'左对齐'}, {value:'center', label:'居中'}, {value:'right', label:'右对齐'}]} onChange={value => onUpdate(region.id, {alignment:value as TextRegion['alignment']})}/></label><label className={fieldClass}>译文旋转<NumberControl compact ariaLabel="译文旋转角度" value={region.rotation} min={-180} max={180} step={1} onChange={value => onUpdate(region.id, {rotation:value})}/></label></div>
       </section>
@@ -124,6 +128,14 @@ export function RegionProperties({region, selectedRegions, selectedCount, fontOp
       </details>
     </>}
   </aside>
+}
+
+function currentFontSize(region: TextRegion): number {
+  if (!region.translated_text.trim() || !usesAutomaticFontSize(region) || hasCurrentComputedFont(region)) return region.font_size
+  const preview = shapePreviewRegion(region)
+  if (!preview) return region.font_size
+  const rect = preview.perspective_warp ? perspectiveQuadSize(preview.translated_polygon) ?? undefined : undefined
+  return sizeText(preview,rect).fontSize
 }
 
 function coordinateValue(value: number): number {

@@ -53,6 +53,7 @@ export interface TextRegion {
   bubble_id: string | null
   region_type: 'bubble_simple' | 'bubble_complex' | 'background_simple' | 'background_complex' | 'sfx'
   font_size: number
+  auto_font_size?: boolean
   font_family: string
   font_weight: number
   text_color: string

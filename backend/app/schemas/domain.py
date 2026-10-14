@@ -78,6 +78,7 @@ class RegionBase(BaseModel):
     bubble_id: str | None = None
     region_type: RegionType = RegionType.BACKGROUND_COMPLEX
     font_size: float = Field(default=28.0, ge=1.0, le=512.0)
+    auto_font_size: bool = True
     font_family: str = "Noto Sans CJK SC"
     font_weight: int = Field(default=400, ge=100, le=900)
     text_color: str = "#111111"
@@ -125,6 +126,7 @@ class RegionUpdate(BaseModel):
     bubble_id: str | None = None
     region_type: RegionType | None = None
     font_size: float | None = Field(default=None, ge=1.0, le=512.0)
+    auto_font_size: bool = True
     font_family: str | None = None
     font_weight: int | None = Field(default=None, ge=100, le=900)
     text_color: str | None = None
@@ -158,6 +160,7 @@ class RegionRead(ORMModel):
     bubble_id: str | None
     region_type: str
     font_size: float
+    auto_font_size: bool = True
     font_family: str
     font_weight: int
     text_color: str

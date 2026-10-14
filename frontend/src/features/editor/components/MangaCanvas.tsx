@@ -14,7 +14,8 @@ import {useCanvasTouch} from '../hooks/useCanvasTouch'
 import {canvasPalette} from '../lib/canvasPalette'
 import {shapePreviewRegion} from '../lib/shapeText'
 import {currentTextLayer} from '../lib/renderedText'
-import {isPerspectiveQuad, perspectiveQuadSize, warpCanvasToQuad, type WarpedCanvas} from '../lib/perspectiveText'
+import {extendedPerspectiveQuad, isPerspectiveQuad, perspectiveQuadSize, warpCanvasToQuad, type WarpedCanvas} from '../lib/perspectiveText'
+import {sizeText, usesAutomaticFontSize} from '../lib/fontSizing'
 
 interface Props {
   page: ImagePage
@@ -27,15 +28,6 @@ interface Props {
 }
 
 type RenderStyle = {textColor: string, strokeColor: string, strokeWidth: number}
-type VerticalPreviewLayout = {
-  fontSize: number
-  cellHeight: number
-  columnWidth: number
-  columns: string[]
-  width: number
-  height: number
-}
-
 const VERTICAL_FORMS: Record<string, string> = {
   '（': '︵', '）': '︶', '(': '︵', ')': '︶', '【': '︻', '】': '︼',
   '「': '﹁', '」': '﹂', '『': '﹃', '』': '﹄',
@@ -725,7 +717,7 @@ export const MangaCanvas = memo(MangaCanvasComponent, (previous, next) =>
 function TranslatedPageLayer({page, regions, displayScale}: {page: ImagePage, regions: TextRegion[], displayScale: number}) {
   // Reuse the existing bounded/deduplicated image cache. Editing any visual
   // input invalidates this artifact immediately, before the autosave response.
-  const source = currentTextLayer(page, regions)
+  const source = useMemo(() => currentTextLayer(page, regions), [page, regions])
   const {image} = useImage(source)
   return image && source
     ? <KonvaImage image={image} width={page.width} height={page.height} listening={false}/>
@@ -733,27 +725,27 @@ function TranslatedPageLayer({page, regions, displayScale}: {page: ImagePage, re
 }
 
 function TranslatedRegions({regions, displayScale}: {regions: TextRegion[], displayScale: number}) {
-  return <>{regions.map(original => {
+  const rasterScale = Math.max(1, Math.ceil(displayScale * 2) / 2)
+  return <>{regions.map(region => <TranslatedRegion key={region.id} original={region}
+    rasterScale={region.perspective_warp ? rasterScale : 1}/>)}</>
+}
+
+// Pointer/zoom/selection renders must not lay out every unchanged text region.
+// Keep original references at this boundary, before shapePreviewRegion can
+// create derived geometry. Perspective tiles update only at raster thresholds.
+const TranslatedRegion = memo(function TranslatedRegion({original, rasterScale}: {original: TextRegion, rasterScale: number}) {
     if (!original.visible) return null
     const region = shapePreviewRegion(original)
     if (!region) return null
     const renderStyle = resolvedRenderStyle(region)
     const geometry = regionGeometry(region, true)
-    if (region.perspective_warp && isPerspectiveQuad(region.translated_polygon)) return <PerspectiveTranslatedText key={`text-${region.id}`} region={region} style={renderStyle} displayScale={displayScale}/>
+    if (region.perspective_warp && isPerspectiveQuad(region.translated_polygon)) return <PerspectiveTranslatedText key={`text-${region.id}`} region={region} style={renderStyle} displayScale={rasterScale}/>
     const text = region.orientation === 'vertical'
       ? <VerticalTranslatedText key={`text-${region.id}`} region={region} style={renderStyle}/>
-      : <Text
-      key={`text-${region.id}`} x={geometry.bbox[0]} y={geometry.bbox[1]} width={geometry.bbox[2]} height={geometry.bbox[3]}
-      text={region.translated_text}
-      fontSize={region.font_size} fontFamily={region.font_family} fontStyle={region.font_weight >= 600 ? 'bold' : 'normal'}
-      fill={renderStyle.textColor} stroke={renderStyle.strokeColor} strokeWidth={renderStyle.strokeWidth}
-      opacity={region.opacity} rotation={region.rotation} align={region.alignment}
-      lineHeight={region.line_spacing} letterSpacing={region.character_spacing} verticalAlign="middle" listening={false}
-    />
+      : <HorizontalTranslatedText key={`text-${region.id}`} region={region} style={renderStyle}/>
     return region === original ? text : <Group key={`text-${region.id}`} listening={false}
       clipX={geometry.bbox[0]} clipY={geometry.bbox[1]} clipWidth={geometry.bbox[2]} clipHeight={geometry.bbox[3]}>{text}</Group>
-  })}</>
-}
+})
 
 function PerspectiveTranslatedText({region, style, displayScale}: {region: TextRegion, style: RenderStyle, displayScale: number}) {
   const [fontRevision, setFontRevision] = useState(0)
@@ -769,7 +761,11 @@ function PerspectiveTranslatedText({region, style, displayScale}: {region: TextR
   // wheel-animation frame while still refreshing before an enlarged preview
   // can outgrow its backing canvas resolution.
   const rasterScale = Math.max(1, Math.ceil(displayScale * 2) / 2)
-  const preview = useMemo(() => createPerspectivePreview(region, style, rasterScale), [fontRevision, rasterScale, region, style.strokeColor, style.strokeWidth, style.textColor])
+  const preview = useMemo(() => {
+    // A newly loaded font invalidates the raster even with unchanged text/style.
+    void fontRevision
+    return createPerspectivePreview(region, {strokeColor:style.strokeColor, strokeWidth:style.strokeWidth, textColor:style.textColor}, rasterScale)
+  }, [fontRevision, rasterScale, region, style.strokeColor, style.strokeWidth, style.textColor])
   if (!preview) return null
   return <KonvaImage
     image={preview.image} x={preview.x} y={preview.y} width={preview.width} height={preview.height}
@@ -794,11 +790,16 @@ function createPerspectivePreview(region: TextRegion, style: RenderStyle, displa
   const budgetRatio = Math.sqrt(PERSPECTIVE_PREVIEW_PIXEL_BUDGET / largestArea)
   const pixelRatio = Math.max(1, Math.min(PERSPECTIVE_PREVIEW_MAX_RATIO, requestedRatio, budgetRatio))
   const tile = createTextTile(region, style, tileSize.width, tileSize.height, pixelRatio)
-  return warpCanvasToQuad(tile, region.translated_polygon, pixelRatio)
+  if (!tile) return null
+  const quad = usesAutomaticFontSize(region) ? region.translated_polygon : extendedPerspectiveQuad(region.translated_polygon, tileSize, tile)
+  return quad ? warpCanvasToQuad(tile.canvas, quad, pixelRatio) : null
 }
 
-function createTextTile(region: TextRegion, style: RenderStyle, width: number, height: number, pixelRatio: number): HTMLCanvasElement {
-  const root = new Konva.Group({clipX: 0, clipY: 0, clipWidth: width, clipHeight: height})
+function createTextTile(region: TextRegion, style: RenderStyle, width: number, height: number, pixelRatio: number) {
+  const auto = usesAutomaticFontSize(region)
+  const layout = sizeText(region, {width, height})
+  if (auto && layout.overflow) return null
+  const root = new Konva.Group(auto ? {clipX: 0, clipY: 0, clipWidth: width, clipHeight: height} : {})
   const content = new Konva.Group({
     x: width / 2,
     y: height / 2,
@@ -808,11 +809,10 @@ function createTextTile(region: TextRegion, style: RenderStyle, width: number, h
   })
   root.add(content)
   if (region.orientation === 'vertical') {
-    const layout = verticalPreviewLayout(region, {width, height})
-    const offsetX = Math.max(0, (width - layout.width) / 2)
-    const offsetY = Math.max(0, (height - layout.height) / 2)
-    layout.columns.forEach((column, index) => {
-      const x = offsetX + layout.width - (index + 1) * layout.columnWidth + Math.max(0, (layout.columnWidth - layout.fontSize) / 2)
+    const offsetX = (width - layout.width) / 2
+    const offsetY = (height - layout.height) / 2
+    layout.lines.forEach((column, index) => {
+      const x = offsetX + layout.width - layout.fontSize - index * layout.columnWidth
       content.add(new Konva.Text({
         x,
         y: offsetY,
@@ -830,44 +830,45 @@ function createTextTile(region: TextRegion, style: RenderStyle, width: number, h
       }))
     })
   } else {
-    content.add(new Konva.Text({
-      x: 0,
-      y: 0,
-      width,
-      height,
-      text: region.translated_text,
-      fontSize: region.font_size,
+    layout.lines.forEach((line,index) => content.add(new Konva.Text({
+      x: horizontalLineX(region, layout.lineWidths[index], width, layout.coordinateWidth),
+      y: (height-layout.height)/2 + index*layout.columnWidth,
+      text: line,
+      wrap: 'none',
+      fontSize: layout.fontSize,
       fontFamily: region.font_family,
       fontStyle: region.font_weight >= 600 ? 'bold' : 'normal',
       fill: style.textColor,
       stroke: style.strokeColor,
       strokeWidth: style.strokeWidth,
-      align: region.alignment,
-      lineHeight: region.line_spacing,
       letterSpacing: region.character_spacing,
-      verticalAlign: 'middle',
       listening: false,
-    }))
+    })))
   }
-  const canvas = root.toCanvas({x: 0, y: 0, width, height, pixelRatio, imageSmoothingEnabled: true})
+  const bounds = auto ? {x:0,y:0,width,height} : root.getClientRect()
+  // Raster allocation stays bounded; lowering raster density does not change
+  // manual font size or map oversized text back into the original frame.
+  const ratio = Math.max(.1, Math.min(pixelRatio, Math.sqrt(PERSPECTIVE_PREVIEW_PIXEL_BUDGET / Math.max(1,bounds.width*bounds.height))))
+  const canvas = root.toCanvas({...bounds, pixelRatio:ratio, imageSmoothingEnabled: true})
   root.destroy()
-  return canvas
+  return {canvas,...bounds}
 }
 
 function VerticalTranslatedText({region, style}: {region: TextRegion, style: RenderStyle}) {
-  const layout = verticalPreviewLayout(region)
-  if (!layout.columns.length) return null
+  const layout = sizeText(region)
+  if (!region.translated_text.trim() || (usesAutomaticFontSize(region) && layout.overflow)) return null
   const geometry = regionGeometry(region, true)
-  const offsetX = Math.max(0, (geometry.bbox[2] - layout.width) / 2)
-  const offsetY = Math.max(0, (geometry.bbox[3] - layout.height) / 2)
+  const offsetX = (geometry.bbox[2] - layout.width) / 2
+  const offsetY = (geometry.bbox[3] - layout.height) / 2
   return <Group
-    x={geometry.bbox[0]} y={geometry.bbox[1]} rotation={region.rotation}
+    x={geometry.bbox[0]+geometry.bbox[2]/2} y={geometry.bbox[1]+geometry.bbox[3]/2}
+    offsetX={geometry.bbox[2]/2} offsetY={geometry.bbox[3]/2} rotation={region.rotation}
     opacity={region.opacity} listening={false}
   >
-    {layout.columns.map((column, index) => {
+    {layout.lines.map((column, index) => {
       // Japanese/Chinese vertical text reads top-to-bottom, with subsequent
       // columns placed to the left of the first column.
-      const x = offsetX + layout.width - (index + 1) * layout.columnWidth + Math.max(0, (layout.columnWidth - layout.fontSize) / 2)
+      const x = offsetX + layout.width - layout.fontSize - index * layout.columnWidth
       return <Text
         key={`${index}-${column}`}
         x={x} y={offsetY} width={layout.fontSize}
@@ -882,49 +883,22 @@ function VerticalTranslatedText({region, style}: {region: TextRegion, style: Ren
   </Group>
 }
 
-function verticalPreviewLayout(region: TextRegion, rectifiedSize?: {width: number, height: number}): VerticalPreviewLayout {
-  if (!region.translated_text.trim()) {
-    return {fontSize: Math.max(1, Math.round(region.font_size)), cellHeight: 0, columnWidth: 0, columns: [], width: 0, height: 0}
-  }
-  const geometry = regionGeometry(region, true)
-  const polygonFactor = rectifiedSize ? 1 : previewPolygonFactor(geometry.polygon, geometry.bbox)
-  const availableWidth = Math.max(1, (rectifiedSize?.width ?? geometry.bbox[2]) * .9 * polygonFactor)
-  const availableHeight = Math.max(1, (rectifiedSize?.height ?? geometry.bbox[3]) * .9 * polygonFactor)
-  const preferredSize = Math.max(10, Math.round(region.font_size))
-  let fallback: VerticalPreviewLayout | null = null
-  for (let fontSize = preferredSize; fontSize >= 10; fontSize -= 1) {
-    const cellHeight = Math.max(1, fontSize + region.character_spacing)
-    const capacity = Math.max(1, Math.floor(Math.max(1, availableHeight + region.character_spacing) / cellHeight))
-    const columns: string[] = []
-    for (const paragraph of region.translated_text.replace(/\r/g, '').split('\n')) {
-      if (!paragraph) {
-        columns.push('')
-        continue
-      }
-      const characters = [...paragraph]
-      for (let index = 0; index < characters.length; index += capacity) {
-        columns.push(characters.slice(index, index + capacity).join(''))
-      }
-    }
-    const columnWidth = fontSize * region.line_spacing
-    const width = Math.max(fontSize, columns.length * columnWidth)
-    const height = Math.min(capacity, Math.max(0, ...columns.map(column => [...column].length))) * cellHeight
-    const candidate = {fontSize, cellHeight, columnWidth, columns, width, height}
-    fallback = candidate
-    if (width <= availableWidth + .5 && height <= availableHeight + .5) return candidate
-  }
-  return fallback!
+function horizontalLineX(region: TextRegion, lineWidth: number, width: number, availableWidth: number) {
+  const offset = (width-availableWidth)/2
+  return offset + (region.alignment === 'left' ? 0 : region.alignment === 'right' ? availableWidth-lineWidth : (availableWidth-lineWidth)/2)
 }
 
-function previewPolygonFactor(polygon: number[][], bbox: number[]): number {
-  if (polygon.length < 3 || bbox[2] <= 0 || bbox[3] <= 0) return 1
-  let area = 0
-  for (let index = 0; index < polygon.length; index += 1) {
-    const current = polygon[index], next = polygon[(index + 1) % polygon.length]
-    area += current[0] * next[1] - next[0] * current[1]
-  }
-  const coverage = Math.max(.2, Math.min(1, Math.abs(area) / 2 / (bbox[2] * bbox[3])))
-  return Math.sqrt(coverage)
+function HorizontalTranslatedText({region, style}: {region: TextRegion, style: RenderStyle}) {
+  const layout = sizeText(region)
+  if (!region.translated_text.trim() || (usesAutomaticFontSize(region) && layout.overflow)) return null
+  const {bbox} = regionGeometry(region,true)
+  return <Group x={bbox[0]+bbox[2]/2} y={bbox[1]+bbox[3]/2} offsetX={bbox[2]/2} offsetY={bbox[3]/2}
+    rotation={region.rotation} opacity={region.opacity} listening={false}>
+    {layout.lines.map((line,index) => <Text key={index}
+      x={horizontalLineX(region,layout.lineWidths[index],bbox[2],layout.coordinateWidth)} y={(bbox[3]-layout.height)/2+index*layout.columnWidth}
+      text={line} wrap="none" fontSize={layout.fontSize} fontFamily={region.font_family} fontStyle={region.font_weight >= 600 ? 'bold' : 'normal'}
+      fill={style.textColor} stroke={style.strokeColor} strokeWidth={style.strokeWidth} letterSpacing={region.character_spacing} listening={false}/>) }
+  </Group>
 }
 
 function resolvedRenderStyle(region: TextRegion): RenderStyle {

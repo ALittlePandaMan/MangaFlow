@@ -1,20 +1,32 @@
 from __future__ import annotations
 
-from math import hypot
+from math import hypot, cos, sin, radians
 from pathlib import Path
 from typing import Any
+from functools import wraps
 
 import numpy as np
 from app.core.config import get_settings
 from app.services.base import ProviderCapabilities, Renderer
 from app.services.layout import FontResolver, MangaLayoutEngine
 from app.services.layout.shape import inscribed_text_box
+from app.services.layout.font_sizing import uses_automatic_font_size
 from app.services.rendering.snapshot import render_input
 from app.utils.geometry import order_quadrilateral, perspective_coefficients
 from app.utils.image_metadata import load_rgb_with_metadata, save_png_with_metadata
 from PIL import Image, ImageChops, ImageColor, ImageDraw
 
-RENDER_OUTPUT_VERSION = 4
+RENDER_OUTPUT_VERSION = 6
+
+
+def _serialize_renderer(method):
+    @wraps(method)
+    def call(self, *args, **kwargs):
+        # FontResolver/FreeType caches belong to this provider instance.
+        # Keep them safe without occupying the GPU/model execution slot.
+        with self._load_lock:
+            return method(self, *args, **kwargs)
+    return call
 
 
 class PillowRenderer(Renderer):
@@ -32,10 +44,11 @@ class PillowRenderer(Renderer):
     def __init__(self, config: dict[str, Any] | None = None) -> None:
         super().__init__(config)
         self.layout_engine = MangaLayoutEngine(
-            FontResolver([get_settings().data_dir / "fonts", get_settings().data_dir / "projects"]),
+            FontResolver([get_settings().data_dir / "fonts"], project_root=get_settings().data_dir / "projects"),
             min_font_size=int((config or {}).get("min_font_size", 10)),
         )
 
+    @_serialize_renderer
     def render(
         self,
         background_path: Path,
@@ -55,9 +68,10 @@ class PillowRenderer(Renderer):
                 continue
             translated_bbox = getattr(region, "translated_bbox", None) or region.bbox
             translated_polygon = getattr(region, "translated_polygon", None) or region.polygon
+            auto_fit = uses_automatic_font_size(region)
             shape_applied = False
             shape_warning = False
-            use_shape = (shape_masks and region.id in shape_masks
+            use_shape = (auto_fit and shape_masks and region.id in shape_masks
                          and not getattr(region, "rotation", 0)
                          and not getattr(region, "perspective_warp", False)
                          and translated_bbox == region.bbox
@@ -91,12 +105,16 @@ class PillowRenderer(Renderer):
                 # Perspective mode lays text out in the normal rectangular
                 # bbox first; the complete transparent tile is warped below.
                 polygon=None if warp_quad else translated_polygon,
+                auto_fit=auto_fit,
+                stroke_width=region.stroke_width,
+                rotation=region.rotation,
             )
-            if shape_warning:
+            if shape_warning or (auto_fit and layout.overflow):
                 layout.overflow = True
-                layout.warnings.append("balloon_has_no_safe_text_area")
+                if shape_warning:
+                    layout.warnings.append("balloon_has_no_safe_text_area")
                 region_layouts[region.id] = {
-                    **layout.to_dict(), "render_output_version": RENDER_OUTPUT_VERSION,
+                    **layout.to_dict(), "auto_font_size": auto_fit, "render_output_version": RENDER_OUTPUT_VERSION,
                     "shape_layout_applied": False, "render_skipped": True,
                     "effective_text_bbox": None, "shape_layout_source": {"bbox": region.bbox, "polygon": region.polygon},
                 }
@@ -112,6 +130,7 @@ class PillowRenderer(Renderer):
             )
             region_layouts[region.id] = {
                 **layout.to_dict(),
+                "auto_font_size": auto_fit,
                 "render_output_version": RENDER_OUTPUT_VERSION,
                 "perspective_warp_applied": render_style["perspective_warp_applied"],
                 "render_style": render_style,
@@ -123,8 +142,10 @@ class PillowRenderer(Renderer):
         composite = Image.alpha_composite(background, layer)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         text_layer_path.parent.mkdir(parents=True, exist_ok=True)
-        layer.save(text_layer_path, "PNG")
-        save_png_with_metadata(composite.convert("RGB"), output_path, metadata)
+        # PNG compression changes file size/CPU time, never pixels. Level 3
+        # avoids the slow default encoder on interactive re-layout/export.
+        layer.save(text_layer_path, "PNG", compress_level=3)
+        save_png_with_metadata(composite.convert("RGB"), output_path, metadata, compress_level=3)
         inputs = {region.id: render_input(region, font_size=region_layouts.get(region.id, {}).get("font_size"))
                   for region in regions}
         return {"layouts": region_layouts, "inputs": inputs, "output_path": output_path, "text_layer_path": text_layer_path}
@@ -155,12 +176,34 @@ class PillowRenderer(Renderer):
         # Perspective projection necessarily rasterizes the glyphs. Drawing
         # that source tile above the final resolution preserves edge detail
         # through rotation and the subsequent projective resampling.
-        tile_width = max(1, round(width * raster_scale))
-        tile_height = max(1, round(height * raster_scale))
+        auto_fit = uses_automatic_font_size(region)
+        offset_x = (width - (getattr(layout, "coordinate_width", None) or layout.width)) / 2
+        offset_y = (height - layout.height) / 2
+        origin_x = origin_y = 0.0
+        right, bottom = width, height
+        if not auto_fit:
+            # Keep the original frame as the layout coordinate system, but
+            # allocate the actual glyph extent instead of clipping to it.
+            margin = max(2, float(region.stroke_width) + 2)
+            for placement in layout.placements:
+                font = MangaLayoutEngine._font(Path(placement.font_path), placement.font_size)
+                ink = font.getbbox(placement.text, anchor="lt")
+                glyph_width = max(placement.font_size, ink[2] - min(0, ink[0]))
+                glyph_height = max(placement.font_size, ink[3])
+                origin_x = min(origin_x, placement.x + offset_x - margin)
+                origin_y = min(origin_y, placement.y + offset_y - margin)
+                right = max(right, placement.x + offset_x + glyph_width + margin)
+                bottom = max(bottom, placement.y + offset_y + glyph_height + margin)
+            # Content outside the page cannot be exported. Cap pathological
+            # long-text tiles without shrinking the user's chosen font.
+            limit = max(layer.size) * 2 + max(width, height)
+            origin_x, origin_y = max(-limit, origin_x), max(-limit, origin_y)
+            right, bottom = min(limit, right), min(limit, bottom)
+            raster_scale = min(raster_scale, max(.1, (PillowRenderer._PERSPECTIVE_TILE_PIXEL_BUDGET / max(1, (right-origin_x)*(bottom-origin_y))) ** .5))
+        tile_width = max(1, round((right - origin_x) * raster_scale))
+        tile_height = max(1, round((bottom - origin_y) * raster_scale))
         tile = Image.new("RGBA", (tile_width, tile_height), (0, 0, 0, 0))
         draw = ImageDraw.Draw(tile)
-        offset_x = max(0.0, (width - (getattr(layout, "coordinate_width", None) or layout.width)) / 2)
-        offset_y = max(0.0, (height - layout.height) / 2)
         render_style = PillowRenderer._resolve_render_style(
             background,
             region,
@@ -176,8 +219,8 @@ class PillowRenderer(Renderer):
                 max(1, round(placement.font_size * raster_scale)),
             )
             position = (
-                (placement.x + offset_x) * raster_scale,
-                (placement.y + offset_y) * raster_scale,
+                (placement.x + offset_x - origin_x) * raster_scale,
+                (placement.y + offset_y - origin_y) * raster_scale,
             )
             if placement.rotate:
                 glyph_box = max(round(placement.font_size * 2 * raster_scale), 8)
@@ -192,7 +235,7 @@ class PillowRenderer(Renderer):
                     anchor="mm",
                 )
                 glyph = glyph.rotate(-placement.rotate, expand=False, resample=Image.Resampling.BICUBIC)
-                tile.alpha_composite(glyph, (round(position[0] - glyph_box / 4), round(position[1] - glyph_box / 4)))
+                tile.alpha_composite(glyph, (round(position[0] + placement.font_size*raster_scale/2 - glyph_box/2), round(position[1] + placement.font_size*raster_scale/2 - glyph_box/2)))
             else:
                 draw.text(
                     position,
@@ -201,15 +244,25 @@ class PillowRenderer(Renderer):
                     fill=fill,
                     stroke_width=stroke_width,
                     stroke_fill=stroke_fill,
+                    anchor="lt",
                 )
         if abs(region.rotation) > 0.01:
+            center_x = origin_x + tile.width / raster_scale / 2 - width / 2
+            center_y = origin_y + tile.height / raster_scale / 2 - height / 2
             tile = PillowRenderer._unpremultiply_rgba(
                 PillowRenderer._premultiply_rgba(tile).rotate(
                     -region.rotation,
-                    expand=False,
+                    expand=not auto_fit,
                     resample=Image.Resampling.BICUBIC,
                 )
             )
+            if not auto_fit:
+                angle = radians(region.rotation)
+                origin_x = width/2 + center_x*cos(angle) - center_y*sin(angle) - tile.width/raster_scale/2
+                origin_y = height/2 + center_x*sin(angle) + center_y*cos(angle) - tile.height/raster_scale/2
+        if warp_quad and not auto_fit:
+            warp_quad = PillowRenderer._extended_quad(warp_quad, width, height,
+                origin_x, origin_y, tile.width/raster_scale, tile.height/raster_scale)
         perspective_warp_applied = bool(
             warp_quad and PillowRenderer._alpha_composite_warped(
                 layer,
@@ -219,18 +272,30 @@ class PillowRenderer(Renderer):
             )
         )
         if not perspective_warp_applied:
-            if raster_scale > 1.0:
+            if raster_scale != 1.0:
                 tile = PillowRenderer._unpremultiply_rgba(
                     PillowRenderer._premultiply_rgba(tile).resize(
-                        (max(1, round(width)), max(1, round(height))),
+                        (max(1, round(tile.width/raster_scale)), max(1, round(tile.height/raster_scale))),
                         resample=Image.Resampling.LANCZOS,
                     )
                 )
-            layer.alpha_composite(tile, (round(x), round(y)))
+            layer.alpha_composite(tile, (round(x + origin_x), round(y + origin_y)))
         render_style["perspective_warp_requested"] = bool(getattr(region, "perspective_warp", False))
         render_style["perspective_warp_applied"] = perspective_warp_applied
         render_style["perspective_raster_scale"] = round(raster_scale, 3)
         return render_style
+
+    @staticmethod
+    def _extended_quad(quad, width, height, x, y, tile_width, tile_height):
+        # Project the expanded tile through the original frame homography;
+        # mapping it directly to the old quad would shrink overflow back in.
+        a, b, c, d, e, f, g, h = perspective_coefficients(
+            [[0,0], [width,0], [width,height], [0,height]], quad)
+        points = [[x,y], [x+tile_width,y], [x+tile_width,y+tile_height], [x,y+tile_height]]
+        denominators = [g*u+h*v+1 for u,v in points]
+        if min(denominators) <= 1e-6:
+            return None  # Do not project across a perspective horizon.
+        return [[(a*u+b*v+c)/z, (d*u+e*v+f)/z] for (u,v),z in zip(points,denominators)]
 
     @staticmethod
     def _perspective_raster_scale(

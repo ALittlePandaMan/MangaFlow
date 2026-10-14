@@ -26,9 +26,9 @@ def bbox_to_polygon(bbox: Iterable[float]) -> list[list[float]]:
 def order_quadrilateral(points: Iterable[Iterable[float]]) -> list[list[float]] | None:
     """Validate a convex quad and normalize its winding for perspective mapping.
 
-    Valid editor polygons retain their semantic first corner, so moving a
-    corner cannot suddenly rotate the text texture. Imported unordered points
-    are canonicalized around their centroid with the top-left corner first.
+    OCR and manually edited polygons may start at any corner, even when their
+    winding is already valid. Canonicalize a render-only copy to TL/TR/BR/BL
+    so the text's reading direction never depends on the stored first vertex.
     """
 
     normalized: list[tuple[float, float]] = []
@@ -55,22 +55,11 @@ def order_quadrilateral(points: Iterable[Iterable[float]]) -> list[list[float]] 
             )
         return output
 
-    supplied_crosses = cross_products(normalized)
-    if min(supplied_crosses) > 1e-6:
-        # The editor already persists semantic TL/TR/BR/BL indices. Preserve
-        # them so dragging a corner past a diagonal does not suddenly rotate
-        # the text mapping by 90 degrees.
-        ordered = normalized
-    elif max(supplied_crosses) < -1e-6:
-        ordered = [normalized[0], normalized[3], normalized[2], normalized[1]]
-    else:
-        # Imported unordered corners (including a bow-tie ordering) need one
-        # canonicalization pass.
-        center_x = sum(point[0] for point in normalized) / 4
-        center_y = sum(point[1] for point in normalized) / 4
-        ordered = sorted(normalized, key=lambda point: atan2(point[1] - center_y, point[0] - center_x))
-        start = min(range(4), key=lambda index: (sum(ordered[index]), ordered[index][1], ordered[index][0]))
-        ordered = ordered[start:] + ordered[:start]
+    center_x = sum(point[0] for point in normalized) / 4
+    center_y = sum(point[1] for point in normalized) / 4
+    ordered = sorted(normalized, key=lambda point: atan2(point[1] - center_y, point[0] - center_x))
+    start = min(range(4), key=lambda index: (sum(ordered[index]), ordered[index][1], ordered[index][0]))
+    ordered = ordered[start:] + ordered[:start]
 
     cross_values = cross_products(ordered)
     if min(cross_values) <= 1e-6:

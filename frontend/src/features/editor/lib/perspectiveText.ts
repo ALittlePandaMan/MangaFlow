@@ -1,4 +1,18 @@
 export type PerspectivePoint = [number, number]
+// Keep in sync with the export renderer when perspective mapping changes.
+export const PERSPECTIVE_RENDER_OUTPUT_VERSION = 6
+
+/** Preserve frame scale when a manually sized text tile extends outside it. */
+export function extendedPerspectiveQuad(points: number[][], frame: {width: number, height: number}, tile: {x: number, y: number, width: number, height: number}): PerspectivePoint[] | null {
+  const quad = orderPerspectiveQuad(points)
+  if (!quad) return null
+  const project = squareToQuad(quad)
+  if (!project) return null
+  const corners = [[tile.x,tile.y], [tile.x+tile.width,tile.y], [tile.x+tile.width,tile.y+tile.height], [tile.x,tile.y+tile.height]]
+  const result = corners.map(([x,y]) => project(x/frame.width, y/frame.height))
+  // Convexity also rejects tiles which extend across a projective horizon.
+  return orderPerspectiveQuad(result) ? result : null
+}
 
 export interface WarpedCanvas {
   image: HTMLCanvasElement
@@ -8,7 +22,7 @@ export interface WarpedCanvas {
   height: number
 }
 
-/** Return a clockwise convex quad while preserving the persisted semantic first corner. */
+/** Normalize geometry to TL/TR/BR/BL; OCR and drawn polygons can start at any corner. */
 export function orderPerspectiveQuad(points: number[][]): PerspectivePoint[] | null {
   if (points.length !== 4 || points.some(point => point.length < 2 || !Number.isFinite(point[0]) || !Number.isFinite(point[1]))) return null
   const normalized = points.map(point => [point[0], point[1]] as PerspectivePoint)
@@ -18,24 +32,18 @@ export function orderPerspectiveQuad(points: number[][]): PerspectivePoint[] | n
     const following = quad[(index + 1) % 4]
     return (current[0] - previous[0]) * (following[1] - current[1]) - (current[1] - previous[1]) * (following[0] - current[0])
   })
-  const suppliedCrosses = crosses(normalized)
-  let ordered: PerspectivePoint[]
-  if (Math.min(...suppliedCrosses) > 1e-6) {
-    // Preserve the semantic corner indices persisted by RegionPolygonEditor.
-    ordered = normalized
-  } else if (Math.max(...suppliedCrosses) < -1e-6) {
-    ordered = [normalized[0], normalized[3], normalized[2], normalized[1]]
-  } else {
-    const centerX = normalized.reduce((sum, point) => sum + point[0], 0) / 4
-    const centerY = normalized.reduce((sum, point) => sum + point[1], 0) / 4
-    ordered = [...normalized].sort((first, second) => Math.atan2(first[1] - centerY, first[0] - centerX) - Math.atan2(second[1] - centerY, second[0] - centerX))
-    const start = ordered.reduce((best, point, index) => {
-      const candidate = [point[0] + point[1], point[1], point[0]]
-      const current = [ordered[best][0] + ordered[best][1], ordered[best][1], ordered[best][0]]
-      return candidate[0] < current[0] || (candidate[0] === current[0] && (candidate[1] < current[1] || (candidate[1] === current[1] && candidate[2] < current[2]))) ? index : best
-    }, 0)
-    ordered = [...ordered.slice(start), ...ordered.slice(0, start)]
-  }
+  const centerX = normalized.reduce((sum, point) => sum + point[0], 0) / 4
+  const centerY = normalized.reduce((sum, point) => sum + point[1], 0) / 4
+  let ordered = [...normalized].sort((first, second) => Math.atan2(first[1] - centerY, first[0] - centerX) - Math.atan2(second[1] - centerY, second[0] - centerX))
+  // A valid clockwise polygon is not necessarily a text-oriented polygon:
+  // starting at TR swaps the tile's width/height and reverses vertical reading.
+  // Normalize only this render copy, leaving persisted vertex/handle IDs intact.
+  const start = ordered.reduce((best, point, index) => {
+    const candidate = [point[0] + point[1], point[1], point[0]]
+    const current = [ordered[best][0] + ordered[best][1], ordered[best][1], ordered[best][0]]
+    return candidate[0] < current[0] || (candidate[0] === current[0] && (candidate[1] < current[1] || (candidate[1] === current[1] && candidate[2] < current[2]))) ? index : best
+  }, 0)
+  ordered = [...ordered.slice(start), ...ordered.slice(0, start)]
   const crossValues = crosses(ordered)
   if (Math.min(...crossValues) <= 1e-6) return null
   const edgeLengths = ordered.map((point, index) => Math.hypot(ordered[(index + 1) % 4][0] - point[0], ordered[(index + 1) % 4][1] - point[1]))
@@ -55,7 +63,7 @@ export function isPerspectiveQuad(points: number[][]): boolean {
 
 export function perspectiveQuadSize(points: number[][]): {width: number, height: number} | null {
   const quad = orderPerspectiveQuad(points)
-  if (!quad || !isPerspectiveQuad(quad)) return null
+  if (!quad) return null
   const distance = (start: PerspectivePoint, end: PerspectivePoint) => Math.hypot(end[0] - start[0], end[1] - start[1])
   return {
     width: Math.max(2, distance(quad[0], quad[1]), distance(quad[3], quad[2])),
@@ -70,7 +78,7 @@ export function perspectiveQuadSize(points: number[][]): {width: number, height:
  */
 export function warpCanvasToQuad(source: HTMLCanvasElement, points: number[][], pixelRatio = 1): WarpedCanvas | null {
   const quad = orderPerspectiveQuad(points)
-  if (!quad || !isPerspectiveQuad(quad) || source.width < 1 || source.height < 1) return null
+  if (!quad || source.width < 1 || source.height < 1) return null
   const xs = quad.map(point => point[0])
   const ys = quad.map(point => point[1])
   const x = Math.min(...xs)

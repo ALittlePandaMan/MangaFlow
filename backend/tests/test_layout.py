@@ -274,6 +274,35 @@ def test_perspective_supersampling_is_bounded_by_pixel_budget() -> None:
     assert PillowRenderer._perspective_raster_scale(4_000, 4_000) == 1.0
 
 
+def test_vertical_perspective_render_is_identical_for_every_corner_order(tmp_path: Path) -> None:
+    font = available_font()
+    background_path = tmp_path / "background.png"
+    Image.new("RGB", (400, 300), "white").save(background_path)
+    quad = [[272,107], [302,93], [352,200], [322,214]]
+    region = SimpleNamespace(
+        id="angled-vertical", visible=True, translated_text="ABC",
+        bbox=[272,93,80,121], polygon=quad, translated_bbox=[272,93,80,121],
+        translated_polygon=quad, perspective_warp=True, orientation="vertical",
+        font_family=font.stem, font_weight=400, font_size=20, line_spacing=1.15,
+        character_spacing=0.0, alignment="center", layout_data={"custom_font_path":str(font)},
+        text_color="#111111", stroke_color="#ffffff", stroke_width=0.0, rotation=0.0, opacity=1.0,
+    )
+    renderer = PillowRenderer()
+    output_path, layer_path = tmp_path / "rendered.png", tmp_path / "layer.png"
+    renderer.render(background_path, [region], output_path, layer_path)
+    with Image.open(layer_path) as layer:
+        expected = np.asarray(layer).copy()
+    assert np.any(expected[...,3])
+    for start in range(4):
+        points = quad[start:] + quad[:start]
+        for polygon in (points, list(reversed(points))):
+            region.translated_polygon = polygon
+            result = renderer.render(background_path, [region], output_path, layer_path)
+            assert result["layouts"][region.id]["perspective_warp_applied"]
+            with Image.open(layer_path) as layer:
+                np.testing.assert_array_equal(np.asarray(layer), expected)
+
+
 @pytest.mark.parametrize("empty", [False, True])
 def test_shape_renderer_never_draws_outside_balloon(tmp_path, empty):
     import cv2

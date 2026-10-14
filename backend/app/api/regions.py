@@ -33,6 +33,7 @@ RENDER_AFFECTING_FIELDS = {
     "translated_text",
     "orientation",
     "font_size",
+    "auto_font_size",
     "font_family",
     "font_weight",
     "text_color",
