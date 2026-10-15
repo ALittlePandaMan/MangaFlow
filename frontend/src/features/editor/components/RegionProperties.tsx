@@ -1,230 +1,69 @@
-import { Eraser, Eye, EyeOff, Languages, Layers3, Lock, LockOpen, Merge, Scan, ScanLine, ScanText, TextCursorInput, Trash2, X } from 'lucide-react'
-import { useLayoutEffect, useMemo, useRef } from 'react'
-import type { TextRegion } from '../../../types'
-import {buttonClass, cn, dangerButtonClass, primaryButtonClass, scrollbarClass, textareaClass} from '../../../ui'
-import {ColorControl, NumberControl, SelectControl} from '../../../components/FormControls'
-import {ButtonLoading} from '../../../components/LoadingUI'
-import {formatShortcut, shortcutToAria, useShortcutStore} from '../../shortcuts/store'
-import {isPerspectiveQuad, perspectiveQuadSize} from '../lib/perspectiveText'
-import { useEditorStore } from '../store'
-import {alignRegions, type BoxAlignment} from '../lib/regionEditing'
-import {hasCurrentComputedFont, sizeText, usesAutomaticFontSize} from '../lib/fontSizing'
-import {shapePreviewRegion} from '../lib/shapeText'
+import {Eye, EyeOff, Folder, Layers3} from 'lucide-react'
+import {useCallback, useLayoutEffect, useMemo, useRef} from 'react'
+import type {MouseEvent as ReactMouseEvent} from 'react'
+import type {ImagePage, TextRegion} from '../../../types'
+import {cn, scrollbarClass} from '../../../ui'
+import {useEditorStore} from '../store'
+import {TextTypesettingPanel} from './TextTypesettingPanel'
+import {RegionLayerRow} from './RegionLayerRow'
 
-const regionIconButtonClass = cn(buttonClass, '!size-8 !min-h-8 !p-0')
+const regionNameOrder=new Intl.Collator('zh-CN',{numeric:true,sensitivity:'base'})
 
 interface Props {
-  region?: TextRegion
-  selectedRegions: TextRegion[]
-  selectedCount: number
-  fontOptions: string[]
-  busyAction?: string | null
-  onUpdate: (id: string, patch: Partial<TextRegion>) => void
-  onUpdateMany?: (changes: Array<{id:string,patch:Partial<TextRegion>}>) => void
-  onAction: (action: string, options?: Record<string, unknown>) => void
+  page?:ImagePage | null
+  regions?:TextRegion[]
+  region?:TextRegion
+  selectedRegions:TextRegion[]
+  selectedCount:number
+  fontOptions:string[]
+  busyAction?:string | null
+  onUpdate:(id:string,patch:Partial<TextRegion>) => void
+  onUpdateMany?:(changes:Array<{id:string;patch:Partial<TextRegion>}>) => void
+  onAction:(action:string,options?:Record<string,unknown>) => void
 }
 
-export function RegionProperties({region, selectedRegions, selectedCount, fontOptions, busyAction, onUpdate, onUpdateMany, onAction}: Props) {
-  const select = useEditorStore(state => state.select)
-  const view = useEditorStore(state => state.view)
-  const shortcuts = useShortcutStore(state => state.shortcuts)
-  const sectionClass = 'border-b border-line-subtle p-4'
-  const headingClass = 'mb-3.5 flex items-center gap-2 text-[13px] font-semibold leading-normal text-ink before:h-3 before:w-0.5 before:rounded before:bg-accent/70'
-  const fieldClass = 'mt-2.5 block min-w-0 text-[13px] font-medium text-secondary [&>*:last-child]:mt-1.5'
-  const setCoordinate = (axis: 'x' | 'y', value: number) => {
-    if (!region || !Number.isFinite(value)) return
-    const translated = view === 'translated'
-    const bbox = translated && region.translated_bbox?.length === 4 ? region.translated_bbox : region.bbox
-    const polygon = translated && region.translated_polygon?.length >= 3 ? region.translated_polygon : region.polygon
-    const dx = axis === 'x' ? value - bbox[0] : 0
-    const dy = axis === 'y' ? value - bbox[1] : 0
-    const nextBbox = [bbox[0] + dx, bbox[1] + dy, bbox[2], bbox[3]]
-    const nextPolygon = polygon.map(point => [point[0] + dx, point[1] + dy])
-    onUpdate(region.id, translated
-      ? {translated_bbox: nextBbox, translated_polygon: nextPolygon}
-      : {bbox: nextBbox, polygon: nextPolygon})
-  }
-  const coordinateBox = region && view === 'translated' && region.translated_bbox?.length === 4 ? region.translated_bbox : region?.bbox
-  const coordinatePolygon = region && view === 'translated' && region.translated_polygon?.length >= 3 ? region.translated_polygon : region?.polygon
-  const coordinateRotation = coordinatePolygon?.length ? coordinateValue(polygonRotation(coordinatePolygon)) : 0
-  const setCoordinateRotation = (value: number) => {
-    if (!region || !coordinatePolygon?.length || !Number.isFinite(value)) return
-    const delta = normalizedAngle(value - polygonRotation(coordinatePolygon))
-    if (Math.abs(delta) < .001) return
-    const nextPolygon = rotatePolygon(coordinatePolygon, delta)
-    const nextBbox = polygonBbox(nextPolygon)
-    onUpdate(region.id, view === 'translated'
-      ? {translated_polygon: nextPolygon, translated_bbox: nextBbox, rotation: normalizedAngle(region.rotation + delta)}
-      : {polygon: nextPolygon, bbox: nextBbox})
-  }
-  const canWarpPerspective = Boolean(region && isPerspectiveQuad(region.translated_polygon))
-  const displayedFontSize = useMemo(() => region ? currentFontSize(region) : undefined, [region])
-  const selectedFontSizes = useMemo(() => selectedRegions.map(currentFontSize), [selectedRegions])
-  const commonFontSize = selectedFontSizes.length && selectedFontSizes.every(size => size === selectedFontSizes[0])
-    ? selectedFontSizes[0]
-    : undefined
-  const updateSelectedFontSize = (fontSize: number) => {
-    const next = Math.max(1, Math.min(512, fontSize))
-    const changes = selectedRegions.map(item => ({id:item.id,patch:{font_size:next,auto_font_size:false}}))
-    if (onUpdateMany) onUpdateMany(changes); else changes.forEach(item => onUpdate(item.id,item.patch))
-  }
-  const stepSelectedFontSize = (direction: 1 | -1) => {
-    const changes = selectedRegions.map((item,index) => ({id:item.id,patch:{font_size:Math.max(1,Math.min(512,selectedFontSizes[index] + direction)),auto_font_size:false}}))
-    if (onUpdateMany) onUpdateMany(changes); else changes.forEach(item => onUpdate(item.id,item.patch))
-  }
-  const commonAlignment = selectedRegions.every(item => item.alignment === selectedRegions[0]?.alignment) ? selectedRegions[0]?.alignment : undefined
-  const updateSelectedAlignment = (alignment: TextRegion['alignment']) => {
-    const changes = selectedRegions.map(item => ({id:item.id,patch:{alignment}}))
-    if (onUpdateMany) onUpdateMany(changes); else changes.forEach(item => onUpdate(item.id,item.patch))
-  }
-  const alignSelectedBoxes = (alignment: BoxAlignment) => {
-    const changes = alignRegions(selectedRegions,view === 'translated',alignment)
-    if (onUpdateMany) onUpdateMany(changes); else changes.forEach(item => onUpdate(item.id,item.patch))
-  }
-  return <aside className={cn('flex min-h-0 flex-col overflow-y-auto border-l border-line-subtle bg-panel [&>*]:shrink-0', scrollbarClass)}>
-    <fieldset disabled={!!busyAction} className="contents [&>*]:shrink-0">
-    {selectedCount > 1 ? <div className="flex flex-1 flex-col justify-center gap-6 p-6">
-      <div className="flex items-center gap-3 text-accent"><Layers3 size={28}/><span className="flex min-w-0 flex-col gap-1"><strong className="text-sm text-ink">已选择 {selectedCount} 个区域</strong><small className="text-[10px] leading-relaxed text-muted">拖动所选框可整组移动，方向键可微调位置</small></span></div>
-      <div className="grid gap-2">
-        <div className="rounded-xl border border-line-subtle bg-surface/60 p-3">
-          <div className="mb-2 flex items-center justify-between gap-3"><span className="text-[10px] font-medium text-secondary">批量字号</span><small className="font-mono text-[9px] text-muted">{commonFontSize === undefined ? '混合字号' : `${commonFontSize}px`}</small></div>
-          <NumberControl
-            key={selectedRegions.map(item => item.id).sort().join(':')}
-            compact ariaLabel="批量字号" value={commonFontSize} mixed={commonFontSize === undefined}
-            placeholder="多种字号" min={1} max={512} step={1} disabled={!!busyAction}
-            onChange={updateSelectedFontSize} onStep={stepSelectedFontSize}
-          />
-          <small className="mt-2 block text-[9px] leading-relaxed text-muted">输入数值可统一字号；加减按钮会让所选文字同步增减。</small>
-        </div>
-        <div className="rounded-xl border border-line-subtle bg-surface/60 p-3">
-          <span className="mb-2 block text-[10px] font-medium text-secondary">文字对齐</span>
-          <div className="grid grid-cols-3 gap-1.5">
-            {([['left','左对齐'],['center','居中'],['right','右对齐']] as const).map(([value,label]) => <button key={value} type="button" aria-label={`所选文字${label}`} aria-pressed={commonAlignment === value} disabled={!!busyAction}
-              className={cn(buttonClass,'!min-h-8 !px-1 text-[10px]',commonAlignment === value && 'border-accent/40 bg-accent/10 text-accent')} onClick={() => updateSelectedAlignment(value)}>{label}</button>)}
-          </div>
-          <span className="mb-2 mt-3 block text-[10px] font-medium text-secondary">{view === 'translated' ? '译文框' : '原文框'}对齐</span>
-          <div className="grid grid-cols-3 gap-1.5">
-            {([['left','靠左'],['center','水平居中'],['right','靠右'],['top','靠上'],['middle','垂直居中'],['bottom','靠下']] as const).map(([value,label]) => <button key={value} type="button" aria-label={`所选文本框${label}`} disabled={!!busyAction || selectedRegions.filter(item => !item.locked).length < 2}
-              className={cn(buttonClass,'!min-h-8 !px-1 text-[10px]')} onClick={() => alignSelectedBoxes(value)}>{label}</button>)}
-          </div>
-        </div>
-        <div className="grid grid-cols-2 gap-2">
-          <button className={`${buttonClass} !min-h-[34px] px-2 text-[10px]`} disabled={!!busyAction} title={`所选区域重新 OCR (${formatShortcut(shortcuts['region.ocr'])})`} aria-keyshortcuts={shortcutToAria(shortcuts['region.ocr'])} onClick={() => onAction('ocr')}>{busyAction === 'ocr' ? <ButtonLoading label="OCR 中…"/> : <><ScanText size={15}/>重新 OCR</>}</button>
-          <button className={`${buttonClass} !min-h-[34px] px-2 text-[10px]`} disabled={!!busyAction} title={`所选区域重新修复 (${formatShortcut(shortcuts['region.inpaint'])})`} aria-keyshortcuts={shortcutToAria(shortcuts['region.inpaint'])} onClick={() => onAction('inpaint')}>{busyAction === 'inpaint' ? <ButtonLoading label="修复中…"/> : <><Eraser size={15}/>重新修复</>}</button>
-          <button className={`${buttonClass} !min-h-[34px] px-2 text-[10px]`} disabled={!!busyAction} title={`所选区域重新翻译 (${formatShortcut(shortcuts['region.translate'])})`} aria-keyshortcuts={shortcutToAria(shortcuts['region.translate'])} onClick={() => onAction('translate')}>{busyAction === 'translate' ? <ButtonLoading label="翻译中…"/> : <><Languages size={15}/>重新翻译</>}</button>
-          <button className={`${buttonClass} !min-h-[34px] px-2 text-[10px]`} disabled={!!busyAction} title={`所选区域重新排版 (${formatShortcut(shortcuts['region.render'])})`} aria-keyshortcuts={shortcutToAria(shortcuts['region.render'])} onClick={() => onAction('render')}>{busyAction === 'render' ? <ButtonLoading label="排版中…"/> : <><TextCursorInput size={15}/>重新排版</>}</button>
-        </div>
-        <div className="my-1 h-px bg-line-subtle"/>
-        <button className={`${primaryButtonClass} !min-h-[34px]`} disabled={!!busyAction} title={`合并所选 (${formatShortcut(shortcuts['region.merge'])})`} aria-keyshortcuts={shortcutToAria(shortcuts['region.merge'])} onClick={() => onAction('merge')}>{busyAction === 'merge' ? <ButtonLoading label="合并中…"/> : <><Merge size={16}/>合并区域</>}</button>
-        <button className={`${dangerButtonClass} !min-h-[34px]`} disabled={!!busyAction} title={`删除所选 (${formatShortcut(shortcuts['region.delete'])})`} aria-keyshortcuts={shortcutToAria(shortcuts['region.delete'])} onClick={() => onAction('delete')}>{busyAction === 'delete' ? <ButtonLoading label="删除中…"/> : <><Trash2 size={16}/>删除所选</>}</button>
-        <button className={`${buttonClass} !min-h-[34px]`} disabled={!!busyAction} title={`取消选择 (${formatShortcut(shortcuts['region.cancelSelection'])})`} aria-keyshortcuts={shortcutToAria(shortcuts['region.cancelSelection'])} onClick={() => select(null)}><X size={16}/>取消选择</button>
-      </div>
-    </div> : !region ? <div className="flex min-h-[260px] flex-1 flex-col items-center justify-center p-8 text-center text-muted"><Scan size={30}/><p className="mt-3 text-[12px] leading-relaxed">选择一个文字区域以编辑属性</p></div> : <>
-      <section className="flex h-12 shrink-0 items-center justify-between border-b border-line-subtle bg-surface px-3"><span className="font-mono text-xs font-semibold">{region.region_key}</span><div className="flex gap-1"><button className={regionIconButtonClass} title={region.visible ? '关闭：预览和导出时不显示译文' : '打开：预览和导出时显示译文'} aria-label={region.visible ? '关闭区域显示' : '打开区域显示'} onClick={() => onAction('visibility')}>{region.visible ? <Eye aria-hidden="true" size={16}/> : <EyeOff aria-hidden="true" size={16}/>}</button><button className={regionIconButtonClass} title={region.locked ? '解除锁定' : '锁定区域'} aria-label={region.locked ? '解除锁定' : '锁定区域'} onClick={() => onUpdate(region.id, {locked: !region.locked})}>{region.locked ? <Lock aria-hidden="true" size={16}/> : <LockOpen aria-hidden="true" size={16}/>}</button></div></section>
-      <section className={sectionClass}><h3 className={headingClass}>文本内容</h3>
-        {region.layout_data.ocr_geometry_stale === true && <p role="note" className="mb-3 rounded-lg border border-accent/20 bg-accent/5 px-3 py-2 text-[11px] leading-relaxed text-secondary">原文框范围已修改，请按新框重新 OCR，核对原文后再翻译。修复只同步框的位置，不会重新识字。</p>}
-        <label className={fieldClass}>原文<AutoResizeTextarea value={region.source_text} onChange={value => onUpdate(region.id, {source_text: value})} placeholder="OCR 原文" /></label>
-        <label className={fieldClass}>译文<AutoResizeTextarea className="bg-accent/[.025] focus:bg-accent/[.04]" value={region.translated_text} onChange={value => onUpdate(region.id, {translated_text: value})} placeholder="输入译文" /></label>
-      </section>
-      <section className={sectionClass}>
-        <div className="mb-3 flex min-w-0 items-center justify-between gap-2">
-          <h3 className={cn(headingClass, 'mb-0')}>文字样式</h3>
-          <button
-            type="button"
-            className={cn('flex h-7 min-h-7 shrink-0 cursor-pointer items-center gap-1.5 rounded-lg border border-line bg-canvas px-2 text-[9px] font-medium text-secondary outline-none transition-colors hover:border-line-strong hover:bg-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-accent/20 disabled:cursor-not-allowed disabled:opacity-35', region.perspective_warp && canWarpPerspective && 'border-accent/50 bg-accent/15 text-accent hover:bg-accent/20 hover:text-accent')}
-            disabled={!canWarpPerspective && !region.perspective_warp}
-            aria-pressed={Boolean(region.perspective_warp && canWarpPerspective)}
-            aria-label="随形透视"
-            title={canWarpPerspective ? '让译文沿四边形的四个角进行透视变形' : '随形透视仅支持有效的凸四边形译文框'}
-            onClick={() => onUpdate(region.id, {perspective_warp: !region.perspective_warp})}
-          ><ScanLine size={12}/><span>随形透视</span></button>
-        </div>
-        <label className={fieldClass}>字体<SelectControl compact ariaLabel="字体" value={region.font_family} options={[...new Set([...fontOptions, region.font_family])].filter(Boolean).map(font => ({value:font, label:font}))} onChange={value => onUpdate(region.id, {font_family:value})}/></label>
-        <div className="grid min-w-0 grid-cols-3 gap-1"><label className={fieldClass}>字号<NumberControl compact ariaLabel="字号" value={displayedFontSize} min={1} max={512} step={1} onChange={value => onUpdate(region.id, {font_size:value,auto_font_size:false})}/></label><label className={fieldClass}>行距<NumberControl compact ariaLabel="行距" value={region.line_spacing} min={0.5} max={3} step={0.05} onChange={value => onUpdate(region.id, {line_spacing:value})}/></label><label className={fieldClass}>字距<NumberControl compact ariaLabel="字距" value={region.character_spacing} min={-20} max={100} step={0.5} onChange={value => onUpdate(region.id, {character_spacing:value})}/></label></div>
-        <div className="grid min-w-0 grid-cols-3 gap-1"><label className={fieldClass}>文字色<ColorControl compact ariaLabel="文字颜色" value={region.text_color} onChange={value => onUpdate(region.id, {text_color:value})}/></label><label className={fieldClass}>描边色<ColorControl compact ariaLabel="描边颜色" value={region.stroke_color} onChange={value => onUpdate(region.id, {stroke_color:value})}/></label><label className={fieldClass}>描边<NumberControl compact ariaLabel="描边宽度" value={region.stroke_width} min={0} max={20} step={0.5} onChange={value => onUpdate(region.id, {stroke_width:value})}/></label></div>
-        <div className="grid min-w-0 grid-cols-3 gap-1"><label className={fieldClass}>方向<SelectControl compact ariaLabel="文字方向" value={region.orientation} options={[{value:'vertical', label:'竖排'}, {value:'horizontal', label:'横排'}, {value:'rotated', label:'旋转'}]} onChange={value => onUpdate(region.id, {orientation:value as TextRegion['orientation']})}/></label><label className={fieldClass}>对齐<SelectControl compact ariaLabel="文字对齐" value={region.alignment} options={[{value:'left', label:'左对齐'}, {value:'center', label:'居中'}, {value:'right', label:'右对齐'}]} onChange={value => onUpdate(region.id, {alignment:value as TextRegion['alignment']})}/></label><label className={fieldClass}>译文旋转<NumberControl compact ariaLabel="译文旋转角度" value={region.rotation} min={-180} max={180} step={1} onChange={value => onUpdate(region.id, {rotation:value})}/></label></div>
-      </section>
-      <details className={sectionClass}><summary className="cursor-pointer rounded text-[13px] font-semibold text-secondary outline-none focus-visible:ring-2 focus-visible:ring-accent/30">位置与旋转 · {view === 'translated' ? '译文框坐标' : '原文框坐标'}</summary>
-        <div className="grid min-w-0 grid-cols-3 gap-1.5">
-          <label className={fieldClass}>X 坐标<NumberControl compact ariaLabel="X 坐标" step={1} disabled={region.locked} value={coordinateValue(coordinateBox![0])} onChange={value => setCoordinate('x', value)}/></label>
-          <label className={fieldClass}>Y 坐标<NumberControl compact ariaLabel="Y 坐标" step={1} disabled={region.locked} value={coordinateValue(coordinateBox![1])} onChange={value => setCoordinate('y', value)}/></label>
-          <label className={fieldClass}>旋转角度<NumberControl compact ariaLabel={`${view === 'translated' ? '译文框' : '原文框'}旋转角度（度）`} min={-180} max={180} step={1} disabled={region.locked} value={coordinateRotation} onChange={setCoordinateRotation}/></label>
-        </div>
-      </details>
-    </>}
-    </fieldset>
-  </aside>
-}
-
-function currentFontSize(region: TextRegion): number {
-  if (!region.translated_text.trim() || !usesAutomaticFontSize(region) || hasCurrentComputedFont(region)) return region.font_size
-  const preview = shapePreviewRegion(region)
-  if (!preview) return region.font_size
-  const rect = preview.perspective_warp ? perspectiveQuadSize(preview.translated_polygon) ?? undefined : undefined
-  return sizeText(preview,rect).fontSize
-}
-
-function coordinateValue(value: number): number {
-  return Number(value.toFixed(2))
-}
-
-function normalizedAngle(degrees: number): number {
-  let angle = degrees % 360
-  if (angle > 180) angle -= 360
-  if (angle < -180) angle += 360
-  return Math.abs(angle) < .001 ? 0 : angle
-}
-
-function polygonRotation(polygon: number[][]): number {
-  for (let index = 0; index < polygon.length; index += 1) {
-    const current = polygon[index]
-    const next = polygon[(index + 1) % polygon.length]
-    const dx = next[0] - current[0]
-    const dy = next[1] - current[1]
-    if (Math.hypot(dx, dy) > .001) return normalizedAngle(Math.atan2(dy, dx) * 180 / Math.PI)
-  }
-  return 0
-}
-
-function rotatePolygon(polygon: number[][], degrees: number): number[][] {
-  const center = polygon.reduce((sum, point) => [sum[0] + point[0], sum[1] + point[1]], [0, 0])
-    .map(total => total / polygon.length)
-  const radians = degrees * Math.PI / 180
-  const cosine = Math.cos(radians)
-  const sine = Math.sin(radians)
-  return polygon.map(point => {
-    const x = point[0] - center[0]
-    const y = point[1] - center[1]
-    return [center[0] + x * cosine - y * sine, center[1] + x * sine + y * cosine]
-  })
-}
-
-function polygonBbox(polygon: number[][]): number[] {
-  const xs = polygon.map(point => point[0])
-  const ys = polygon.map(point => point[1])
-  const minX = Math.min(...xs)
-  const minY = Math.min(...ys)
-  return [minX, minY, Math.max(...xs) - minX, Math.max(...ys) - minY]
-}
-
-function AutoResizeTextarea({value, onChange, placeholder, className = ''}: {value: string, onChange: (value: string) => void, placeholder: string, className?: string}) {
-  const textarea = useRef<HTMLTextAreaElement>(null)
-  useLayoutEffect(() => {
-    const element = textarea.current
-    if (!element) return
-    const resize = () => {
-      element.style.height = 'auto'
-      element.style.height = `${Math.max(82, element.scrollHeight)}px`
+export function RegionProperties({page,regions,region,selectedRegions,selectedCount,fontOptions,busyAction,onUpdate,onUpdateMany,onAction}:Props) {
+  const layers=useEditorStore(state => state.layers), toggleLayer=useEditorStore(state => state.toggleLayer)
+  const targets=selectedRegions.length ? selectedRegions : region && selectedCount === 1 ? [region] : []
+  const sourceItems=regions || targets
+  // Sorting is display-only: never change OCR reading order or the caller's array.
+  const items=useMemo(() => [...sourceItems].sort((a,b) => regionNameOrder.compare(a.region_key,b.region_key)),[sourceItems])
+  const selected=new Set(targets.map(item => item.id)), selectionKey=targets.map(item => item.id).join(':')
+  const list=useRef<HTMLDivElement>(null), anchor=useRef<string | null>(null)
+  const latest=useRef({items,onUpdate,onUpdateMany,onAction,busyAction})
+  latest.current={items,onUpdate,onUpdateMany,onAction,busyAction}
+  const update=useCallback((id:string,patch:Partial<TextRegion>) => latest.current.onUpdate(id,patch),[])
+  const updateMany=useCallback((changes:Array<{id:string;patch:Partial<TextRegion>}>) => {
+    if(latest.current.onUpdateMany) latest.current.onUpdateMany(changes)
+    else changes.forEach(change => latest.current.onUpdate(change.id,change.patch))
+  },[])
+  const selectRow=useCallback((id:string,event:ReactMouseEvent<HTMLButtonElement>) => {
+    if(latest.current.busyAction) return
+    const store=useEditorStore.getState(), additive=event.ctrlKey || event.metaKey
+    if(event.shiftKey && anchor.current) {
+      const ids=latest.current.items.map(item => item.id), start=ids.indexOf(anchor.current), end=ids.indexOf(id)
+      if(start>=0 && end>=0) {const range=ids.slice(Math.min(start,end),Math.max(start,end)+1);store.selectMany(additive ? [...new Set([...store.selectedIds,...range])] : range);return}
     }
-    resize()
-    if (typeof ResizeObserver === 'undefined') return
-    let width = element.getBoundingClientRect().width
-    const observer = new ResizeObserver(entries => {
-      const nextWidth = entries[0]?.contentRect.width
-      if (nextWidth !== undefined && nextWidth !== width) {width = nextWidth; resize()}
-    })
-    observer.observe(element)
-    return () => observer.disconnect()
-  }, [value])
-  return <textarea ref={textarea} className={cn(textareaClass, 'min-h-[82px] overflow-hidden text-[13px] leading-relaxed', className)} value={value} onChange={event => onChange(event.target.value)} placeholder={placeholder}/>
+    store.select(id,additive);anchor.current=id
+  },[])
+  const deleteRow=useCallback(() => latest.current.onAction('delete'),[])
+  useLayoutEffect(() => {
+    if(selectedCount !== 1) return
+    const container=list.current
+    const current=container?.querySelector<HTMLElement>('[data-region-row].is-selected')
+    if(!container || !current) return
+    const box=current.getBoundingClientRect(), bounds=container.getBoundingClientRect()
+    if(box.top<bounds.top) container.scrollTop+=box.top-bounds.top
+    else if(box.bottom>bounds.bottom) container.scrollTop+=Math.min(box.bottom-bounds.bottom,box.top-bounds.top)
+  },[selectionKey,selectedCount])
+  return <aside className="region-inspector">
+    <TextTypesettingPanel regions={targets} fontOptions={fontOptions} busy={!!busyAction} onChange={updateMany}/>
+    <h3 className="inspector-section-heading inspector-layer-heading"><Layers3 size={15}/><span>图层</span><small>{items.length+(page ? 1 : 0)}</small></h3>
+    <div ref={list} className={cn('inspector-layer-list',scrollbarClass)}>
+      <div className="inspector-group-row"><Folder size={17}/><span className="inspector-layer-title"><strong>文本</strong><small>文本组</small></span><span className="inspector-layer-opacity">100%</span><button type="button" className="inspector-icon-button inspector-eye" aria-label={layers.translated ? '隐藏文本组' : '显示文本组'} disabled={!!busyAction} onClick={() => toggleLayer('translated')}>{layers.translated ? <Eye size={16}/> : <EyeOff size={16}/>}</button></div>
+      {items.map(item => <RegionLayerRow key={item.id} region={item} selected={selected.has(item.id)} expanded={selectedCount===1 && selected.has(item.id)} disabled={!!busyAction} onSelect={selectRow} onUpdate={update} onDelete={deleteRow}/>)}
+      {!items.length && <p className="inspector-empty">暂无文本区域，识别或创建文本框后会显示在这里。</p>}
+      {page && <div className="inspector-image-row"><Layers3 size={17}/><span className="inspector-layer-title"><strong>Mask</strong><small>蒙版叠加</small></span><button type="button" className="inspector-icon-button inspector-eye" disabled={!!busyAction} aria-label={layers.mask ? '隐藏 Mask 图层' : '显示 Mask 图层'} aria-pressed={!!layers.mask} onClick={() => toggleLayer('mask')}>{layers.mask ? <Eye size={16}/> : <EyeOff size={16}/>}</button></div>}
+    </div>
+  </aside>
 }

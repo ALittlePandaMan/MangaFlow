@@ -3,6 +3,7 @@ import type {CSSProperties} from 'react'
 import {SelectControl} from '../../../components/FormControls'
 import type {TextRegion, Tool} from '../../../types'
 import {cn} from '../../../ui'
+import type {MaskTool} from '../lib/maskBitmap'
 
 const toolDetails = {
   brush: {label: '画笔', detail: '涂抹添加修复范围', Icon: Paintbrush},
@@ -24,12 +25,14 @@ function MaskRange({label, ariaLabel, value, min, max, step = 1, unit, disabled,
 }
 
 /** One property panel, portaled into the workbench's existing responsive sheet. */
-export function MaskControls({region, regions, tool, diameter, referenceOpacity, showOriginal, disabled, onRegionChange, onToolChange, onDiameterChange, onReferenceOpacityChange, onReferenceChange}: {
-  region: TextRegion, regions: TextRegion[], tool: Tool, diameter: number, referenceOpacity: number, showOriginal: boolean, disabled: boolean,
+export function MaskControls({region, regions, tool, operation, diameter, referenceOpacity, showOriginal, disabled, onRegionChange, onToolChange, onDiameterChange, onReferenceOpacityChange, onReferenceChange}: {
+  region: TextRegion, regions: TextRegion[], tool: Tool, operation: MaskTool, diameter: number, referenceOpacity: number, showOriginal: boolean, disabled: boolean,
   onRegionChange: (id: string) => void, onToolChange: (tool: Tool) => void, onDiameterChange: (value: number) => void, onReferenceOpacityChange: (value: number) => void, onReferenceChange: (value: boolean) => void
 }) {
-  const {label, detail, Icon} = toolDetails[tool]
   const brush = tool === 'brush' || tool === 'eraser'
+  const drawing = brush || tool === 'rectangle' || tool === 'polygon' || tool === 'lasso'
+  const {label, Icon} = toolDetails[drawing ? operation : tool]
+  const detail = drawing && !brush ? `${toolDetails[tool].label}${operation === 'eraser' ? '圈选擦除蒙版' : '圈选添加修复范围'}` : toolDetails[drawing ? operation : tool].detail
   return <div className="mask-inspector" aria-label="蒙版显示设置">
     <header className="mask-inspector-heading"><Layers3 size={16} aria-hidden="true"/><h2>蒙版设置</h2></header>
     <div className="mask-inspector-body app-scrollbars">
@@ -43,10 +46,12 @@ export function MaskControls({region, regions, tool, diameter, referenceOpacity,
         <div className="mask-tool-summary"><span className="mask-tool-icon"><Icon size={19} aria-hidden="true"/></span><div><strong>{label}</strong><p>{detail}</p></div></div>
         {brush && <><MaskRange label={tool === 'eraser' ? '橡皮擦大小' : '笔刷大小'} ariaLabel="蒙版笔刷大小" value={diameter} min={2} max={160} unit="px" disabled={disabled || region.locked} onChange={onDiameterChange}/>
           <div className="mask-brush-presets" aria-label="笔刷尺寸预设">{[{value:8,label:'精细'},{value:24,label:'标准'},{value:64,label:'大面积'}].map(item => <button key={item.value} type="button" disabled={disabled || region.locked} aria-pressed={diameter === item.value} onClick={() => onDiameterChange(item.value)}><i style={{width:item.value === 8 ? 4 : item.value === 24 ? 8 : 12,height:item.value === 8 ? 4 : item.value === 24 ? 8 : 12}}/>{item.label}</button>)}</div></>}
-        <div className="mask-field-heading">形状补画</div>
-        <div className="mask-brush-presets" aria-label="蒙版形状工具">{(['rectangle','polygon','lasso'] as const).map(id => {
+        <div className="mask-field-heading">画笔形状</div>
+        <div className="mask-brush-presets mask-shape-presets" aria-label="蒙版形状工具">
+          <button type="button" disabled={disabled || region.locked} aria-label="自由画笔" aria-pressed={brush} onClick={() => onToolChange(operation)}><Paintbrush size={14} aria-hidden="true"/>自由画笔</button>
+          {(['rectangle','polygon','lasso'] as const).map(id => {
           const shape = toolDetails[id]
-          return <button key={id} type="button" disabled={disabled || region.locked} aria-label={`${shape.label}补画蒙版`} aria-pressed={tool === id} onClick={() => onToolChange(id)}><shape.Icon size={14} aria-hidden="true"/>{shape.label}</button>
+          return <button key={id} type="button" disabled={disabled || region.locked} aria-label={`${shape.label}${operation === 'eraser' ? '擦除' : '补画'}蒙版`} aria-pressed={tool === id} onClick={() => onToolChange(id)}><shape.Icon size={14} aria-hidden="true"/>{shape.label}</button>
         })}</div>
       </div>
 

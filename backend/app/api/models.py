@@ -70,7 +70,7 @@ def retry_text_classification(config_id: str, db: Session = Depends(get_db)) -> 
     item = db.get(ModelConfig, config_id)
     if item is None:
         raise HTTPException(404, "Model configuration not found")
-    if item.kind != "detection" or item.provider != "paddleocr":
+    if item.kind != "detection" or item.provider != "rfdetr":
         raise HTTPException(422, "此配置不支持文字分类")
     from app.services.execution import execution_runtime
     provider = registry.create(item.kind, item.provider, item.config)

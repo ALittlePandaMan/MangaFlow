@@ -186,7 +186,7 @@ describe('EditorPage page snapshot revalidation', () => {
       tool: 'select',
       zoom: 1,
       selectedIds: [],
-      layers: {original: false, detection: true, clean: true, translated: true},
+      layers: {original: false, detection: true, clean: true, translated: true, mask:false},
     })
     preloadImageMock.mockReset()
     preloadImageMock.mockResolvedValue(undefined)
@@ -540,14 +540,18 @@ describe('EditorPage page snapshot revalidation', () => {
     vi.mocked(api.images.regions).mockResolvedValue([first,second])
     confirmDialogMock.mockResolvedValue(true)
     const updated=page('page-a',{clean_url:'/delete-clean.png',rendered_url:null,text_layer_url:null,status:'TRANSLATED'})
-    const single=vi.spyOn(api.regions,'remove').mockResolvedValue({region_id:first.id,rebuild_task:null,page:updated})
-    const bulk=vi.spyOn(api.regions,'removeMany').mockResolvedValue({region_ids:[first.id,second.id],rebuild_task:null,page:updated})
+    const single=vi.spyOn(api.regions,'remove').mockResolvedValue({region_id:first.id,region_keys:{[second.id]:'R001'},rebuild_task:null,page:updated})
+    const bulk=vi.spyOn(api.regions,'removeMany').mockResolvedValue({region_ids:[first.id,second.id],region_keys:{},rebuild_task:null,page:updated})
     const task=vi.spyOn(api.tasks,'get')
     renderEditor();await screen.findByTestId('current-page')
     const ids=count === 1 ? [first.id] : [first.id,second.id]
     act(() => {canvasPropsMock.mock.lastCall![0].onRegionAction(ids,'delete')})
     await waitFor(() => expect(screen.getByTestId('current-page')).toHaveAttribute('data-clean-url','/delete-clean.png'))
     expect(canvasPropsMock.mock.lastCall![0].regions).toHaveLength(2-count)
+    if (count === 1) {
+      expect(canvasPropsMock.mock.lastCall![0].regions).toEqual([{...second,region_key:'R001'}])
+      expect(propertiesPropsMock.mock.lastCall![0].regions).toEqual([{...second,region_key:'R001'}])
+    }
     if (count === 1) expect(single).toHaveBeenCalledWith(first.id)
     else expect(bulk).toHaveBeenCalledWith(ids)
     expect(get).toHaveBeenCalledOnce()
@@ -1508,7 +1512,7 @@ describe('EditorPage page snapshot revalidation', () => {
     expect(preloadImageMock).not.toHaveBeenCalledWith(lateFirst.clean_url)
   })
 
-  it('redetects legacy OCR regions so bubble grouping can migrate them', async () => {
+  it('redetects legacy OCR regions after confirming migration', async () => {
     const snapshot = page('page-a', {status:'OCR_DONE'})
     const pendingTask = deferred<ProcessingTask>()
     vi.spyOn(api.projects, 'images').mockResolvedValue([snapshot])
@@ -1568,7 +1572,7 @@ describe('EditorPage page snapshot revalidation', () => {
     expect(screen.getByRole('menuitem', {name:'重新修复'})).toBeDisabled()
   })
 
-  it('warns instead of claiming a merge when refreshed regions report bubble grouping unavailable', async () => {
+  it('does not show retired grouping failures from preserved legacy metadata', async () => {
     const snapshot = page('page-a', {status:'OCR_DONE'})
     const completedTask: ProcessingTask = {
       id: 'task-1', project_id: project.id, image_id: snapshot.id, region_id: null,
@@ -1594,11 +1598,11 @@ describe('EditorPage page snapshot revalidation', () => {
     await userEvent.click(screen.getByRole('menuitem', {name:'重新 OCR'}))
 
     const toolbar = screen.getByRole('toolbar', {name:'编辑器顶部工具栏'})
-    const warning = await within(toolbar).findByRole('alert')
+    const notice = await within(toolbar).findByRole('status')
     expect(toolbar).toHaveClass('editor-toolbar')
-    expect(warning).not.toHaveClass('fixed')
-    expect(warning).toHaveTextContent('本次 OCR 已完成，但气泡合并未执行')
-    expect(warning).toHaveTextContent('气泡检测模型不可用或运行失败')
+    expect(notice).not.toHaveClass('fixed')
+    expect(notice).toHaveTextContent('重新检测与 OCR 已完成')
+    expect(screen.queryByText(/气泡合并未执行/)).not.toBeInTheDocument()
     expect(screen.queryByText(/请核对合并后的文字区域/)).not.toBeInTheDocument()
   })
 

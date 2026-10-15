@@ -20,9 +20,9 @@ def manifest_payload(*, lightweight: bool = False) -> dict:
         ocr = {"provider": "review-fallback", "device": "recommended", "config": {}}
     else:
         detection = {
-            "provider": "paddleocr",
+            "provider": "rfdetr",
             "device": "recommended",
-            "config": {"language": "japan", "ocr_version": "PP-OCRv5"},
+            "config": {"text_threshold": 0.25},
         }
         inpainting = {"provider": "lama", "device": "recommended", "config": {}}
         ocr = {
@@ -103,7 +103,7 @@ def test_apply_manifest_resolves_recommended_devices_encrypts_secret_and_is_idem
 
     assert len(first_report) == 6
     assert set(configured) == set(manifests.MODEL_STAGES)
-    assert configured["detection"].config["device"] == "cuda:0"
+    assert configured["detection"].config["device"] == "cpu"
     assert configured["ocr"].config["device"] == "cpu"
     assert configured["inpainting"].config["device"] == "cpu"
     assert configured["rendering"].config["device"] == "cpu"

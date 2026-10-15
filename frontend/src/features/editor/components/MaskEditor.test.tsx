@@ -18,13 +18,15 @@ function Harness({onSave, onClose, onSelectRegion = () => {}, locked = false,onH
   const ref = useRef<MaskEditorHandle>(null)
   const [state, setState] = useState<MaskEditorState>({undo:false,redo:false,dirty:false,busy:false})
   const tool = useEditorStore(value => value.tool)
+  const operation = useEditorStore(value => value.maskOperation)
   const [target, setTarget] = useState<HTMLDivElement | null>(null)
   const neighbor = {...region,id:'neighbor',region_key:'R002'}
-  return <><EditorToolbar onUndo={() => ref.current?.undo()} onRedo={() => ref.current?.redo()} canUndo={state.undo} canRedo={state.redo} onViewChange={() => ref.current?.requestLeave(onClose)}/><MaskEditor ref={ref} controlsTarget={target} page={page} region={{...region,locked}} regions={[region,neighbor]} tool={tool} onToolChange={useEditorStore.getState().setTool} onSave={onSave} onSelectRegion={onSelectRegion} onStateChange={setState} onHistoryStep={onHistoryStep} onHistoryBoundary={onHistoryBoundary}/><div data-testid="mask-properties" ref={setTarget}/></>
+  return <><EditorToolbar onUndo={() => ref.current?.undo()} onRedo={() => ref.current?.redo()} canUndo={state.undo} canRedo={state.redo} onViewChange={() => ref.current?.requestLeave(onClose)}/><MaskEditor ref={ref} controlsTarget={target} page={page} region={{...region,locked}} regions={[region,neighbor]} tool={tool} operation={operation} onToolChange={useEditorStore.getState().setTool} onSave={onSave} onSelectRegion={onSelectRegion} onStateChange={setState} onHistoryStep={onHistoryStep} onHistoryBoundary={onHistoryBoundary}/><div data-testid="mask-properties" ref={setTarget}/></>
 }
 
 describe('mask editor session', () => {
   beforeEach(() => {
+    useEditorStore.setState({maskOperation:'brush'})
     vi.stubGlobal('ResizeObserver', class {observe() {} disconnect() {}})
     vi.stubGlobal('Image', class {onload?: () => void; crossOrigin = ''; naturalWidth = 100; naturalHeight = 120; set src(_value: string) {queueMicrotask(() => this.onload?.())}})
     vi.stubGlobal('ImageData', class {constructor(public data: Uint8ClampedArray, public width: number, public height: number) {}})
@@ -393,8 +395,73 @@ describe('mask editor session', () => {
     expect(screen.queryByRole('slider', {name:'蒙版笔刷大小'})).not.toBeInTheDocument()
     expect(screen.getByRole('button', {name:'撤销'})).toBeEnabled()
     fireEvent.click(screen.getByRole('button', {name:'蒙版橡皮擦'}))
+    expect(screen.getByRole('button', {name:'矩形擦除蒙版'})).toHaveAttribute('aria-pressed','true')
+    fireEvent.click(screen.getByRole('button', {name:'自由画笔'}))
     expect(screen.getByRole('slider', {name:'蒙版笔刷大小'})).toHaveValue('24')
     expect(screen.getByRole('button', {name:'撤销'})).toBeEnabled()
+  })
+
+  it.each(['矩形','多边形','套索'])('keeps add/erase independent of the %s shape and restores exact pixels on undo/redo', async name => {
+    const fill = vi.spyOn(MaskBitmap.prototype,'fillPolygon')
+    const {canvas,onSave} = await setup()
+    const draw = () => {
+      if (name === '矩形') {
+        fireEvent.pointerDown(canvas,{pointerId:1,clientX:360,clientY:260,button:0})
+        fireEvent.pointerMove(canvas,{pointerId:1,clientX:420,clientY:330})
+        fireEvent.pointerUp(canvas,{pointerId:1,clientX:420,clientY:330,button:0})
+        return
+      }
+      for (const [index,[clientX,clientY]] of [[360,260],[420,260],[420,330],[360,330]].entries()) {
+        const event={pointerId:1,clientX,clientY,button:0}
+        if (name === '多边形') {fireEvent.pointerDown(canvas,event);fireEvent.pointerUp(canvas,event)}
+        else if (!index) fireEvent.pointerDown(canvas,event)
+        else fireEvent.pointerMove(canvas,event)
+      }
+      if (name === '多边形') fireEvent.keyDown(document,{key:'Enter'})
+      else fireEvent.pointerUp(canvas,{pointerId:1,clientX:360,clientY:330,button:0})
+    }
+    // The reported sequence: eraser first, then a shape. Empty masks must
+    // remain empty rather than accidentally filling the selected shape.
+    fireEvent.click(screen.getByRole('button',{name:'蒙版橡皮擦'}))
+    fireEvent.click(screen.getByRole('button',{name:`${name}擦除蒙版`}))
+    draw()
+    expect(fill.mock.lastCall![1]).toBe('eraser')
+    const bitmap=fill.mock.contexts.at(-1) as MaskBitmap
+    expect(bitmap.pixels.some(Boolean)).toBe(false)
+    expect(screen.getByRole('button',{name:'撤销'})).toBeDisabled()
+    expect(screen.getByRole('button',{name:'蒙版橡皮擦'})).toHaveAttribute('aria-pressed','true')
+    // Switching the operation preserves the shape, with actual add/erase
+    // pixels following that operation instead of just changing the icon.
+    fireEvent.click(screen.getByRole('button',{name:'蒙版画笔'}))
+    expect(screen.getByRole('button',{name:`${name}补画蒙版`})).toHaveAttribute('aria-pressed','true')
+    draw()
+    const painted=bitmap.pixels.slice()
+    expect(painted.some(Boolean)).toBe(true)
+    fireEvent.click(screen.getByRole('button',{name:'蒙版橡皮擦'}))
+    draw()
+    expect(bitmap.pixels.some(Boolean)).toBe(false)
+    fireEvent.click(screen.getByRole('button',{name:'撤销'}))
+    expect(bitmap.pixels).toEqual(painted)
+    fireEvent.click(screen.getByRole('button',{name:'重做'}))
+    expect(bitmap.pixels.some(Boolean)).toBe(false)
+    fireEvent.click(screen.getByRole('button',{name:'自由画笔'}))
+    expect(useEditorStore.getState().tool).toBe('eraser')
+    expect(useEditorStore.getState().maskOperation).toBe('eraser')
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(4))
+  })
+
+  it('cancels an unfinished polygon when changing add/erase instead of applying a draft in the wrong mode', async () => {
+    const fill=vi.spyOn(MaskBitmap.prototype,'fillPolygon')
+    const {canvas}=await setup()
+    fireEvent.click(screen.getByRole('button',{name:'多边形补画蒙版'}))
+    for (const [clientX,clientY] of [[360,260],[420,260],[420,330]]) {
+      fireEvent.pointerDown(canvas,{pointerId:1,clientX,clientY,button:0})
+      fireEvent.pointerUp(canvas,{pointerId:1,clientX,clientY,button:0})
+    }
+    fireEvent.click(screen.getByRole('button',{name:'蒙版橡皮擦'}))
+    fireEvent.keyDown(document,{key:'Enter'})
+    expect(fill).not.toHaveBeenCalled()
+    expect(screen.getByRole('button',{name:'多边形擦除蒙版'})).toHaveAttribute('aria-pressed','true')
   })
 
   it('shows only mask tools and selects regions without painting', async () => {

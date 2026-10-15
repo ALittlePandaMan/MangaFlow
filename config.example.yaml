@@ -4,24 +4,14 @@ preload: true
 
 stages:
   detection:
-    name: 推荐文字检测（PaddleOCR）
-    provider: paddleocr
+    name: 推荐漫画版面检测（RF-DETR）
+    provider: rfdetr
     device: recommended
     config:
-      language: japan
-      ocr_version: PP-OCRv5
-      box_threshold: 0.45
-      unclip_ratio: 1.8
-      group_text_lines: false
-      bubble_grouping:
-        enabled: true
-        confidence_threshold: 0.25
-        min_bubble_confidence: 0.35
-        min_containment: 0.55
-        min_core_containment: 0.8
-        ambiguity_margin: 0.12
-        max_second_containment: 0.45
-        mask_padding: 3
+      text_threshold: 0.25
+      bubble_threshold: 0.5
+      panel_threshold: 0.5
+      containment_threshold: 0.9
 
   inpainting:
     name: 推荐复杂修复（LaMa）

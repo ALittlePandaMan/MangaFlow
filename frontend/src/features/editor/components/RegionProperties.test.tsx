@@ -1,7 +1,7 @@
 import {fireEvent, render, screen, within} from '@testing-library/react'
 import {beforeEach, describe, expect, it, vi} from 'vitest'
 
-import type {TextRegion} from '../../../types'
+import type {ImagePage, TextRegion} from '../../../types'
 import {useEditorStore} from '../store'
 import {RegionProperties} from './RegionProperties'
 
@@ -55,8 +55,25 @@ function renderProperties(onUpdate = vi.fn()) {
   return onUpdate
 }
 
+const page: ImagePage = {
+  id:'image-1', project_id:'project-1', filename:'page.png', width:1200, height:1800,
+  order_index:0, status:'COMPLETED', current_stage:null, error_message:null, ocr_exempt:false,
+  original_url:'/media/page.png', clean_url:'/media/clean.png', rendered_url:null, text_layer_url:null,
+  created_at:'2026-08-24T00:00:00Z', updated_at:'2026-08-24T00:00:00Z',
+}
+const layerRegions: TextRegion[] = [region,
+  {...region,id:'region-2',region_key:'R002',translated_text:'second translation'},
+  {...region,id:'region-3',region_key:'R003',translated_text:'',source_text:'third source'},
+]
+
+function LayerInspectorHarness({onUpdate,onAction,busyAction}: {onUpdate:ReturnType<typeof vi.fn>;onAction:ReturnType<typeof vi.fn>;busyAction?:string}) {
+  const selectedIds=useEditorStore(state => state.selectedIds)
+  const selectedRegions=layerRegions.filter(item => selectedIds.includes(item.id))
+  return <RegionProperties page={page} regions={layerRegions} selectedRegions={selectedRegions} selectedCount={selectedRegions.length} fontOptions={[]} onUpdate={onUpdate} onAction={onAction} busyAction={busyAction}/>
+}
+
 describe('RegionProperties coordinate rotation', () => {
-  beforeEach(() => useEditorStore.setState({view: 'original'}))
+  beforeEach(() => useEditorStore.setState({view: 'original', selectedIds: [], layers: {original:true, detection:true, clean:false, translated:true, mask:false}}))
 
   it('shows a computed editable font size without mode controls and preserves user adjustments', () => {
     const onUpdate=renderProperties()
@@ -84,13 +101,21 @@ describe('RegionProperties coordinate rotation', () => {
     expect(onUpdate).not.toHaveBeenCalled()
   })
 
-  it('aligns only translated boxes in translated view in one batch',() => {
-    useEditorStore.setState({view:'translated'})
-    const second={...region,id:'region-2',translated_bbox:[40,10,80,40],translated_polygon:[[40,10],[120,10],[120,50],[40,50]]}
-    const onUpdateMany=vi.fn()
-    render(<RegionProperties selectedRegions={[region,second]} selectedCount={2} fontOptions={[]} onUpdate={vi.fn()} onUpdateMany={onUpdateMany} onAction={vi.fn()}/>)
-    fireEvent.click(screen.getByRole('button',{name:'所选文本框靠左'}))
-    expect(onUpdateMany).toHaveBeenCalledWith([{id:second.id,patch:{translated_bbox:region.translated_bbox,translated_polygon:region.translated_polygon}}])
+  it.each(['original','translated'] as const)('omits the batch action panel for multi-selection in %s view without changing selection',view => {
+    useEditorStore.setState({view,selectedIds:['region-1','region-2']})
+    const onUpdate=vi.fn(),onAction=vi.fn()
+    render(<LayerInspectorHarness onUpdate={onUpdate} onAction={onAction}/>)
+    expect(screen.getByText('已选择 2 个区域')).toBeInTheDocument()
+    expect(screen.queryByRole('region',{name:'批量区域操作'})).not.toBeInTheDocument()
+    expect(screen.queryByText(/批量操作/)).not.toBeInTheDocument()
+    expect(screen.queryByRole('button',{name:'所选文本框靠左'})).not.toBeInTheDocument()
+    expect(screen.queryByRole('button',{name:'重新 OCR'})).not.toBeInTheDocument()
+    expect(screen.queryByRole('button',{name:'合并区域'})).not.toBeInTheDocument()
+    expect(screen.queryByRole('button',{name:'删除所选'})).not.toBeInTheDocument()
+    expect(screen.queryByRole('button',{name:'取消选择'})).not.toBeInTheDocument()
+    expect(useEditorStore.getState().selectedIds).toEqual(['region-1','region-2'])
+    expect(onUpdate).not.toHaveBeenCalled()
+    expect(onAction).not.toHaveBeenCalled()
   })
 
   it('does not display the internal OCR confidence', () => {
@@ -99,16 +124,18 @@ describe('RegionProperties coordinate rotation', () => {
     expect(screen.queryByText('99%')).not.toBeInTheDocument()
   })
 
-  it('groups direction with alignment and translated rotation without repair or canvas hints', () => {
+  it('uses the reference typesetting rows while preserving advanced controls', () => {
     const onUpdate = renderProperties()
-    const styles = screen.getByRole('heading', {name: '文字样式'}).closest('section')!
-    const content = screen.getByRole('heading', {name: '文本内容'}).closest('section')!
+    const styles = screen.getByRole('region', {name: '排版设置'})
     const direction = within(styles).getByRole('button', {name: '文字方向'})
     const row = direction.closest('label')!.parentElement!
-
-    expect(within(content).queryByRole('button', {name: '文字方向'})).not.toBeInTheDocument()
-    expect(within(row).getByRole('button', {name: '文字对齐'})).toBeInTheDocument()
-    expect(within(row).getByRole('textbox', {name: '译文旋转角度'})).toBeInTheDocument()
+    expect(row).toHaveClass('inspector-alignment-row')
+    expect(within(row).getByRole('button', {name: '文字左对齐'})).toBeInTheDocument()
+    expect(within(row).getByRole('button', {name: '文字居中'})).toHaveAttribute('aria-pressed', 'true')
+    expect(within(row).getByRole('button', {name: '文字右对齐'})).toBeInTheDocument()
+    expect(within(styles).getByRole('button', {name: '字体'}).closest('label')!.parentElement).toHaveClass('inspector-font-row')
+    expect(within(styles).getByRole('textbox', {name: '字号'}).closest('label')!.parentElement).toHaveClass('inspector-size-row')
+    expect(within(styles).getByRole('textbox', {name: '描边宽度'}).closest('label')!.parentElement).toHaveClass('inspector-stroke-row')
     expect(screen.queryByText(/背景修复/)).not.toBeInTheDocument()
     expect(screen.queryByText(/画布像素/)).not.toBeInTheDocument()
     expect(screen.queryByText(/方向键微调/)).not.toBeInTheDocument()
@@ -116,6 +143,10 @@ describe('RegionProperties coordinate rotation', () => {
     fireEvent.click(direction)
     fireEvent.click(screen.getByRole('option', {name: '竖排'}))
     expect(onUpdate).toHaveBeenCalledWith(region.id, {orientation: 'vertical'})
+    expect(screen.queryByText('更多排版')).not.toBeInTheDocument()
+    expect(within(styles).getByRole('textbox', {name:'行距'})).toBeVisible()
+    expect(within(styles).getByRole('textbox', {name:'字距'})).toBeVisible()
+    expect(within(styles).getByRole('textbox', {name:'译文旋转角度'})).toBeInTheDocument()
   })
 
   it('warns that changing the source frame requires OCR rather than implying repair recognizes text', () => {
@@ -125,10 +156,15 @@ describe('RegionProperties coordinate rotation', () => {
     expect(screen.getByRole('note')).toHaveTextContent('修复只同步框的位置，不会重新识字')
   })
 
-  it('uses the same 48px header height as the page list', () => {
+  it('expands the selected text inside its list row below the typesetting section', () => {
     renderProperties()
-
-    expect(screen.getByText(region.region_key).closest('section')).toHaveClass('h-12')
+    expect(screen.getByRole('heading', {name:'排版'})).toHaveClass('inspector-section-heading')
+    expect(screen.getByRole('heading', {name:/图层/})).toHaveClass('inspector-layer-heading')
+    const selected = screen.getByRole('button', {name:'选择 R001：translated'}).closest('article')!
+    expect(selected).toHaveClass('is-selected')
+    expect(within(selected).getByRole('textbox', {name:'原文'})).toHaveValue('source')
+    expect(within(selected).getByRole('textbox', {name:'译文'})).toHaveValue('translated')
+    expect(within(selected).getByRole('slider', {name:'译文不透明度'})).toHaveValue('100')
   })
 
   it('shows color swatches without inline hex text and still updates both colors', () => {
@@ -177,5 +213,90 @@ describe('RegionProperties coordinate rotation', () => {
     expect(patch.rotation).toBe(13)
     expect(patch.translated_polygon).not.toEqual(region.translated_polygon)
     expect(patch.translated_bbox).toHaveLength(4)
+  })
+
+  it('shows all text rows without a selection and expands only the clicked row', () => {
+    render(<LayerInspectorHarness onUpdate={vi.fn()} onAction={vi.fn()}/>)
+    expect(screen.getByRole('button',{name:'字体'})).toBeDisabled()
+    expect(screen.getAllByRole('button',{name:/^选择 R00/})).toHaveLength(3)
+    expect(screen.queryByRole('textbox',{name:'原文'})).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button',{name:'选择 R002：second translation'}))
+    expect(useEditorStore.getState().selectedIds).toEqual(['region-2'])
+    expect(screen.getByRole('textbox',{name:'译文'})).toHaveValue('second translation')
+    expect(screen.getByRole('button',{name:'字体'})).toBeEnabled()
+    fireEvent.click(screen.getByRole('button',{name:'选择 R003：third source'}))
+    expect(screen.getByRole('textbox',{name:'原文'})).toHaveValue('third source')
+    expect(screen.getAllByRole('textbox',{name:'译文'})).toHaveLength(1)
+  })
+
+  it('supports range and additive selection from the text list without the removed batch panel', () => {
+    render(<LayerInspectorHarness onUpdate={vi.fn()} onAction={vi.fn()}/>)
+    fireEvent.click(screen.getByRole('button',{name:'选择 R001：translated'}))
+    fireEvent.click(screen.getByRole('button',{name:'选择 R003：third source'}),{shiftKey:true})
+    expect(useEditorStore.getState().selectedIds).toEqual(['region-1','region-2','region-3'])
+    expect(screen.getByText('已选择 3 个区域')).toBeInTheDocument()
+    expect(screen.queryByRole('textbox',{name:'译文'})).not.toBeInTheDocument()
+    expect(screen.queryByRole('region',{name:'批量区域操作'})).not.toBeInTheDocument()
+    expect(screen.getByRole('button',{name:'所选文字左对齐'})).toBeEnabled()
+    fireEvent.click(screen.getByRole('button',{name:'选择 R002：second translation'}),{ctrlKey:true})
+    expect(useEditorStore.getState().selectedIds).toEqual(['region-1','region-3'])
+    fireEvent.click(screen.getByRole('button',{name:'选择 R003：third source'}),{metaKey:true})
+    expect(useEditorStore.getState().selectedIds).toEqual(['region-1'])
+    expect(screen.getByRole('textbox',{name:'译文'})).toHaveValue('translated')
+  })
+
+  it('targets the row eye independently and keeps opacity and text edits on the selected region', () => {
+    const onUpdate=vi.fn(), onAction=vi.fn()
+    render(<LayerInspectorHarness onUpdate={onUpdate} onAction={onAction}/>)
+    fireEvent.click(screen.getByRole('button',{name:'选择 R001：translated'}))
+    fireEvent.click(screen.getByRole('button',{name:'R002 隐藏译文'}))
+    expect(onUpdate).toHaveBeenLastCalledWith('region-2',{visible:false})
+    expect(useEditorStore.getState().selectedIds).toEqual(['region-1'])
+    fireEvent.change(screen.getByRole('slider',{name:'译文不透明度'}),{target:{value:'35'}})
+    expect(onUpdate).toHaveBeenLastCalledWith('region-1',{opacity:.35})
+    fireEvent.change(screen.getByRole('textbox',{name:'译文'}),{target:{value:'new translation'}})
+    expect(onUpdate).toHaveBeenLastCalledWith('region-1',{translated_text:'new translation'})
+    fireEvent.click(screen.getByRole('button',{name:'删除当前区域'}))
+    expect(onAction).toHaveBeenCalledWith('delete')
+  })
+
+  it('offers a default-off read-only Mask layer instead of cleanup and original rows', () => {
+    const onUpdate=vi.fn()
+    render(<LayerInspectorHarness onUpdate={onUpdate} onAction={vi.fn()}/>)
+    fireEvent.click(screen.getByRole('button',{name:'隐藏文本组'}))
+    expect(useEditorStore.getState().layers.translated).toBe(false)
+    expect(screen.queryByText('修复背景')).not.toBeInTheDocument()
+    expect(screen.queryByText('原始图稿')).not.toBeInTheDocument()
+    const mask=screen.getByRole('button',{name:'显示 Mask 图层'})
+    expect(mask).toHaveAttribute('aria-pressed','false')
+    fireEvent.click(mask)
+    expect(useEditorStore.getState().layers.mask).toBe(true)
+    expect(screen.getByRole('button',{name:'隐藏 Mask 图层'})).toHaveAttribute('aria-pressed','true')
+    fireEvent.click(screen.getByRole('button',{name:'隐藏 Mask 图层'}))
+    expect(useEditorStore.getState().layers.mask).toBe(false)
+    expect(screen.queryByRole('button',{name:/原图/})).not.toBeInTheDocument()
+    expect(onUpdate).not.toHaveBeenCalled()
+  })
+
+  it('sorts text rows naturally by name without mutating reading order, and range-selects in that display order', () => {
+    const items=[{...region,id:'ten',region_key:'R010',reading_order:1},{...region,id:'two',region_key:'R002',reading_order:3},{...region,id:'one',region_key:'R001',reading_order:2}]
+    render(<RegionProperties page={page} regions={items} selectedRegions={[]} selectedCount={0} fontOptions={[]} onUpdate={vi.fn()} onAction={vi.fn()}/>)
+    const buttons=screen.getAllByRole('button',{name:/^选择 R/})
+    expect(buttons.map(button => button.getAttribute('aria-label'))).toEqual(['选择 R001：translated','选择 R002：translated','选择 R010：translated'])
+    expect(items.map(item => item.id)).toEqual(['ten','two','one'])
+    expect(items.map(item => item.reading_order)).toEqual([1,3,2])
+    fireEvent.click(buttons[0]);fireEvent.click(buttons[2],{shiftKey:true})
+    expect(useEditorStore.getState().selectedIds).toEqual(['one','two','ten'])
+  })
+
+  it('disables edits and list selection during an exclusive processing operation', () => {
+    const onUpdate=vi.fn()
+    render(<LayerInspectorHarness onUpdate={onUpdate} onAction={vi.fn()} busyAction="ocr"/>)
+    expect(screen.getByRole('button',{name:'选择 R002：second translation'})).toBeDisabled()
+    expect(screen.getByRole('button',{name:'R002 隐藏译文'})).toBeDisabled()
+    expect(screen.getByRole('button',{name:'隐藏文本组'})).toBeDisabled()
+    fireEvent.click(screen.getByRole('button',{name:'R002 隐藏译文'}))
+    expect(onUpdate).not.toHaveBeenCalled()
+    expect(useEditorStore.getState().selectedIds).toEqual([])
   })
 })

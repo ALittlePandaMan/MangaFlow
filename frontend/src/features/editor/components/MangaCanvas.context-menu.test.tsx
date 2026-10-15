@@ -30,7 +30,7 @@ function rightClick(x=400,y=350) {
 describe('canvas context-menu scopes', () => {
   beforeAll(() => vi.stubGlobal('ResizeObserver',class {observe() {} disconnect() {}}))
   afterAll(() => vi.unstubAllGlobals())
-  beforeEach(() => useEditorStore.setState({view:'original',tool:'select',zoom:1,selectedIds:[],layers:{original:true,detection:true,clean:false,translated:false}}))
+  beforeEach(() => useEditorStore.setState({view:'original',tool:'select',zoom:1,selectedIds:[],layers:{original:true,detection:true,clean:false,translated:false,mask:false}}))
   it('opens the page menu for blank image space and surrounding canvas', () => {
     const props = callbacks()
     render(<MangaCanvas {...props}/>)

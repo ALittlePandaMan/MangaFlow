@@ -7,7 +7,7 @@ from threading import RLock
 from typing import Any
 
 from app.services.base import Inpainter, OCRProvider, Renderer, TextDetector, Translator
-from app.services.detection import OpenCVTextDetector, PaddleTextDetector
+from app.services.detection import OpenCVTextDetector, RFDetrTextDetector
 from app.services.inpainting import HybridInpainter, OpenCVInpainter, SimpleLaMaInpainter
 from app.services.ocr import (
     CloudMultimodalOCRProvider,
@@ -24,7 +24,7 @@ from app.services.translation import OpenAICompatibleTranslator, PassthroughTran
 class ProviderRegistry:
     """Central provider factory; business services only depend on abstract interfaces."""
 
-    detectors: dict[str, type[TextDetector]] = {"opencv-fallback": OpenCVTextDetector, "paddleocr": PaddleTextDetector}
+    detectors: dict[str, type[TextDetector]] = {"opencv-fallback": OpenCVTextDetector, "rfdetr": RFDetrTextDetector}
     ocr: dict[str, type[OCRProvider]] = {
         "review-fallback": NullOCRProvider,
         "manga-ocr": MangaOCRProvider,
@@ -53,7 +53,6 @@ class ProviderRegistry:
     }
 
     dependencies = {
-        ("detection", "paddleocr"): "paddleocr",
         ("ocr", "paddleocr"): "paddleocr",
         ("ocr", "manga-ocr"): "manga_ocr",
         ("ocr", "tesseract"): "pytesseract",
@@ -63,6 +62,7 @@ class ProviderRegistry:
 
     def __init__(self) -> None:
         self._instances: dict[tuple[str, str, str], Any] = {}
+        self._layout_workers: dict[tuple[str, str], Any] = {}
         self._lock = RLock()
 
     def create(self, kind: str, provider: str | None = None, config: dict[str, Any] | None = None) -> Any:
@@ -86,6 +86,13 @@ class ProviderRegistry:
             instance = self._instances.get(key)
             if instance is None:
                 instance = provider_class(config)
+                if kind == "detection" and name == "rfdetr":
+                    from app.services.detection.classification import classifier_python
+                    worker = instance._text_classifier
+                    worker_key = (worker.device, str(classifier_python(worker.options)))
+                    # Threshold/filter changes are CPU postprocessing settings,
+                    # not a reason to duplicate RF-DETR weights in VRAM.
+                    instance._text_classifier = self._layout_workers.setdefault(worker_key, worker)
                 self._instances[key] = instance
             return instance
 
@@ -94,8 +101,13 @@ class ProviderRegistry:
             for instance in self._instances.values():
                 instance.unload()
             self._instances.clear()
+            self._layout_workers.clear()
 
     def is_installed(self, kind: str, provider: str) -> bool:
+        if (kind, provider) == ("detection", "rfdetr"):
+            from app.core.config import get_settings
+            from app.services.detection.classification import MODEL_RELATIVE_PATH, classifier_python
+            return classifier_python({}).is_file() and (get_settings().model_dir / MODEL_RELATIVE_PATH).is_file()
         dependency = self.dependencies.get((kind, provider))
         return dependency is None or importlib.util.find_spec(dependency) is not None
 

@@ -74,9 +74,10 @@ export class MaskBitmap {
     }
   }
 
-  fillPolygon(points: MaskPoint[]) {
+  fillPolygon(points: MaskPoint[], tool: MaskTool = 'brush') {
     if (points.length < 3 || points.some(point => !Number.isFinite(point.x) || !Number.isFinite(point.y))) return
-    // Scanline fill: keep polygon/rectangle/lasso additions in original pixels.
+    // The shape and operation are independent: all shapes can add or erase.
+    const value = tool === 'eraser' ? 0 : 255
     const top = Math.max(0, Math.floor(Math.min(...points.map(point => point.y))))
     const bottom = Math.min(this.height - 1, Math.ceil(Math.max(...points.map(point => point.y))))
     for (let y = top; y <= bottom; y++) {
@@ -88,7 +89,7 @@ export class MaskBitmap {
       crossings.sort((a,b) => a-b)
       for (let i = 0; i + 1 < crossings.length; i += 2) {
         const left = Math.min(this.width, Math.max(0, Math.ceil(crossings[i] - .5))), right = Math.max(0, Math.min(this.width, Math.ceil(crossings[i+1] - .5)))
-        for (let x=left;x<right;x++) this.write(x,y,255)
+        for (let x=left;x<right;x++) this.write(x,y,value)
       }
     }
   }

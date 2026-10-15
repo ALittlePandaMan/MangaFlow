@@ -1,6 +1,6 @@
 import {RegionLabel} from './RegionLabel'
 import Konva from 'konva'
-import { ChevronDown, Eraser, Languages, Layers3, ScanText, TextCursorInput } from 'lucide-react'
+import { Eraser, Languages, ScanText, TextCursorInput } from 'lucide-react'
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Circle, Group, Image as KonvaImage, Layer, Line, Rect, Stage, Text } from 'react-konva'
 import type { ImagePage, TextRegion } from '../../../types'
@@ -10,6 +10,8 @@ import {formatShortcut, shortcutToAria, useShortcutStore} from '../../shortcuts/
 import { useEditorStore } from '../store'
 import { RegionPolygonEditor } from './RegionPolygonEditor'
 import { useImage } from '../hooks/useImage'
+import {useMaskOverlay} from '../hooks/useMaskOverlay'
+import {MASK_OVERLAY_OPACITY} from '../lib/maskOverlay'
 import {useCanvasTouch} from '../hooks/useCanvasTouch'
 import {canvasPalette, polygonDraftStyle} from '../lib/canvasPalette'
 import {shapePreviewRegion} from '../lib/shapeText'
@@ -111,14 +113,7 @@ function MangaCanvasComponent({ page, regions, onCreate, onUpdate, onUpdateMany,
   const [drawing, setDrawing] = useState(false)
   const [touchNavigating, setTouchNavigating] = useState(false)
   const [middlePanningActive, setMiddlePanningActive] = useState(false)
-  const [layersCollapsed, setLayersCollapsed] = useState(() => {
-    try { return localStorage.getItem('mangaflow.layers-collapsed.v1') !== 'false' } catch { return true }
-  })
   const [hoveredRegionId, setHoveredRegionId] = useState<string | null>(null)
-  const [checkerboard, setCheckerboard] = useState(false)
-  useEffect(() => {
-    try { localStorage.setItem('mangaflow.layers-collapsed.v1', String(layersCollapsed)) } catch { /* Storage may be disabled. */ }
-  }, [layersCollapsed])
   const [contextMenu, setContextMenu] = useState<{x: number, y: number} | null>(null)
   const [marquee, setMarquee] = useState<MarqueeSelection | null>(null)
   const [translatedGeometryPreview, setTranslatedGeometryPreview] = useState<TranslatedGeometryPreview | null>(null)
@@ -141,13 +136,13 @@ function MangaCanvasComponent({ page, regions, onCreate, onUpdate, onUpdateMany,
   const select = useEditorStore(state => state.select)
   const selectMany = useEditorStore(state => state.selectMany)
   const layers = useEditorStore(state => state.layers)
-  const toggleLayer = useEditorStore(state => state.toggleLayer)
   const comparison = view === 'comparison'
   const cleanSource = page.clean_url || page.original_url
   const originalState = useImage(comparison || layers.original ? page.original_url : null)
   const cleanState = useImage(comparison || layers.clean ? cleanSource : null)
   const original = originalState.image
   const clean = cleanState.image
+  const maskOverlay=useMaskOverlay(page,regions,layers.mask)
   const shortcuts = useShortcutStore(state => state.shortcuts)
   const currentView = useRef<ViewTransform>({zoom, pan})
   const targetView = useRef<ViewTransform>({zoom, pan})
@@ -660,7 +655,7 @@ function MangaCanvasComponent({ page, regions, onCreate, onUpdate, onUpdateMany,
             </Group>
   }
 
-  return <div className={cn('relative size-full overflow-hidden touch-none', checkerboard && 'workspace-checkerboard', tool === 'pan' && !middlePanningActive && 'cursor-grab [&_canvas]:!cursor-grab', middlePanningActive && 'cursor-grabbing [&_canvas]:!cursor-grabbing', (marquee || tool === 'polygon') && 'cursor-crosshair [&_canvas]:!cursor-crosshair')} ref={containerRef} onAuxClick={event => event.preventDefault()} onContextMenu={event => {
+  return <div className={cn('relative size-full overflow-hidden touch-none', tool === 'pan' && !middlePanningActive && 'cursor-grab [&_canvas]:!cursor-grab', middlePanningActive && 'cursor-grabbing [&_canvas]:!cursor-grabbing', (marquee || tool === 'polygon') && 'cursor-crosshair [&_canvas]:!cursor-crosshair')} ref={containerRef} onAuxClick={event => event.preventDefault()} onContextMenu={event => {
     if (event.defaultPrevented || runningAction || (event.target as Element).closest('button, input, [role="menu"]')) return
     event.preventDefault(); setContextMenu(null); onPageContextMenu?.({x:event.clientX,y:event.clientY})
   }}>
@@ -684,10 +679,12 @@ function MangaCanvasComponent({ page, regions, onCreate, onUpdate, onUpdateMany,
           <Rect name="canvas-background" width={page.width} height={page.height} fill="#ffffff" shadowColor="#000000" shadowOpacity={.12} shadowBlur={18 / scale} shadowOffsetY={4 / scale} />
           {view === 'comparison' && <>
             <KonvaImage image={original ?? undefined} width={page.width} height={page.height} listening={false}/>
+            {maskOverlay.image && <KonvaImage name="mask-overlay-original" image={maskOverlay.image} width={page.width} height={page.height} opacity={MASK_OVERLAY_OPACITY} listening={false}/>}
             <Rect x={page.width + COMPARISON_GAP} width={page.width} height={page.height} fill="#ffffff" shadowColor="#000000" shadowOpacity={.12} shadowBlur={18 / scale} shadowOffsetY={4 / scale} listening={false}/>
             <Group x={page.width + COMPARISON_GAP} clipX={0} clipY={0} clipWidth={page.width} clipHeight={page.height} listening={false}>
               <KonvaImage image={clean ?? undefined} width={page.width} height={page.height}/>
               <TranslatedPageLayer page={page} regions={translatedRenderRegions} displayScale={scale}/>
+              {maskOverlay.image && <KonvaImage name="mask-overlay-translated" image={maskOverlay.image} width={page.width} height={page.height} opacity={MASK_OVERLAY_OPACITY} listening={false}/>}
             </Group>
             <ComparisonLabel x={12 / scale} scale={1 / scale} text="原图"/>
             <ComparisonLabel x={page.width + COMPARISON_GAP + 12 / scale} scale={1 / scale} text="译文"/>
@@ -697,6 +694,7 @@ function MangaCanvasComponent({ page, regions, onCreate, onUpdate, onUpdateMany,
           {layers.translated && (editingTranslatedGeometry && groupSelectionIds.size > 1
             ? <TranslatedRegions regions={translatedRenderRegions.filter(region => !groupSelectionIds.has(region.id))} displayScale={scale}/>
             : <TranslatedPageLayer page={page} regions={translatedRenderRegions} displayScale={scale}/>)}
+          {view !== 'comparison' && maskOverlay.image && <KonvaImage name="mask-overlay" image={maskOverlay.image} width={page.width} height={page.height} opacity={MASK_OVERLAY_OPACITY} listening={false}/>}
           {layers.detection && interactionRegions.filter(region => !groupSelectionIds.has(region.id)).map(renderInteractionRegion)}
           {groupSelectionIds.size > 1 && <Group name="selected-region-group" draggable onDragStart={beginGroupDrag} onDragMove={moveGroupDrag} onDragEnd={endGroupDrag}>
             {editingTranslatedGeometry && layers.translated && <TranslatedRegions regions={groupSelection} displayScale={scale}/>}
@@ -745,34 +743,13 @@ function MangaCanvasComponent({ page, regions, onCreate, onUpdate, onUpdateMany,
         </Group>
       </Layer>
     </Stage>
+    {(maskOverlay.loading || maskOverlay.error) && <span role={maskOverlay.error ? 'alert' : 'status'} aria-label="Mask 图层加载状态" className="pointer-events-none absolute right-3.5 top-3.5 z-10 max-w-[calc(100%-28px)] rounded-lg border border-line bg-panel/95 px-3 py-2 text-xs text-secondary shadow-soft">{maskOverlay.error || '正在显示 Mask…'}</span>}
     {contextMenu && contextRegionIds.length > 0 && <div ref={contextMenuRef} className="absolute z-[80] w-[178px] rounded-xl border border-line-strong bg-popover p-1 text-secondary shadow-panel backdrop-blur-xl" style={{left: contextMenu.x, top: contextMenu.y}} role="menu" aria-label={contextRegionIds.length > 1 ? `所选 ${contextRegionIds.length} 个区域` : `${contextRegion?.region_key} 区域操作`}>
       <div className="mb-1 flex h-[38px] items-center gap-2 border-b border-line-subtle px-2"><span className="font-mono text-[11px] font-semibold text-accent">{contextRegionIds.length > 1 ? `所选 ${contextRegionIds.length} 个区域` : contextRegion?.region_key}</span><small className="text-[9px] text-muted">{contextRegionIds.length > 1 ? '多选操作' : '区域操作'}</small></div>
       <button className={cn(contextButtonClass, runningAction === 'ocr' && 'bg-accent/10 text-ink')} role="menuitem" disabled={!!runningAction} title={`重新 OCR (${formatShortcut(shortcuts['region.ocr'])})`} aria-keyshortcuts={shortcutToAria(shortcuts['region.ocr'])} onClick={() => runRegionContextAction('ocr')}>{runningAction === 'ocr' ? <ButtonLoading label="OCR 处理中…"/> : <><ScanText size={15}/>重新 OCR</>}</button>
       <button className={cn(contextButtonClass, runningAction === 'translate' && 'bg-accent/10 text-ink')} role="menuitem" disabled={!!runningAction} title={`重新翻译 (${formatShortcut(shortcuts['region.translate'])})`} aria-keyshortcuts={shortcutToAria(shortcuts['region.translate'])} onClick={() => runRegionContextAction('translate')}>{runningAction === 'translate' ? <ButtonLoading label="翻译处理中…"/> : <><Languages size={15}/>重新翻译</>}</button>
       <button className={cn(contextButtonClass, runningAction === 'inpaint' && 'bg-accent/10 text-ink')} role="menuitem" disabled={!!runningAction} title={`重新修复 (${formatShortcut(shortcuts['region.inpaint'])})`} aria-keyshortcuts={shortcutToAria(shortcuts['region.inpaint'])} onClick={() => runRegionContextAction('inpaint')}>{runningAction === 'inpaint' ? <ButtonLoading label="背景修复中…"/> : <><Eraser size={15}/>重新修复</>}</button>
       <button className={cn(contextButtonClass, runningAction === 'render' && 'bg-accent/10 text-ink')} role="menuitem" disabled={!!runningAction} title={`重新排版 (${formatShortcut(shortcuts['region.render'])})`} aria-keyshortcuts={shortcutToAria(shortcuts['region.render'])} onClick={() => runRegionContextAction('render')}>{runningAction === 'render' ? <ButtonLoading label="排版处理中…"/> : <><TextCursorInput size={15}/>重新排版</>}</button>
-    </div>}
-    {view !== 'comparison' && <div
-      className={cn('absolute right-3.5 top-3.5 z-10 select-none text-secondary', layersCollapsed ? 'w-24' : 'w-40')}
-      style={{filter: layersCollapsed ? undefined : 'drop-shadow(var(--shadow-soft))'}}
-      aria-label="画布图层"
-    >
-      <button
-        className={cn('relative z-10 flex h-[36px] min-h-[36px] w-full cursor-pointer items-center justify-start gap-2 border border-line-strong bg-popover px-3 text-xs font-medium leading-none text-secondary outline-none transition-colors hover:bg-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-accent/30 [&>svg:first-child]:text-accent', layersCollapsed ? 'rounded-xl shadow-soft' : 'rounded-t-xl rounded-b-none')}
-        style={{borderBottomColor: layersCollapsed ? 'var(--color-line-strong)' : 'var(--color-line)'}}
-        type="button" aria-expanded={!layersCollapsed} onClick={() => setLayersCollapsed(value => !value)}
-      >
-        <Layers3 className="shrink-0" size={15}/><span className="flex h-full items-center leading-none">图层</span><ChevronDown className={cn('ml-auto text-muted transition-transform duration-200 motion-reduce:transition-none', layersCollapsed && '-rotate-90')} size={15}/>
-      </button>
-      <div
-        className={cn('absolute right-0 top-full w-full overflow-hidden rounded-b-xl border-x border-b border-line-strong bg-popover transition-[clip-path] duration-200 ease-out motion-reduce:transition-none', layersCollapsed && 'pointer-events-none')}
-        style={{clipPath: layersCollapsed ? 'inset(0 0 100% 0)' : 'inset(0 0 0 0)'}}
-        aria-hidden={layersCollapsed}
-      ><div className="flex flex-col gap-0.5 p-1">{Object.entries({...layers, checkerboard}).map(([name, visible]) => <label className="relative flex h-[30px] shrink-0 cursor-pointer items-center gap-2 rounded-lg px-2 text-[11px] leading-none text-secondary transition-colors hover:bg-hover hover:text-ink" key={name}>
-          <input className="peer sr-only" type="checkbox" checked={visible} tabIndex={layersCollapsed ? -1 : 0} onChange={() => name === 'checkerboard' ? setCheckerboard(value => !value) : toggleLayer(name as keyof typeof layers)} />
-          <span aria-hidden="true" className={cn('size-3 shrink-0 rounded-full border border-line-strong transition-colors peer-focus-visible:ring-2 peer-focus-visible:ring-accent/50 peer-focus-visible:ring-offset-2 peer-focus-visible:ring-offset-panel', visible && 'border-accent bg-accent')} />
-          <span className="flex h-full items-center leading-none">{({original:'原始图像',detection:'检测区域',clean:'修复背景',translated:'翻译文字',checkerboard:'透明棋盘格'} as Record<string,string>)[name]}</span>
-        </label>)}</div></div>
     </div>}
     <span className="canvas-touch-hint pointer-events-none absolute bottom-3 left-3 rounded-md bg-panel/90 px-2 py-1 text-[11px] text-muted">双指缩放 / 移动</span>
     <div className="pointer-events-none absolute bottom-3 right-3 min-w-12 rounded-lg border border-line-strong bg-canvas/90 px-2.5 py-1.5 text-center font-mono text-[11px] font-semibold text-ink shadow-soft backdrop-blur-md">{Math.round(zoom * 100)}%</div>

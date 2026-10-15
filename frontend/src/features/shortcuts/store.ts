@@ -65,7 +65,7 @@ export const SHORTCUT_DEFINITIONS: ShortcutDefinition[] = [
 
   {id:'page.previous', group:'page', label:'上一张图片', description:'切换到页面列表中的上一张图片', defaultBinding:'KeyA'},
   {id:'page.next', group:'page', label:'下一张图片', description:'切换到页面列表中的下一张图片', defaultBinding:'KeyD'},
-  {id:'page.workflowOcr', group:'page', label:'当前页重新 OCR', description:'重新识别当前页；旧版区域会先重新检测并按气泡合并', defaultBinding:'Mod+Shift+Digit1'},
+  {id:'page.workflowOcr', group:'page', label:'当前页重新 OCR', description:'重新识别当前页；旧版区域经确认后重新检测并关联气泡', defaultBinding:'Mod+Shift+Digit1'},
   {id:'page.workflowTranslate', group:'page', label:'当前页重新翻译', description:'执行当前页处理流程的翻译阶段', defaultBinding:'Mod+Shift+Digit2'},
   {id:'page.workflowInpaint', group:'page', label:'当前页重新修复', description:'执行当前页处理流程的修复阶段', defaultBinding:'Mod+Shift+Digit3'},
   {id:'page.workflowRender', group:'page', label:'当前页重新排版', description:'执行当前页处理流程的排版阶段', defaultBinding:'Mod+Shift+Digit4'},

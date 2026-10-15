@@ -5,9 +5,6 @@ from types import SimpleNamespace
 import cv2
 import numpy as np
 import pytest
-from app.services.base import DetectionResult
-from app.services.detection.bubbles import BubbleInstance
-from app.services.detection.grouping import _split_visible_compartments
 from app.services.detection.panels import detect_panel_frames, panel_reading_order
 from app.services.inpainting.text_segmentation import ComicTextSegmenter, learned_text_mask, text_probability
 from app.services.inpainting.verification import residual_mask, verify_and_retry
@@ -15,7 +12,6 @@ from app.services.layout.shape import inscribed_text_box
 from app.services.ocr.quality import ocr_review_hints
 from app.services.translation.context import attach_page_image, page_context, page_image_data_url
 from app.services.translation.providers import OpenAICompatibleTranslator
-from app.utils.geometry import bbox_to_polygon
 from PIL import Image
 
 
@@ -148,27 +144,6 @@ def test_panel_detection_and_uncertain_page_fallback():
     assert detect_panel_frames(np.full_like(image, 255)) == []
     regions = [{"bbox": [10, 10, 30, 50]}, {"bbox": [100, 10, 30, 50]}]
     assert panel_reading_order(regions, [[0, 0, 50, 80]]) == ([1, 0], {})
-
-
-def test_curved_divider_splits_but_whitespace_and_isolated_stroke_do_not():
-    shape = (220, 220)
-    mask = np.ones((180, 180), np.uint8)
-    bubble = BubbleInstance(
-        "bubble", [20, 20, 180, 180], 0.99, bbox_to_polygon([20, 20, 180, 180]), mask, (20, 20), shape
-    )
-    boxes = [[40, 65, 30, 100], [145, 65, 30, 100]]
-    group = [(i, DetectionResult(bbox_to_polygon(b), b, 0.95)) for i, b in enumerate(boxes)]
-    image = np.full(shape, 255, np.uint8)
-    curve = np.array([[110, 20], [118, 65], [103, 120], [110, 199]], np.int32)
-    cv2.polylines(image, [curve], False, 0, 3)
-    split = _split_visible_compartments(group, bubble, image)
-    assert split is not None and len(split[0]) == 2
-    assert np.array_equal(split[2][0] | split[2][1], mask)
-    assert not np.any(split[2][0] & split[2][1])
-    image[:] = 255
-    assert _split_visible_compartments(group, bubble, image) is None
-    cv2.line(image, (110, 70), (110, 145), 0, 3)
-    assert _split_visible_compartments(group, bubble, image) is None
 
 
 @pytest.mark.parametrize("kind", ["ellipse", "concave", "slanted"])

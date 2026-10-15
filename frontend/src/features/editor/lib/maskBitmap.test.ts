@@ -50,6 +50,21 @@ describe('mask bitmap editing', () => {
     mask.redo(); expect(mask.dirty).toBe(false)
   })
 
+  it('erases only a shape interior, including partial coverage, with tight reversible patches', () => {
+    const original=new Uint8Array(100).fill(128)
+    const mask=new MaskBitmap(10,10,original)
+    mask.fillPolygon([{x:2,y:2},{x:8,y:2},{x:8,y:8},{x:2,y:8}],'eraser')
+    expect(mask.commit()).toBe(true)
+    expect(mask.pixels[5*10+5]).toBe(0)
+    expect(mask.pixels[5*10+1]).toBe(128)
+    expect(mask.patch()).toMatchObject({x:2,y:2,width:6,height:6})
+    expect(mask.patch().pixels.every(value => value === 0)).toBe(true)
+    mask.undo();expect(mask.pixels).toEqual(original);expect(mask.dirty).toBe(false)
+    mask.redo();expect(mask.pixels[5*10+5]).toBe(0)
+    mask.fillPolygon([{x:-10,y:-10},{x:20,y:-10},{x:20,y:20},{x:-10,y:20}],'eraser')
+    mask.cancel();expect(mask.pixels[0]).toBe(128)
+  })
+
   it('uploads tight stroke patches and keeps late overlapping saves dirty until the latest patch commits', () => {
     const mask=new MaskBitmap(4000,3000)
     mask.paint({x:2000,y:2700},{x:2020,y:2710},12,'brush');mask.commit()

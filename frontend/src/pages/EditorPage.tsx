@@ -26,7 +26,7 @@ import {RegionCommandQueue,type RegionCommand} from '../features/editor/lib/regi
 import {preloadImage} from '../features/editor/hooks/useImage'
 import {useSelectedPageScroll} from '../features/editor/hooks/useSelectedPageScroll'
 import {useEditorHistory} from '../features/editor/hooks/useEditorHistory'
-import {canRunPageWorkflowStage, lockedLegacyOcrRegionCount, pageOcrNeedsDetection, type PageWorkflowStage} from '../features/editor/pageWorkflow'
+import {canRunPageWorkflowStage, pageOcrNeedsDetection, type PageWorkflowStage} from '../features/editor/pageWorkflow'
 import {createPageWorkflowCommands} from '../features/editor/lib/pageWorkflowCommands'
 import { useEditorStore } from '../features/editor/store'
 import {formatShortcut, shortcutForEvent, shortcutToAria, type ShortcutId, useShortcutStore} from '../features/shortcuts/store'
@@ -213,6 +213,7 @@ export function EditorPage() {
   const setTool = useEditorStore(state => state.setTool)
   const setView = useEditorStore(state => state.setView)
   const tool = useEditorStore(state => state.tool)
+  const maskOperation = useEditorStore(state => state.maskOperation)
   const view = useEditorStore(state => state.view)
   const layers = useEditorStore(state => state.layers)
   const shortcuts = useShortcutStore(state => state.shortcuts)
@@ -1069,7 +1070,7 @@ export function EditorPage() {
         if (nextPage) rememberPageEdit(preview,false,nextPage)
         if (currentPageId.current===requestedPageId) {
           if (nextPage) await adoptDecodedPage(nextPage,preview.sequence)
-          setRegionState(regionsRef.current.filter(region=>!idSet.has(region.id)))
+          setRegionState(regionsRef.current.filter(region=>!idSet.has(region.id)).map(region => deleted.region_keys?.[region.id] ? {...region,region_key:deleted.region_keys[region.id]} : region))
           useEditorStore.getState().selectMany(useEditorStore.getState().selectedIds.filter(id=>!idSet.has(id)))
           cacheScene()
         }
@@ -1139,7 +1140,7 @@ export function EditorPage() {
           await flushPendingRegions()
           const mergedResult = await api.regions.merge(selectedIds)
           const merged = mergedResult.region
-          setRegionState([...regionsRef.current.filter(region => !selectedIds.includes(region.id)), merged])
+          setRegionState([...regionsRef.current.filter(region => !selectedIds.includes(region.id)).map(region => mergedResult.region_keys?.[region.id] ? {...region,region_key:mergedResult.region_keys[region.id]} : region), merged])
           select(merged.id)
           void historyRefreshRef.current()
           if (mergedResult.rebuild_task) {
@@ -1623,9 +1624,8 @@ export function EditorPage() {
 
   const headerButtonClass = `${buttonClass} !h-10 !min-h-10 px-3.5 py-0 text-[12px]`
   const workflowRank = page ? pageWorkflowRank(page, regions) : 0
-  const lockedLegacyCount = lockedLegacyOcrRegionCount(regions)
   const workflowButtons: Array<{stage: PageWorkflowStage, shortcutId: ShortcutId, label: string, title: string, icon: typeof ScanText}> = [
-    {stage: 'ocr', shortcutId:'page.workflowOcr', label: '重新 OCR', title: lockedLegacyCount ? `请先解锁 ${lockedLegacyCount} 个旧版自动区域，再重新检测并按气泡合并` : pageOcrNeedsDetection(regions) ? '重新检测当前页文字区域，按气泡合并后执行 OCR' : '重新识别当前页已有文字区域', icon: ScanText},
+    {stage: 'ocr', shortcutId:'page.workflowOcr', label: '重新 OCR', title: pageOcrNeedsDetection(regions) ? '重新检测当前页文字区域并执行 OCR' : '重新识别当前页已有文字区域', icon: ScanText},
     {stage: 'translation', shortcutId:'page.workflowTranslate', label: '重新翻译', title: canRunPageWorkflowStage('translation', workflowRank) ? '使用最新 OCR 原文重新翻译' : '请先完成重新 OCR', icon: Languages},
     {stage: 'inpainting', shortcutId:'page.workflowInpaint', label: '重新修复', title: canRunPageWorkflowStage('inpainting', workflowRank) ? '刷新自动蒙版（保留手工蒙版）、修复背景并自动重新排版' : '请先完成重新 OCR', icon: Eraser},
     {stage: 'rendering', shortcutId:'page.workflowRender', label: '重新排版', title: canRunPageWorkflowStage('rendering', workflowRank) ? '使用当前译文和样式重新排版' : '请先依次完成 OCR、翻译和修复', icon: TextCursorInput},
@@ -1770,7 +1770,7 @@ export function EditorPage() {
       </aside>} canvas={
       <main className="relative min-h-0 min-w-0 workspace-background">
         {page && !maskSession && <ClassificationStatus summary={page.text_classification} busy={editorBusy} onRetry={() => void retryClassification()}/>}
-        {maskSession ? maskSession.region ? <MaskEditor ref={maskEditorRef} prepared={maskSession.prepared} preferences={maskPreferences} controlsTarget={maskControlsTarget} key={`${maskSession.page.id}:${maskSession.region.id}:${maskSession.version || 0}`} page={maskSession.page} region={maskSession.region} regions={maskSession.regions} tool={tool} disabled={blockingBusy || switchingPage || openingMask} onToolChange={setTool} onSave={saveMask} onStateChange={setMaskState} onHistoryStep={syncMaskHistory} onHistoryBoundary={direction => void applyHistory(direction)} onSelectRegion={id => void selectMaskRegion(id)}/>
+        {maskSession ? maskSession.region ? <MaskEditor ref={maskEditorRef} prepared={maskSession.prepared} preferences={maskPreferences} controlsTarget={maskControlsTarget} key={`${maskSession.page.id}:${maskSession.region.id}:${maskSession.version || 0}`} page={maskSession.page} region={maskSession.region} regions={maskSession.regions} tool={tool} operation={maskOperation} disabled={blockingBusy || switchingPage || openingMask} onToolChange={setTool} onSave={saveMask} onStateChange={setMaskState} onHistoryStep={syncMaskHistory} onHistoryBoundary={direction => void applyHistory(direction)} onSelectRegion={id => void selectMaskRegion(id)}/>
           : <div className="grid h-full place-items-center p-6 text-sm text-muted">当前页暂无文字区域，请切回原图识别或创建区域后编辑蒙版。</div>
           : page ? <MangaCanvas page={page} regions={regions} onCreate={createRegion} onUpdate={(id,patch) => updateRegion(id,patch,true)}
             onUpdateMany={updateManyRegions} onRegionAction={(ids, name, options) => {void action(name, options, ids)}} onPageContextMenu={openCanvasPageMenu}
@@ -1778,7 +1778,7 @@ export function EditorPage() {
           : <div className="flex h-full flex-col items-center justify-center text-muted"><ImagePlus size={36}/><h3 className="mb-1 mt-3 text-base text-secondary">导入漫画页面</h3><p className="mb-4 mt-0 text-xs">支持 JPG、PNG 和 WebP，可一次选择多张。</p><button className={`${primaryButtonClass} !min-h-[34px]`} disabled={editorBusy} onClick={openImagePicker}>选择图片</button></div>}
         {!maskSession && <CanvasZoomControls disabled={editorBusy}/>}
       </main>} properties={
-      maskSession ? <div ref={setMaskControlsTarget} className="mask-inspector-host"/> : <RegionProperties region={selectedIds.length === 1 ? regions.find(region => region.id === selectedIds[0]) : undefined} selectedRegions={regions.filter(region => selectedIds.includes(region.id))} selectedCount={selectedIds.length} fontOptions={[...DEFAULT_FONT_FAMILIES.map(font => font.name), ...fontResources.map(font => font.name)]} busyAction={historyDirection ? 'history' : runningRegionAction} onUpdate={updateRegion} onUpdateMany={changes => {void updateManyRegions(changes).catch(() => undefined)}} onAction={action}/>}/>}
+      maskSession ? <div ref={setMaskControlsTarget} className="mask-inspector-host"/> : <RegionProperties page={page} regions={regions} region={selectedIds.length === 1 ? regions.find(region => region.id === selectedIds[0]) : undefined} selectedRegions={regions.filter(region => selectedIds.includes(region.id))} selectedCount={selectedIds.length} fontOptions={[...DEFAULT_FONT_FAMILIES.map(font => font.name), ...fontResources.map(font => font.name)]} busyAction={editorBusy ? historyDirection ? 'history' : runningRegionAction || 'busy' : null} onUpdate={updateRegion} onUpdateMany={changes => {void updateManyRegions(changes).catch(() => undefined)}} onAction={action}/>}/>}
     {pageContextMenu && createPortal(<div ref={pageContextMenuRef} className="page-context-menu fixed z-[110] w-[224px] max-w-[calc(100vw-16px)] max-h-[calc(100dvh-16px)] overflow-y-auto rounded-xl border border-line-strong bg-popover p-1 text-secondary shadow-dialog backdrop-blur-xl" style={{left: pageContextMenu.x, top: pageContextMenu.y}} role="menu" aria-label={pageContextMenu.source === 'canvas' ? '单页操作' : '图片操作'}>
       <div className="flex min-h-9 flex-col justify-center gap-1 border-b border-line-subtle px-3 py-2">
         {pageContextMenu.source === 'canvas' && <strong className="text-[12px] text-ink">单页操作 <span className="ml-1 text-[10px] font-normal text-muted">本页全部区域</span></strong>}

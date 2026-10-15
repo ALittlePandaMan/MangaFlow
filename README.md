@@ -6,7 +6,7 @@
 
 MangaFlow 是一个面向日本漫画的非破坏式 AI 翻译与嵌字工作台。它把文字检测、OCR、上下文翻译、文字分割、背景修复、横/竖排版、人工精修和批量导出串成可恢复流水线。原图始终只读，Mask、净图、透明文字层和最终译图分别保存。
 
-当前仓库提供完整可运行的本地工作流。Docker 镜像已安装 PaddleOCR/PaddlePaddle 与 MangaOCR，默认使用 PaddleOCR 检测、MangaOCR 识别日文漫画。首次执行缺少配置的阶段时会自动创建推荐默认配置并下载所需权重。翻译在未配置 LLM 时只透传原文并标记复核，不会伪装成翻译结果。
+当前仓库提供完整可运行的本地工作流。Docker 镜像提供 RF-DETR 独立运行环境与 MangaOCR，默认用 RF-DETR 统一检测文字、气泡和分镜，用 MangaOCR 识别日文漫画。RF-DETR 权重需按[版面检测说明](docs/text-classification.md)显式安装；其他本地模型首次加载时下载所需权重。翻译在未配置 LLM 时只透传原文并标记复核，不会伪装成翻译结果。
 
 > 当前版本定位为可信本机或受控局域网工具，没有用户登录和公网级权限隔离，请勿直接暴露到互联网。
 
@@ -39,16 +39,16 @@ flowchart LR
 ## 已实现功能
 
 - Project、批量图片上传、页序、缩略图导航和非破坏式文件存储。
-- 稳定 `TextRegion` ID 与 `R001` 区域键；polygon、bbox、OCR、翻译、样式、Mask、锁定、复核原因和版面结果贯穿所有阶段。
+- 稳定 `TextRegion` ID，`R001` 等显示名称在删除或合并后连续编号；polygon、bbox、OCR、翻译、样式、Mask、锁定、复核原因和版面结果贯穿所有阶段。
 - 页级和区域级 Detection / OCR / Translation / Inpainting / Rendering API；Pipeline 可从任意阶段继续。
-- OpenCV 文本候选检测、可选 PaddleOCR polygon 检测、旋转/多边形区域、日漫右到左阅读顺序，以及 MangaOCR/PaddleOCR/Tesseract OCR 适配器；检测行默认保持独立，不强制合并成超出气泡的大框。
+- RF-DETR 统一输出文字、拟声词、气泡与分镜，按像素包含率关联文字和气泡，并按分镜 → 气泡 → 文字遍历阅读顺序；独立文字实例不强制合并。另有轻量 OpenCV 检测与 MangaOCR/PaddleOCR/Tesseract OCR 适配器。
 - OpenAI-compatible 严格 JSON 翻译，支持 Ollama、vLLM、LM Studio 等兼容端点；检查 ID 遗漏/新增，自动重试。
 - Polygon Mask、画笔/橡皮擦、硬度、撤销/重做、Clear/Dilate/Erode/Blur/Expand。
 - 文本分割 Mask 只修改文字像素附近；背景修复统一交给 LaMa，并始终从不可变原图重建，避免整图色偏和重复处理污染。
 - 漫画排版引擎：字形测量、逐字符换行、字号拟合、最小字号和 overflow；中文竖排按右到左列逐字布局，不旋转整段文字，并处理竖排标点和西文旋转。
 - TrueType/OpenType、项目字体上传、按字符字体 fallback、颜色、描边、行距、字距、对齐、旋转与透明度。
 - React/Konva 分层画布：缩放、平移、适屏、多选、拖动、四边形/多边形顶点、旋转、矩形/多边形/套索建区和区域合并。
-- Original / Clean / Translated / Comparison 视图，五类独立图层，原文框与译文框独立几何，当前编辑会话 Undo/Redo。
+- Original / Clean / Translated / Comparison 视图，右侧文本图层与可选 Mask 叠加，原文框与译文框独立几何，当前编辑会话 Undo/Redo。
 - 最终译图、净图和可二次编辑的完整工程导出；未修复页面导出净图时自动回退原图。
 - 云端 API Key 只写入被忽略的 `.env`，列表和响应只返回 `has_api_key`，日志不输出密钥。
 
@@ -116,7 +116,7 @@ cd frontend && npm run dev
 
 开发环境需安装 `backend/requirements/dev.txt`（包含性能监测依赖）；生产环境安装 `base.txt` 和 `execution.txt`。可使用 `scripts/benchmark_execution.py` 在独立数据库与页面副本中对比串行和自动模式，参数见 `--help`。加上 `--ocr`、`--repair` 执行本地模型测试；脚本不调用云端 Provider，保存文本供人工核对，不把旧 OCR 当作准确率标注。
 
-当前可迁移配置位于 `config.yaml`，里面保存文字检测、图像修复、OCR、排版、云端翻译与字体六项活动配置，不包含数据库 ID、运行数据或任何 API Key。在设置页面安装、切换或编辑 Provider 后，后端会自动把当前生效配置原子写回该文件。Docker 后端每次启动都会幂等读取它：已有网页配置保持不变，只补齐缺失阶段；配置中启用 `preload` 后，会自动下载并加载缺失的 PaddleOCR、MangaOCR 和 LaMa 权重。
+当前可迁移配置位于 `config.yaml`，里面保存文字检测、图像修复、OCR、排版、云端翻译与字体六项活动配置，不包含数据库 ID、运行数据或任何 API Key。在设置页面安装、切换或编辑 Provider 后，后端会自动把当前生效配置原子写回该文件。Docker 后端每次启动都会幂等读取它：已有网页配置保持不变，只补齐缺失阶段；废弃的 Paddle 文字检测配置会迁移为 RF-DETR，现有页面不自动重检。配置中启用 `preload` 后会加载本地模型；MangaOCR、PaddleOCR 识字与 LaMa 可以自动下载，RF-DETR 权重需先显式安装。
 
 云端翻译的地址、协议、模型和 Prompt 会写入 `config.yaml`，密钥只写入被 Git 忽略的 `.env`，不会进入 YAML 或 API 响应。`config.example.yaml` 和 `.env.example` 只包含 `example.com`、`example-model` 与空密钥。迁移到另一台电脑时，安全复制源码、`config.yaml`、`.env` 与需要保留的 `data/`，然后执行：
 
@@ -124,9 +124,9 @@ cd frontend && npm run dev
 ./scripts/docker.sh up --build -d
 ```
 
-`models/` 为空时会自动重新下载，复制原有 `models/` 则可直接复用缓存。Compose 健康检查会让前端等待后端完成首次模型准备，避免下载期间过早进入工作台。
+`models/` 为空时需重新安装 RF-DETR 权重，其他模型按需自动下载；复制原有 `models/` 可直接复用缓存。Compose 健康检查会让前端等待后端完成首次模型准备，避免下载期间过早进入工作台。
 
-首次运行某阶段且没有默认配置时，后端仍会自动登记推荐配置。也可以在“设置”页面点击“安装推荐配置”，一次完成配置升级、权重下载和加载验证；CLI 等价命令为：
+首次运行某阶段且没有默认配置时，后端仍会自动登记推荐配置。也可以在“设置”页面点击“安装推荐配置”，完成配置升级及加载验证（RF-DETR 权重需预先安装）；CLI 等价命令为：
 
 ```bash
 ./scripts/docker.sh exec backend python -m app.services.infra.model_provisioning --preload --upgrade-fallbacks
@@ -134,13 +134,13 @@ cd frontend && npm run dev
 
 推荐组合与可替换 Provider：
 
-- Detection：内置 `opencv-fallback`，推荐使用 `paddleocr` polygon 检测；PaddleOCR 会搭配约 11.8 MB 的 YOLO11n ONNX 气泡实例分割模型，只合并可靠归属于同一气泡的文字框。气泡外或归属有歧义的文字保持独立，旧的纯几何 `group_text_lines` 仍默认关闭。
+- Detection：推荐 `rfdetr`（Koharu RF-DETR），一套模型检测文字、拟声词、气泡和分镜；保留 `opencv-fallback` 作为低资源选项。旧 Paddle 检测与 YOLO 气泡链路已移除，PaddleOCR 识字适配器不受影响。
 - OCR：默认 `manga-ocr`；也可选择 `review-fallback`、`tesseract`、`paddleocr`、`cloud-ocr`（专用云端 OCR 通用接口）或 `cloud-multimodal`（多模态大模型识字）。首次加载 MangaOCR 会下载约 400 MB 权重。
 - Translation：`openai-compatible`。填写 Base URL、模型名和 API Key；Ollama 示例地址为 `http://localhost:11434/v1`。
 - Inpainting：Docker 镜像内置 `simple-lama-inpainting`，推荐配置统一使用 `lama` 处理文字区域；`opencv` 仅作为低资源备选。
 - Rendering：`pillow`，支持系统 `.ttf` / `.otf` / `.ttc` / `.otc` 字体集合和项目上传字体；低对比文字会自动补反色描边。
 
-气泡识别权重来自 [`mednasserallah/manga109-segmentation-bubble-onnx`](https://huggingface.co/mednasserallah/manga109-segmentation-bubble-onnx)，运行时按固定 revision 下载到 `models/bubbles/`，并用 SHA-256 校验，不随仓库提交。上游仓库声明 Apache-2.0，但模型说明涉及 Manga109 训练数据；用于商业发布前请另行确认 Manga109 数据权利范围。
+版面检测权重来自 [`mayocream/koharu-layout-rfdetr-seg-2xl-1152`](https://huggingface.co/mayocream/koharu-layout-rfdetr-seg-2xl-1152)，固定 revision 并校验 SHA-256，不随仓库提交。模型涉及 Manga109 衍生训练数据，不应假设代码授权同时覆盖权重和训练数据；商业使用前请核对各自条款。详见[版面检测说明](docs/text-classification.md)。
 
 Docker 默认把 NVIDIA GPU 注入后端，并使用 CUDA 12.6 版 PyTorch/PaddlePaddle。可迁移清单的 `device: recommended` 只在缺失配置首次导入时检测硬件，并在数据库中落成明确的 `cuda:0` 或 `cpu`，Provider 运行期间不使用 `auto`。可用 `.env` 中的 `MANGAFLOW_GPU_DEVICE` 指定 GPU index/UUID，默认为 `all`。
 
@@ -163,7 +163,7 @@ Paddle Provider 会自动将保存的 `cuda:0` 转换为 Paddle 使用的 `gpu:0
 
 识别 Prompt、超时、失败重试和最大输出 Token 数都可配置，Temperature 可以留空使用模型默认值。系统会自动附加 `{"text":"原文"}` 输出约定。拒绝、截断或格式错误不会作为原文写入；识别结果没有可用置信度时，不伪造分数。
 
-此模式仍使用本地文字检测和气泡合并结果，逐框上传裁剪图片（最长边最多 2048 px）并将识别结果写入原文，不直接翻译或重新划分气泡。**图片会发送给配置的服务商，并可能按区域请求产生费用。** 保存配置和启动检查不会上传图片；点击 OCR 后才会请求识别。OCR 与翻译的密钥独立，OCR 使用 `.env` 中的 `MANGAFLOW_OCR_API_KEY`，不会把密钥写入 `config.yaml`。安装此功能不会自动切换现有本地 OCR。
+此模式仍使用本地文字检测和气泡关联结果，逐框上传裁剪图片（最长边最多 2048 px）并将识别结果写入原文，不直接翻译或重新划分气泡。**图片会发送给配置的服务商，并可能按区域请求产生费用。** 保存配置和启动检查不会上传图片；点击 OCR 后才会请求识别。OCR 与翻译的密钥独立，OCR 使用 `.env` 中的 `MANGAFLOW_OCR_API_KEY`，不会把密钥写入 `config.yaml`。安装此功能不会自动切换现有本地 OCR。
 
 ### 可选：云端 OCR（通用接口）
 

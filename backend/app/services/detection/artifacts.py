@@ -11,6 +11,8 @@ import numpy as np
 from app.storage.files import StorageManager
 from PIL import Image
 
+# Minimum confidence for using a stored balloon mask as a repair constraint.
+MIN_TRUSTED_BALLOON_CONFIDENCE = 0.75
 BUBBLE_GEOMETRY_KEY = "bubble_geometry"
 BUBBLE_GEOMETRY_SCHEMA_VERSION = 1
 _SAFE_INSTANCE_ID = re.compile(r"[^A-Za-z0-9._-]+")

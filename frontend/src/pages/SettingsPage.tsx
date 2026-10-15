@@ -5,7 +5,6 @@ import {ExecutionSettings} from '../components/ExecutionSettings'
 import {OCRConcurrencyFields} from '../components/OCRConcurrencyFields'
 import {NumberControl, SelectControl} from '../components/FormControls'
 import { useGlobalDialog } from '../components/GlobalDialog'
-import {TextClassificationFields} from '../components/TextClassificationFields'
 import {ButtonLoading, IndeterminateProgress, SettingsSkeleton, useMinimumLoadingTime} from '../components/LoadingUI'
 import {ShortcutSettings} from '../components/ShortcutSettings'
 import { DEFAULT_FONT_FAMILIES } from '../constants/fonts'
@@ -166,7 +165,7 @@ const RECOMMENDATION_STAGES: Array<{kind: RecommendationKind, label: string, hin
 
 const RECOMMENDATION_GUIDES: Record<RecommendationKind, CandidateGuide[]> = {
   detection: [
-    {provider:'paddleocr', title:'PaddleOCR 文字检测', summary:'高精度日文文本检测，并按气泡实例安全合并同组对白。', pros:['漫画小字与竖排召回率高', '气泡外或归属歧义的文本不合并'], cons:['首次使用需加载模型', '纯 CPU 运行较慢'], requirements:['PaddleOCR / PaddlePaddle', '气泡模型约 11.8 MB，使用 CPU 推理', 'GPU 建议 2 GB+ 显存；CPU 建议 4 GB+ 内存']},
+    {provider:'rfdetr', title:'RF-DETR 漫画版面检测', summary:'统一检测文字、气泡、拟声词和分镜，按像素包含关系关联，不强制合并文本框。', pros:['漫画专用实例分割', '文字和气泡共用同一模型'], cons:['CPU 推理较慢', '密集小字和装饰字仍需检查'], requirements:['隔离 RF-DETR 运行时', 'Koharu 模型权重约 161 MB；建议使用 GPU']},
     {provider:'opencv-fallback', title:'OpenCV 文本检测', summary:'基于阈值和形态学的轻量本地检测。', pros:['启动快且无需模型权重', '低配置 CPU 也能运行'], cons:['复杂背景容易漏检或误检', '竖排、倾斜和艺术字效果较弱'], requirements:['OpenCV', '任意现代 CPU']},
   ],
   inpainting: [
@@ -176,7 +175,7 @@ const RECOMMENDATION_GUIDES: Record<RecommendationKind, CandidateGuide[]> = {
   ],
   ocr: [
     {provider:'manga-ocr', title:'MangaOCR 漫画识别', summary:'专门针对日文漫画训练的 Transformer OCR。', pros:['日文漫画和竖排文本准确率高', '对漫画字体与标点更稳'], cons:['只负责识别，不负责检测', '首次需下载模型且 CPU 较慢'], requirements:['PyTorch / Transformers', '建议 8 GB+ 内存；GPU 建议 2 GB+ 显存']},
-    {provider:'paddleocr', title:'PaddleOCR 文字识别', summary:'通用日文 OCR，可与检测阶段共用 Paddle 运行时。', pros:['通用印刷体表现稳定', '支持批量与 GPU'], cons:['漫画艺术字通常弱于 MangaOCR', 'Paddle 依赖体积较大'], requirements:['PaddleOCR / PaddlePaddle', 'GPU 建议 2 GB+ 显存']},
+    {provider:'paddleocr', title:'PaddleOCR 文字识别', summary:'通用日文 OCR，使用独立的 Paddle 识字运行时。', pros:['通用印刷体表现稳定', '支持批量与 GPU'], cons:['漫画艺术字通常弱于 MangaOCR', 'Paddle 依赖体积较大'], requirements:['PaddleOCR / PaddlePaddle', 'GPU 建议 2 GB+ 显存']},
     {provider:'tesseract', title:'Tesseract OCR', summary:'传统 CPU OCR，适合清晰规则的印刷文字。', pros:['轻量且完全离线', '无需 GPU'], cons:['漫画竖排与艺术字准确率较低', '日文语言包必须存在'], requirements:['Tesseract 与 jpn 语言包', '任意现代 CPU']},
     {provider:'review-fallback', title:'人工审核占位', summary:'不执行真实 OCR，只创建待人工填写的区域。', pros:['无依赖且不会伪造结果'], cons:['无法自动识别文本', '所有区域都需要手工录入'], requirements:['无需模型', '适合诊断或临时占位']},
   ],
@@ -238,7 +237,7 @@ export function RecommendedConfigurationWizard({available, configured, fonts, on
         return fallbackDescriptor?.installed ? fallback : preferredDescriptor ? preferred : fallback
       }
       const nextProviders: Record<RecommendationKind, string> = {
-        detection: pick('detection', 'paddleocr', 'opencv-fallback'),
+        detection: pick('detection', 'rfdetr', 'opencv-fallback'),
         inpainting: pick('inpainting', 'lama', 'opencv'),
         ocr: pick('ocr', 'manga-ocr', 'tesseract'),
         rendering: 'pillow',
@@ -253,7 +252,7 @@ export function RecommendedConfigurationWizard({available, configured, fonts, on
         ocr: nextProviders.ocr === 'tesseract' ? 'cpu' : result.recommendation.provider_devices.ocr || 'cpu',
       }))
       setDeviceReasons({
-        detection: nextProviders.detection === 'paddleocr' ? '设备资源足以运行高精度检测。' : '当前资源更适合轻量 OpenCV 检测。',
+        detection: nextProviders.detection === 'rfdetr' ? '使用统一的漫画版面检测与气泡分割模型。' : '当前资源更适合轻量 OpenCV 检测。',
         inpainting: nextProviders.inpainting === 'lama' ? '设备资源足以运行复杂背景修复。' : '内存或运行时受限，优先保证处理速度。',
         ocr: nextProviders.ocr === 'manga-ocr' ? '设备资源适合漫画专用 OCR。' : '当前资源更适合轻量 CPU OCR。',
         rendering: 'Pillow 使用 CPU 即可稳定完成排版。',
@@ -533,14 +532,11 @@ function ModelForm({available, configured, translation, fixedKind, initial, onCa
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault(); const data = new FormData(event.currentTarget)
     const config: Record<string, unknown> = {...defaults}
-    if (kind === 'detection' && provider === 'paddleocr') {
-      const mode = data.get('classification_mode')
-      const previous = defaults.text_classification
-      config.text_classification = {
-        ...(previous && typeof previous === 'object' ? previous : {}),
-        enabled: mode !== 'off', filter_sfx: mode === 'filter',
-        min_sfx_confidence: Number(data.get('sfx_confidence') || 0.6),
-      }
+    if (kind === 'detection' && provider === 'rfdetr') {
+      // Native layout labels define text vs SFX; legacy classifier overrides
+      // must not change which objects become translatable text regions.
+      delete config.text_classification
+      for (const [name,fallback] of [['text_threshold',0.25],['bubble_threshold',0.5],['panel_threshold',0.5],['containment_threshold',0.9]] as const) config[name]=Number(data.get(name) || fallback)
     }
     for (const key of ['api_protocol','base_url','model','device','batch_size','timeout','retries','temperature','max_tokens','min_font_size','prompt','request_format','image_field','image_encoding','auth_mode','api_key_header','response_text_path','concurrency_mode','max_concurrency','requests_per_minute']) {
       if (!data.has(key)) continue
@@ -582,7 +578,7 @@ function ModelForm({available, configured, translation, fixedKind, initial, onCa
     {kind !== 'translation' && <div className="col-span-full grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 rounded-lg bg-surface p-3"><strong className="text-[11px] text-ink">{providerLabel(kind, provider)}</strong><span className="text-[10px] text-muted">{selected?.description}</span><i className="text-[9px] not-italic text-accent">{selected?.devices.join(' / ')}</i></div>}
     {kind !== 'translation' && kind !== 'rendering' && !cloud && <div className={fieldClass} key={`${kind}-${provider}-device`}><span>运行设备</span><SelectControl name="device" ariaLabel="运行设备" value={device} options={deviceOptions(selected)} onChange={setDevice}/></div>}
     {selected?.supports_batch && kind !== 'translation' && <label className={fieldClass} key={`${kind}-${provider}-batch`}>Batch Size<NumberControl ariaLabel="Batch Size" name="batch_size" min={1} step={1} defaultValue={String(defaults.batch_size ?? '')} placeholder="4"/></label>}
-    {kind === 'detection' && provider === 'paddleocr' && <TextClassificationFields key={`${kind}-${provider}-classification`} config={defaults.text_classification}/>}
+    {kind === 'detection' && provider === 'rfdetr' && <fieldset className="col-span-full grid grid-cols-2 gap-3 rounded-lg border border-line p-3"><legend className="px-1 text-[11px]">统一版面检测</legend>{([['text_threshold','文字检测置信度',0.25],['bubble_threshold','气泡检测置信度',0.5],['panel_threshold','分镜检测置信度',0.5],['containment_threshold','文字气泡包含率',0.9]] as const).map(([name,label,fallback]) => <label key={name} className={fieldClass}>{label}<NumberControl name={name} ariaLabel={label} min={name==='containment_threshold'?0.5:0.2} max={1} step={0.05} defaultValue={String(defaults[name] ?? fallback)}/></label>)}<p className="col-span-full m-0 text-[10px] leading-relaxed text-muted">仅正文进入识别和翻译，拟声词保留在原图中。默认至少 90% 的框内文字像素在气泡内才建立关联；同一气泡内的文字框保持独立。</p></fieldset>}
     {genericOcr && <GenericOCRFields key={`${kind}-${provider}`} defaults={defaults} baseUrl={baseUrl} onBaseUrlChange={setBaseUrl} savedKeyUsable={savedKeyUsable}/>}
     {cloud && !genericOcr && <div className="col-span-full grid grid-cols-2 max-sm:grid-cols-1 gap-3" key={`${kind}-${provider}`}>
       {cloudOcr && <><p className="col-span-full m-0 rounded-lg bg-accent-soft p-3 text-xs leading-relaxed text-accent-soft-ink">多模态大语言模型直接看图识字：按检测框逐个上传裁剪区域，结果写入原文，不改变气泡检测与合并。图片会发送到你配置的服务，可能产生费用；请选择支持图片输入的模型。</p><div className={cn(fieldClass, 'col-span-full')}><span>连接配置</span><SelectControl ariaLabel="连接配置" value={useTranslation ? 'translation' : 'custom'} options={[{value:'translation', label:'使用当前翻译模型', disabled:!canReuseTranslation}, {value:'custom', label:'独立配置视觉模型'}]} onChange={value => {setReuseTranslation(value === 'translation'); invalidateDiscovery()}}/></div>{useTranslation && <p className="col-span-full m-0 break-all rounded-lg border border-line p-3 text-xs leading-relaxed text-secondary">模型：{String(translation?.config.model)}<br/>接口：{String(translation?.config.base_url)}<br/>保存时在后端复制当前连接及密钥；之后两份配置独立。下方识字 Prompt 不会覆盖翻译 Prompt。</p>}</>}
@@ -643,7 +639,7 @@ Requirements:
 6. Return only one valid JSON object whose keys exactly match all supplied Region IDs and whose values are translated strings. Do not use Markdown, code fences, comments, or any text outside the JSON object.`
 
 const PROVIDER_PRESETS: Record<string, {label: string, title: string, config: Record<string, unknown>}> = {
-  'detection:paddleocr': {label: 'PaddleOCR 文字检测', title: '推荐文字检测（PaddleOCR）', config: {device: 'cuda:0', language: 'japan', ocr_version: 'PP-OCRv5', box_threshold: 0.45, unclip_ratio: 1.8, group_text_lines: false, bubble_grouping: {enabled: true, confidence_threshold: 0.25, min_bubble_confidence: 0.35, min_containment: 0.55, min_core_containment: 0.8, ambiguity_margin: 0.12, max_second_containment: 0.45, mask_padding: 3}}},
+  'detection:rfdetr': {label:'RF-DETR 漫画版面检测', title:'推荐漫画版面检测（RF-DETR）', config:{device:'cuda:0',text_threshold:0.25,bubble_threshold:0.5,panel_threshold:0.5,containment_threshold:0.9}},
   'detection:opencv-fallback': {label: 'OpenCV 文本检测', title: '本地 OpenCV 文本检测', config: {device: 'cpu'}},
   'ocr:manga-ocr': {label: 'MangaOCR 漫画识别', title: '推荐漫画识别（MangaOCR）', config: {device: 'cuda:0', model: 'kha-white/manga-ocr-base'}},
   'ocr:cloud-multimodal': {label: '多模态大模型识字', title: '多模态大模型识字', config: {api_protocol: 'auto', timeout: 90, retries: 2, max_tokens: 2048, prompt: DEFAULT_OCR_PROMPT}},
@@ -702,6 +698,6 @@ function translationPrompt(value: unknown): string {
   return !prompt || prompt === LEGACY_TRANSLATION_PROMPT ? DEFAULT_TRANSLATION_PROMPT : prompt
 }
 function preferredProvider(kind: string, choices: ModelDescriptor[]): string {
-  const preferred: Record<string, string> = {detection: 'paddleocr', ocr: 'manga-ocr', translation: 'openai-compatible', inpainting: 'lama', rendering: 'pillow'}
+  const preferred: Record<string, string> = {detection: 'rfdetr', ocr: 'manga-ocr', translation: 'openai-compatible', inpainting: 'lama', rendering: 'pillow'}
   return choices.some(item => item.name === preferred[kind]) ? preferred[kind] : choices[0]?.name || ''
 }

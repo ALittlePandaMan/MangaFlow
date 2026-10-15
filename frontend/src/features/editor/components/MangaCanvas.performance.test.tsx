@@ -38,7 +38,7 @@ describe('dense-page preview work',()=>{
   afterAll(()=>vi.unstubAllGlobals())
   beforeEach(()=>{
     vi.mocked(shapePreviewRegion).mockClear();vi.mocked(currentTextLayer).mockClear()
-    useEditorStore.setState({view:'translated',tool:'select',zoom:1,selectedIds:[],layers:{original:false,detection:true,clean:true,translated:true}})
+    useEditorStore.setState({view:'translated',tool:'select',zoom:1,selectedIds:[],layers:{original:false,detection:true,clean:true,translated:true,mask:false}})
   })
   it('does not redo layout or text-layer validation for unchanged regions on 60 zoom frames',()=>{
     const regions=Array.from({length:100},(_,index)=>region(index))

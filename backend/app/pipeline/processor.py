@@ -26,11 +26,11 @@ from app.services.cloud_budget import request_budget
 from app.services.detection.artifacts import (
     BUBBLE_GEOMETRY_KEY,
     BUBBLE_GEOMETRY_SCHEMA_VERSION,
+    MIN_TRUSTED_BALLOON_CONFIDENCE,
     bubble_geometry_items,
     load_balloon_mask,
     persist_balloon_mask,
 )
-from app.services.detection.grouping import MIN_TRUSTED_BALLOON_CONFIDENCE
 from app.services.detection.panels import detect_panel_frames, panel_reading_order
 from app.services.detection.text_roles import partition_text_roles
 from app.services.execution import execution_runtime
@@ -433,9 +433,16 @@ class PipelineProcessor:
             if (instance_id := _region_balloon_constraint_id(region)) in previous_geometry
         }
         raw = [{"bbox": result.bbox} for result in detected]
-        image = cv2.imread(str(source))
-        panels = detect_panel_frames(image) if image is not None else []
-        order, panel_assignments = panel_reading_order(raw, panels)
+        unified_layout = bool(getattr(getattr(provider, "capabilities", None), "extra", {}).get("layout_instances"))
+        if unified_layout:
+            # RF-DETR already returns Koharu's panel/bubble/text traversal.
+            # Flat column ordering here would interleave sibling dialogues.
+            order, panel_assignments = list(range(len(detected))), {}
+            panels = []
+        else:
+            image = cv2.imread(str(source))
+            panels = detect_panel_frames(image) if image is not None else []
+            order, panel_assignments = panel_reading_order(raw, panels)
         rank = {source_index: position + 1 for position, source_index in enumerate(order)}
         used_keys = {region.region_key for region in preserved}
         next_number = 1
@@ -452,7 +459,7 @@ class PipelineProcessor:
             used_keys.add(key)
             next_number += 1
             detection_metadata = deepcopy(result.metadata)
-            if index in panel_assignments:
+            if not unified_layout and index in panel_assignments:
                 panel_index = panel_assignments[index]
                 detection_metadata["panel"] = {"id": f"panel-{panel_index+1}", "bbox": panels[panel_index], "method": "frame_gutters"}
             if (

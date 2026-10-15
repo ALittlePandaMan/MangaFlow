@@ -8,23 +8,21 @@ from __future__ import annotations
 
 import atexit
 import json
-import logging
 import os
 import queue
 import subprocess
-import time
 from pathlib import Path
 from threading import RLock, Thread
 from typing import Any
 
 from app.core.config import get_settings
-from app.services.detection.text_roles import classification_options
+from app.services.base import ProviderError
+from app.services.detection.layout_protocol import decode_predictions
 
 MODEL_REVISION = "aed55fdb8ca953c6bec33cf6ed6dd52a9b72bfa2"
 MODEL_REPOSITORY = "mayocream/koharu-layout-rfdetr-seg-2xl-1152"
 MODEL_SHA256 = "9bf6d2cbd7793c956d8c857bb1672a396eb7f100eb0682f86830d05e31168efb"
 MODEL_RELATIVE_PATH = "text-classification/koharu-layout-rfdetr-seg-2xl-1152.safetensors"
-logger = logging.getLogger(__name__)
 
 
 def classifier_python(options: dict[str, Any]) -> Path:
@@ -40,13 +38,11 @@ def classifier_python(options: dict[str, Any]) -> Path:
 
 class LayoutTextClassifier:
     def __init__(self, config: dict[str, Any]) -> None:
-        self.options = classification_options(config)
+        self.options = dict(config)
         self.device = str(self.options.get("device", config.get("device", "auto")))
         self._process: subprocess.Popen[str] | None = None
         self._messages: queue.Queue[Any] = queue.Queue()
         self._lock = RLock()
-        self._unavailable: str | None = None
-        self._retry_after = 0.0
         atexit.register(self.close)
 
     def _read_stdout(self, process: subprocess.Popen[str], messages: queue.Queue[Any]) -> None:
@@ -89,61 +85,40 @@ class LayoutTextClassifier:
         if self._receive(120).get("ready") is not True:
             raise RuntimeError("invalid_worker_handshake")
 
-    def annotate(self, image_path: Path, regions: list[Any], *, protected_indices: set[int] | None = None) -> list[Any]:
-        if not regions:
-            return regions
-        with self._lock:
-            if not self.options.get("enabled", True):
-                return self._mark(regions, "disabled", "configuration_disabled")
-            if self._unavailable and time.monotonic() < self._retry_after:
-                return self._mark(regions, "unavailable", self._unavailable)
-            self._unavailable = None
-            try:
-                if self._process is None:
-                    self._start()
-                assert self._process is not None and self._process.stdin is not None
-                request = {
-                    "image_path": str(image_path.resolve()), "polygons": [r.polygon for r in regions],
-                    "protected_indices": sorted(protected_indices or set()),
-                    "filter_sfx": self.options.get("filter_sfx", True),
-                    "min_sfx_confidence": float(self.options["min_sfx_confidence"]),
-                }
-                self._process.stdin.write(json.dumps(request, allow_nan=False) + "\n")
-                self._process.stdin.flush()
-                response = self._receive(90)
-                values = response.get("classifications")
-                if not isinstance(values, list) or len(values) != len(regions) or not all(isinstance(v, dict) for v in values):
-                    raise RuntimeError("invalid_worker_response")
-                for region, value in zip(regions, values, strict=True):
-                    region.metadata = {**region.metadata, "text_classification": {**value, "policy": self.policy(), "model": MODEL_REPOSITORY, "model_revision": MODEL_REVISION}}
-                return regions
-            except Exception as exc:
-                # Do not silently remove dialogue on missing models, OOM or
-                # transport failures. Circuit-break repeated cold starts.
-                self._unavailable = str(exc)[:160]
-                self._retry_after = time.monotonic() + 60
-                logger.warning("Text classification unavailable; retaining all candidates: %s", self._unavailable)
-                self.close()
-                return self._mark(regions, "unavailable", self._unavailable)
-
     def reset(self) -> None:
-        """Explicit recovery, without restarting Paddle or changing page content."""
+        """Restart the layout worker without changing any page content."""
         with self._lock:
             self.close()
-            self._unavailable = None
-            self._retry_after = 0.0
 
-    def policy(self) -> dict[str, Any]:
-        return {
-            "enabled": self.options.get("enabled", True) is not False,
-            "filter_sfx": self.options.get("filter_sfx", True) is not False,
-            "min_sfx_confidence": self.options.get("min_sfx_confidence", 0.6),
-        }
+    def ensure_loaded(self) -> None:
+        with self._lock:
+            try:
+                if self._process is not None and self._process.poll() is not None:
+                    self.close()
+                if self._process is None:
+                    self._start()
+            except Exception:
+                self.close()
+                raise
 
-    def _mark(self, regions: list[Any], status: str, reason: str) -> list[Any]:
-        for region in regions:
-            region.metadata = {**region.metadata, "text_classification": {"version": 1, "label": "uncertain", "status": status, "excluded": False, "reason": reason, "policy": self.policy()}}
-        return regions
+    def detect_layout(self, image_path: Path, *, thresholds: tuple[float, ...] | None = None):
+        """Authoritative detection must fail closed, never return false empty pages.
+
+        The pipeline performs this call before replacing any existing regions.
+        """
+        with self._lock:
+            try:
+                self.ensure_loaded()
+                assert self._process is not None and self._process.stdin is not None
+                request = {"operation": "layout", "image_path": str(image_path.resolve())}
+                if thresholds is not None:
+                    request["thresholds"] = thresholds
+                self._process.stdin.write(json.dumps(request, allow_nan=False) + "\n")
+                self._process.stdin.flush()
+                return decode_predictions(self._receive(90))
+            except Exception as exc:
+                self.close()
+                raise ProviderError(f"RF-DETR 版面检测失败，原有区域保持不变：{exc}") from exc
 
     def close(self) -> None:
         with self._lock:

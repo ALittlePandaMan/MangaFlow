@@ -32,7 +32,7 @@ describe('overlapping region interaction order', () => {
   beforeAll(() => vi.stubGlobal('ResizeObserver', class {observe() {} disconnect() {}}))
   afterAll(() => vi.unstubAllGlobals())
   beforeEach(() => useEditorStore.setState({view: 'original', tool: 'select', zoom: 1, selectedIds: ['R010'],
-    layers: {original: true, detection: true, clean: false, translated: false}}))
+    layers: {original: true, detection: true, clean: false, translated: false, mask:false}}))
 
   it('places the selected editor above later overlapping polygons without changing source order', () => {
     const {container} = render(<MangaCanvas {...props()}/>)

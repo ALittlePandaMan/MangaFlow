@@ -1,17 +1,4 @@
-from app.services.detection.bubbles import BubbleInstance, OnnxBubbleSegmenter
-from app.services.detection.grouping import (
-    assign_text_to_bubbles,
-    group_text_lines,
-    group_text_regions_by_bubbles,
-)
-from app.services.detection.providers import OpenCVTextDetector, PaddleTextDetector
+from app.services.detection.layout import RFDetrTextDetector
+from app.services.detection.providers import OpenCVTextDetector
 
-__all__ = [
-    "BubbleInstance",
-    "OnnxBubbleSegmenter",
-    "OpenCVTextDetector",
-    "PaddleTextDetector",
-    "assign_text_to_bubbles",
-    "group_text_lines",
-    "group_text_regions_by_bubbles",
-]
+__all__ = ["OpenCVTextDetector", "RFDetrTextDetector"]

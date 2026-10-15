@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from typing import Any
+from uuid import uuid4
 
 from app.models import ImagePage, RegionRevision, TextRegion
 from app.schemas.domain import RegionCreate, RegionUpdate
@@ -128,6 +129,36 @@ def next_region_key(db: Session, image_id: str) -> str:
     while f"R{number:03d}" in used:
         number += 1
     return f"R{number:03d}"
+
+
+def renumber_region_keys(db: Session, regions: list[TextRegion]) -> dict[str, str]:
+    """Compact display names, never region IDs, geometry or reading order.
+
+    Preserve the existing numeric naming order (including R1000 and above).
+    Temporary names free the page's unique keys before any are reassigned;
+    otherwise a legacy out-of-order row can collide during a batch flush.
+    The caller records this as part of the deletion/merge history entry.
+    """
+    def order(region: TextRegion) -> tuple[int, int, str]:
+        suffix = region.region_key[1:]
+        if region.region_key.startswith("R") and suffix.isdecimal():
+            return (0, int(suffix), region.id)
+        return (1, region.reading_order, region.id)
+
+    changes = [
+        (region, f"R{index:03d}")
+        for index, region in enumerate(sorted(regions, key=order), start=1)
+        if region.region_key != f"R{index:03d}"
+    ]
+    for region, _ in changes:
+        region.region_key = f"__rn_{uuid4().hex[:16]}"
+    if changes:
+        db.flush()
+    for region, key in changes:
+        region.region_key = key
+    if changes:
+        db.flush()
+    return {region.id: key for region, key in changes}
 
 
 def create_region(db: Session, page: ImagePage, data: RegionCreate) -> TextRegion:

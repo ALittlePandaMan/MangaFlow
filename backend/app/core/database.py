@@ -60,3 +60,7 @@ def initialize_database() -> None:
             connection.execute(
                 text("ALTER TABLE text_regions ADD COLUMN perspective_warp BOOLEAN NOT NULL DEFAULT FALSE")
             )
+    from app.services.infra.detection_migration import migrate_retired_detection_configs
+
+    with SessionLocal() as db:
+        migrate_retired_detection_configs(db)

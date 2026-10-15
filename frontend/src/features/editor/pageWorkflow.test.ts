@@ -1,8 +1,19 @@
 import {describe, expect, it} from 'vitest'
 
-import {buildPageWorkflowRequest, canRunPageWorkflowStage, lockedLegacyOcrRegionCount, pageOcrGroupingUnavailable, pageOcrNeedsDetection, pageWorkflowTargetView} from './pageWorkflow'
+import {buildPageWorkflowRequest, canRunPageWorkflowStage, pageOcrNeedsDetection, pageWorkflowTargetView, unifiedLayoutNeedsDetection} from './pageWorkflow'
 
 describe('page workflow behavior', () => {
+  it('offers an explicit RF-DETR migration once, not destructive redetection on every OCR', () => {
+    const config={text_threshold:0.25,bubble_threshold:0.5,panel_threshold:0.5,containment_threshold:0.9}
+    const current={locked:false,layout_data:{detection:{detector:'rfdetr',layout_version:2,layout_settings:config,balloon_assignment:{status:'unassigned'}}}}
+    expect(pageOcrNeedsDetection([current])).toBe(false)
+    expect(unifiedLayoutNeedsDetection([current],config)).toBe(false)
+    expect(unifiedLayoutNeedsDetection([{...current,layout_data:{detection:{...current.layout_data.detection,layout_version:1}}}],config)).toBe(true)
+    expect(unifiedLayoutNeedsDetection([current],{...config,text_threshold:0.3})).toBe(true)
+    expect(unifiedLayoutNeedsDetection([{locked:false,layout_data:{detection:{balloon_grouping_version:3}}}],config)).toBe(true)
+    expect(unifiedLayoutNeedsDetection([{...current,locked:true}],{text_threshold:0.3})).toBe(false)
+    expect(unifiedLayoutNeedsDetection([{...current,layout_data:{manual:true}}],config)).toBe(false)
+  })
   it('allows translation and background repair immediately after OCR', () => {
     expect(canRunPageWorkflowStage('translation', 1)).toBe(true)
     expect(canRunPageWorkflowStage('inpainting', 1)).toBe(true)
@@ -26,7 +37,7 @@ describe('page workflow behavior', () => {
     })
   })
 
-  it('redetects before OCR when a page needs legacy bubble grouping', () => {
+  it('redetects before OCR when a page needs migration to unified layout', () => {
     expect(buildPageWorkflowRequest('ocr', true)).toEqual({
       start_stage: 'detection',
       end_stage: 'ocr',
@@ -52,17 +63,15 @@ describe('page workflow behavior', () => {
     expect(pageOcrNeedsDetection([{
       locked:false,
       layout_data:{detection:{balloon_grouping_version:3, balloon_assignment:{status:'outside', bubble_id:null}}},
-    }])).toBe(false)
+    }])).toBe(true)
     expect(pageOcrNeedsDetection([{
       locked:false,
       layout_data:{detection:{balloon_assignment:{status:'unavailable', bubble_id:null}}},
     }])).toBe(true)
     expect(pageOcrNeedsDetection([{
       locked:false,
-      layout_data:{detection:{balloon_assignment:{status:'disabled', bubble_id:null}}},
+      layout_data:{detection:{detector:'opencv-fallback', balloon_assignment:{status:'disabled', bubble_id:null}}},
     }])).toBe(false)
-    expect(lockedLegacyOcrRegionCount([{locked:true, layout_data:{detection:{}}}])).toBe(1)
-    expect(lockedLegacyOcrRegionCount([{locked:true, layout_data:{manual:true}}])).toBe(0)
   })
 
   it('offers user-confirmed redetection for old assigned and missed balloons', () => {
@@ -77,21 +86,11 @@ describe('page workflow behavior', () => {
       }}}])).toBe(true)
       expect(pageOcrNeedsDetection([{...old, layout_data:{detection:{
         balloon_grouping_version:3, balloon_assignment:{status},
-      }}}])).toBe(false)
+      }}}])).toBe(true)
       expect(pageOcrNeedsDetection([{...old, locked:true}])).toBe(false)
-      expect(lockedLegacyOcrRegionCount([{...old, locked:true}])).toBe(1)
-      expect(pageOcrNeedsDetection([{...old, layout_data:{...old.layout_data, manual:true}}])).toBe(false)
+        expect(pageOcrNeedsDetection([{...old, layout_data:{...old.layout_data, manual:true}}])).toBe(false)
     }
   })
 
-  it('only reports bubble grouping unavailable from the refreshed assignment metadata', () => {
-    expect(pageOcrGroupingUnavailable([{
-      layout_data:{detection:{balloon_assignment:{status:'unavailable', reason:'model_unavailable'}}},
-    }])).toBe(true)
-    expect(pageOcrGroupingUnavailable([{
-      layout_data:{detection:{balloon_assignment:{status:'assigned', bubble_id:'bubble-1'}}},
-    }])).toBe(false)
-    expect(pageOcrGroupingUnavailable([{layout_data:{detection:{}}}])).toBe(false)
-    expect(pageOcrGroupingUnavailable([{layout_data:{manual:true}}])).toBe(false)
-  })
+
 })

@@ -61,13 +61,13 @@ def test_bootstrap_recommended_configs_without_downloading(client) -> None:
     }
     configured = client.get("/api/models").json()["configured"]
     defaults = {item["kind"]: item["provider"] for item in configured if item["is_default"]}
-    assert defaults["detection"] == "paddleocr"
+    assert defaults["detection"] == "rfdetr"
     assert defaults["ocr"] == "manga-ocr"
     assert defaults["inpainting"] == "lama"
     recommended_detection = next(
         item for item in configured if item["kind"] == "detection" and item["is_default"]
     )
-    assert recommended_detection["config"]["bubble_grouping"]["enabled"] is True
+    assert recommended_detection["config"]["containment_threshold"] == .9
     cloud_translation = next(
         item
         for item in configured

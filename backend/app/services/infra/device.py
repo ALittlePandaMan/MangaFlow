@@ -80,7 +80,7 @@ def device_profile() -> dict[str, Any]:
     has_gpu = torch_cuda or paddle_cuda
     profile = "gpu" if has_gpu else "cpu"
     provider_devices = {
-        "detection": "cuda:0" if paddle_cuda else "cpu",
+        "detection": "cuda:0" if torch_cuda else "cpu",
         "ocr": "cuda:0" if torch_cuda else "cpu",
         "inpainting": "cuda:0" if torch_cuda else "cpu",
         "rendering": "cpu",

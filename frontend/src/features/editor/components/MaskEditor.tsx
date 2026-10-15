@@ -16,6 +16,7 @@ interface Props {
   region: TextRegion
   regions: TextRegion[]
   tool: Tool
+  operation?: MaskTool
   disabled?: boolean
   onToolChange: (tool: Tool) => void
   onSave: (region: TextRegion, blob: Blob, bounds?: MaskBounds) => Promise<TextRegion>
@@ -36,7 +37,7 @@ type Bounds = {left: number, top: number, right: number, bottom: number}
 const POLYGON_CLOSE_DISTANCE = polygonDraftStyle.closeDistance
 
 /** Isolated editing session: pointer movement never re-renders the workbench. */
-export const MaskEditor = forwardRef<MaskEditorHandle, Props>(function MaskEditor({page, region, regions, tool, disabled = false, onToolChange, onSave, onSelectRegion, onStateChange, onHistoryBoundary, onHistoryStep, controlsTarget, preferences, prepared}, ref) {
+export const MaskEditor = forwardRef<MaskEditorHandle, Props>(function MaskEditor({page, region, regions, tool, operation = tool === 'eraser' ? 'eraser' : 'brush', disabled = false, onToolChange, onSave, onSelectRegion, onStateChange, onHistoryBoundary, onHistoryStep, controlsTarget, preferences, prepared}, ref) {
   const viewport = useRef<HTMLDivElement>(null)
   const canvas = useRef<HTMLCanvasElement>(null)
   const source = useRef<HTMLImageElement | null>(null)
@@ -56,7 +57,7 @@ export const MaskEditor = forwardRef<MaskEditorHandle, Props>(function MaskEdito
   const stroke = useRef<{id: number, last: MaskPoint, tool: MaskTool, diameter: number} | null>(null)
   const gesture = useRef<{center: MaskPoint, distance: number, transform: Transform} | null>(null)
   const panning = useRef<{point: MaskPoint, transform: Transform} | null>(null)
-  const shape = useRef<{tool: Tool, points: MaskPoint[]} | null>(null)
+  const shape = useRef<{tool: Tool, operation: MaskTool, points: MaskPoint[]} | null>(null)
   const [showOriginal, setShowOriginal] = useState(() => preferences?.current.showOriginal ?? true)
   const [diameter, setDiameter] = useState(() => preferences?.current.diameter ?? 24)
   const [referenceOpacity, setReferenceOpacity] = useState(() => preferences?.current.referenceOpacity ?? 30)
@@ -245,7 +246,7 @@ export const MaskEditor = forwardRef<MaskEditorHandle, Props>(function MaskEdito
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  useEffect(() => {shape.current = null; schedule()}, [tool])
+  useEffect(() => {actions.current.cancel()}, [tool, operation])
   useEffect(() => {schedule()}, [referenceOpacity, diameter, showOriginal])
   useEffect(() => {
     if (preferences) preferences.current = {referenceOpacity, diameter, showOriginal}
@@ -322,7 +323,7 @@ export const MaskEditor = forwardRef<MaskEditorHandle, Props>(function MaskEdito
   }
   const completeShape = () => {
     if (disabled || !shape.current || (shape.current.tool === 'polygon' && shape.current.points.length < 3) || region.locked || leavingRef.current) return
-    bitmap.current?.fillPolygon(shape.current.points)
+    bitmap.current?.fillPolygon(shape.current.points, shape.current.operation)
     const changed=bitmap.current?.commit()
     shape.current = null; invalidate(); syncHistory()
     if (changed && bitmap.current) autosave.current?.enqueue(bitmap.current.patch())
@@ -365,13 +366,13 @@ export const MaskEditor = forwardRef<MaskEditorHandle, Props>(function MaskEdito
       else {
         const last = draft?.points.at(-1)
         if (last && Math.hypot(at.x-last.x,at.y-last.y) * transform.current.scale < 2) return
-        shape.current = {tool, points: [...(draft?.points || []), at]}; schedule()
+        shape.current = {tool, operation, points: [...(draft?.points || []), at]}; schedule()
       }
       return
     }
-    if (tool === 'rectangle' || tool === 'lasso') {shape.current = {tool, points: [at]}; return}
-    stroke.current = {id: event.pointerId, last: at, tool, diameter}
-    paint(at, at, tool, diameter)
+    if (tool === 'rectangle' || tool === 'lasso') {shape.current = {tool, operation, points: [at]}; return}
+    stroke.current = {id: event.pointerId, last: at, tool: operation, diameter}
+    paint(at, at, operation, diameter)
   }
   const move = (event: ReactPointerEvent<HTMLCanvasElement>) => {
     const point = localPoint(event); cursor.current = point
@@ -421,7 +422,7 @@ export const MaskEditor = forwardRef<MaskEditorHandle, Props>(function MaskEdito
   savedPixels.current = patch => {bitmap.current?.markPatchSaved(patch); if (mounted.current) syncHistory()}
   const controlsDisabled = disabled || !ready || leaving
   const saveError=saveState.error instanceof Error ? saveState.error.message : saveState.error ? String(saveState.error) : ''
-  const controls = <MaskControls region={region} regions={regions} tool={tool} onToolChange={onToolChange} diameter={diameter} referenceOpacity={referenceOpacity} showOriginal={showOriginal} disabled={controlsDisabled} onRegionChange={id => {if (id !== region.id) requestLeave(() => onSelectRegion(id))}} onDiameterChange={setDiameter} onReferenceOpacityChange={setReferenceOpacity} onReferenceChange={setShowOriginal}/>
+  const controls = <MaskControls region={region} regions={regions} tool={tool} operation={operation} onToolChange={onToolChange} diameter={diameter} referenceOpacity={referenceOpacity} showOriginal={showOriginal} disabled={controlsDisabled} onRegionChange={id => {if (id !== region.id) requestLeave(() => onSelectRegion(id))}} onDiameterChange={setDiameter} onReferenceOpacityChange={setReferenceOpacity} onReferenceChange={setShowOriginal}/>
   return <section aria-label="蒙版模式" className="absolute inset-0 flex min-h-0 flex-col text-ink">
     {controlsTarget ? createPortal(controls, controlsTarget) : controlsTarget === undefined ? controls : null}
     {error && <p role="alert" className="m-0 shrink-0 bg-danger/10 px-4 py-2 text-sm text-danger-soft-ink">{error}</p>}

@@ -6,7 +6,8 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-from app.services.detection.providers import PaddleTextDetector
+from app.services.detection.layout import RFDetrTextDetector
+from app.services.detection.text_roles import partition_text_roles
 
 
 def _arguments() -> argparse.Namespace:
@@ -23,12 +24,13 @@ def _arguments() -> argparse.Namespace:
 
 
 def _overlapping_detections(
-    detector: PaddleTextDetector,
+    detector: RFDetrTextDetector,
     image_path: Path,
     mask: np.ndarray,
 ) -> list[dict[str, object]]:
     matches: list[dict[str, object]] = []
-    for region in detector.detect(image_path):
+    regions, _ = partition_text_roles(detector.detect(image_path))
+    for region in regions:
         polygon = np.rint(np.asarray(region.polygon, dtype=np.float32)).astype(np.int32)
         if len(polygon) < 3:
             continue
@@ -49,14 +51,7 @@ def _overlapping_detections(
 
 def main() -> int:
     args = _arguments()
-    detector = PaddleTextDetector(
-        {
-            "device": args.device,
-            "language": "japan",
-            "ocr_version": "PP-OCRv5",
-            "bubble_grouping": False,
-        }
-    )
+    detector = RFDetrTextDetector({"device": args.device})
     results = []
     for source_value, mask_value, clean_value in args.case:
         source_path, mask_path, clean_path = map(Path, (source_value, mask_value, clean_value))

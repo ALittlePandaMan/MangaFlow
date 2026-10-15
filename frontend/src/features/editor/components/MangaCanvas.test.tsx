@@ -1,4 +1,4 @@
-import {act, fireEvent, render, screen, within} from '@testing-library/react'
+import {act, render, screen} from '@testing-library/react'
 import type {ReactNode} from 'react'
 import {afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi} from 'vitest'
 
@@ -8,9 +8,11 @@ import {MangaCanvas} from './MangaCanvas'
 
 type MockNodeProps = {children?: ReactNode}
 
-const {stageRenderMock, useImageMock} = vi.hoisted(() => ({
+const {stageRenderMock, useImageMock, konvaImageMock, useMaskOverlayMock} = vi.hoisted(() => ({
   stageRenderMock: vi.fn(),
   useImageMock: vi.fn((_source: string | null | undefined) => ({image: null, loading: true, error: false})),
+  konvaImageMock: vi.fn((_props:Record<string,unknown>) => null),
+  useMaskOverlayMock: vi.fn((_page:unknown,_regions:unknown,_enabled:boolean):{image:HTMLCanvasElement|null;loading:boolean;error:string|null} => ({image:null,loading:false,error:null})),
 }))
 
 vi.mock('konva', () => {
@@ -34,7 +36,7 @@ vi.mock('react-konva', () => {
     Layer: Container,
     Group: Container,
     Circle: EmptyNode,
-    Image: EmptyNode,
+    Image: konvaImageMock,
     Line: EmptyNode,
     Rect: EmptyNode,
     Text: EmptyNode,
@@ -44,6 +46,7 @@ vi.mock('react-konva', () => {
 vi.mock('../hooks/useImage', () => ({
   useImage: useImageMock,
 }))
+vi.mock('../hooks/useMaskOverlay', () => ({useMaskOverlay:useMaskOverlayMock}))
 
 const page: ImagePage = {
   id: 'image-1',
@@ -77,12 +80,14 @@ describe('MangaCanvas image loading', () => {
     vi.useFakeTimers()
     stageRenderMock.mockClear()
     useImageMock.mockClear()
+    konvaImageMock.mockClear()
+    useMaskOverlayMock.mockReset().mockReturnValue({image:null,loading:false,error:null})
     useEditorStore.setState({
       view: 'translated',
       tool: 'select',
       zoom: 1,
       selectedIds: [],
-      layers: {original: false, detection: true, clean: true, translated: true},
+      layers: {original: false, detection: true, clean: true, translated: true, mask:false},
     })
   })
   afterEach(() => vi.useRealTimers())
@@ -109,7 +114,7 @@ describe('MangaCanvas image loading', () => {
   it('loads both page artifacts only for comparison view', () => {
     useEditorStore.setState({
       view: 'comparison',
-      layers: {original: false, detection: false, clean: false, translated: false},
+      layers: {original: false, detection: false, clean: false, translated: false, mask:false},
     })
 
     render(<MangaCanvas
@@ -139,33 +144,15 @@ describe('MangaCanvas image loading', () => {
     expect(useImageMock.mock.calls.at(-1)?.[0]).toBeNull()
   })
 
-  it('uses consistent layer toggles while keeping the checkerboard independent', () => {
+  it('removes the floating layer panel while honoring inspector layer visibility', () => {
     render(<MangaCanvas page={page} regions={[]} onCreate={vi.fn(async () => true)} onUpdate={vi.fn(async () => undefined)} onRegionAction={vi.fn()} runningAction={null} interactionKey="translated:select:false:"/>)
-    const panel = screen.getByLabelText('画布图层')
-    const trigger = within(panel).getByRole('button', {name:'图层'})
-    if (trigger.getAttribute('aria-expanded') === 'false') fireEvent.click(trigger)
-    const toggles = within(panel).getAllByRole('checkbox')
-    expect(toggles).toHaveLength(5)
-    for (const toggle of toggles) {
-      expect(toggle).toHaveClass('peer', 'sr-only')
-      expect(toggle.closest('label')?.className).toBe(toggles[0].closest('label')?.className)
-      expect(toggle.nextElementSibling).toHaveClass('size-3', 'rounded-full')
-    }
-    const checkerboard = within(panel).getByRole('checkbox', {name:'透明棋盘格'})
-    const layerSnapshot = {...useEditorStore.getState().layers}
-    expect(checkerboard).not.toBeChecked()
-    fireEvent.click(checkerboard)
-    expect(checkerboard).toBeChecked()
-    expect(panel.parentElement).toHaveClass('workspace-checkerboard')
-    expect(useEditorStore.getState().layers).toEqual(layerSnapshot)
-    fireEvent.click(within(panel).getByRole('checkbox', {name:'原始图像'}))
-    expect(useEditorStore.getState().layers.original).toBe(true)
-    expect(checkerboard).toBeChecked()
-    fireEvent.click(checkerboard)
-    expect(panel.parentElement).not.toHaveClass('workspace-checkerboard')
-    fireEvent.click(trigger)
-    expect(trigger).toHaveAttribute('aria-expanded', 'false')
-    for (const toggle of toggles) expect(toggle).toHaveAttribute('tabindex', '-1')
+    expect(screen.queryByLabelText('画布图层')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', {name:'图层'})).not.toBeInTheDocument()
+    expect(screen.queryByRole('checkbox', {name:'透明棋盘格'})).not.toBeInTheDocument()
+    act(() => useEditorStore.getState().toggleLayer('original'))
+    expect(useImageMock.mock.calls.slice(-3).map(([source]) => source)).toEqual(['/media/page.png', '/media/page-clean.png', null])
+    act(() => useEditorStore.getState().toggleLayer('clean'))
+    expect(useImageMock.mock.calls.slice(-3).map(([source]) => source)).toEqual(['/media/page.png', null, null])
   })
 
   it('skips expensive canvas reconciliation for unrelated parent updates', () => {
@@ -186,5 +173,30 @@ describe('MangaCanvas image loading', () => {
 
     rerender(<MangaCanvas {...props} interactionKey="translated:select:true:"/>)
     expect(stageRenderMock.mock.calls.length).toBeGreaterThan(rendered)
+  })
+
+  it('renders a read-only mask overlay only when its inspector layer is enabled', () => {
+    const image=document.createElement('canvas')
+    useMaskOverlayMock.mockImplementation((_page,_regions,enabled) => ({image:enabled?image:null,loading:false,error:null}))
+    render(<MangaCanvas page={page} regions={[]} onCreate={vi.fn(async () => true)} onUpdate={vi.fn(async () => undefined)} onRegionAction={vi.fn()} runningAction={null} interactionKey="translated:select:false:"/>)
+    expect(konvaImageMock.mock.calls.some(([props]) => props.name==='mask-overlay')).toBe(false)
+    act(() => useEditorStore.getState().toggleLayer('mask'))
+    expect(konvaImageMock.mock.calls.map(([props]) => props)).toContainEqual(expect.objectContaining({name:'mask-overlay',image,width:1200,height:1800,opacity:0.3,listening:false}))
+    expect(useMaskOverlayMock.mock.calls.at(-1)?.[2]).toBe(true)
+    act(() => useEditorStore.getState().toggleLayer('mask'))
+    expect(useMaskOverlayMock.mock.calls.at(-1)?.[2]).toBe(false)
+  })
+
+  it('overlays both sides of comparison with the same mask without intercepting input', () => {
+    const image=document.createElement('canvas')
+    useEditorStore.setState({view:'comparison',layers:{original:false,detection:false,clean:false,translated:false,mask:true}})
+    useMaskOverlayMock.mockReturnValue({image,loading:false,error:null})
+    render(<MangaCanvas page={page} regions={[]} onCreate={vi.fn(async () => true)} onUpdate={vi.fn(async () => undefined)} onRegionAction={vi.fn()} runningAction={null} interactionKey="comparison:select:false:"/>)
+    const overlays=konvaImageMock.mock.calls.map(([props]) => props).filter(props => String(props.name).startsWith('mask-overlay')).slice(-2)
+    expect(overlays).toHaveLength(2)
+    expect(overlays).toEqual(expect.arrayContaining([
+      expect.objectContaining({name:'mask-overlay-original',image,opacity:0.3,listening:false}),
+      expect.objectContaining({name:'mask-overlay-translated',image,opacity:0.3,listening:false}),
+    ]))
   })
 })

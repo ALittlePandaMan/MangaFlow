@@ -10,6 +10,7 @@ from typing import Any, Literal
 import yaml
 from app.core.secrets import get_secret_store
 from app.models import ModelConfig
+from app.services.infra.detection_migration import unified_detection_config
 from app.services.infra.device import paddle_cuda_available, torch_cuda_available
 from app.services.registry import registry
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
@@ -106,6 +107,11 @@ class ModelManifest(BaseModel):
                 raise ValueError(f"{kind}.api_key_env is only supported for translation or OCR")
             if stage.device is not None and kind in {"translation", "font"}:
                 raise ValueError(f"{kind}.device is not supported")
+        detection = self.stages["detection"]
+        if detection.provider == "paddleocr":
+            detection.provider = "rfdetr"
+            detection.name = "推荐漫画版面检测（RF-DETR）"
+            detection.config = unified_detection_config(detection.config)
         return self
 
 

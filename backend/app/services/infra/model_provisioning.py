@@ -31,29 +31,14 @@ class RecommendedModel:
 RECOMMENDED_MODELS = {
     "detection": RecommendedModel(
         "detection",
-        "推荐文字检测（PaddleOCR）",
-        "paddleocr",
+        "推荐漫画版面检测（RF-DETR）",
+        "rfdetr",
         {
             "device": "cuda:0",
-            "language": "japan",
-            "ocr_version": "PP-OCRv5",
-            "box_threshold": 0.45,
-            "unclip_ratio": 1.8,
-            "group_text_lines": False,
-            "bubble_grouping": {
-                "enabled": True,
-                "confidence_threshold": 0.25,
-                "min_bubble_confidence": 0.35,
-                "min_containment": 0.55,
-                "min_core_containment": 0.8,
-                "ambiguity_margin": 0.12,
-                "max_second_containment": 0.45,
-                "mask_padding": 3,
-                "split_connected_instances": True,
-                "split_max_neck_ratio": 0.22,
-                "split_min_boundary_coverage": 0.7,
-                "split_min_boundary_run": 0.65,
-            },
+            "text_threshold": 0.25,
+            "bubble_threshold": 0.5,
+            "panel_threshold": 0.5,
+            "containment_threshold": 0.9,
         },
     ),
     "ocr": RecommendedModel(
@@ -366,9 +351,9 @@ def setup_status_report(db: Session, *, validate_models: bool = False) -> dict[s
             except ProviderError as exc:
                 status, message = "error", str(exc)
         elif str(item.config.get("device", "cpu")).lower().startswith(("cuda", "gpu")):
-            if kind == "detection" and not paddle_cuda_available():
+            if kind == "ocr" and item.provider == "paddleocr" and not paddle_cuda_available():
                 status, message = "error", "Paddle CUDA 当前不可用，请改用 CPU 或修复 GPU 环境"
-            elif kind in {"ocr", "inpainting"} and not torch_cuda_available():
+            elif (kind == "inpainting" or (kind == "ocr" and item.provider != "paddleocr") or (kind == "detection" and item.provider == "rfdetr")) and not torch_cuda_available():
                 status, message = "error", "PyTorch CUDA 当前不可用，请改用 CPU 或修复 GPU 环境"
         if validate_models and status == "ready" and kind != "translation" and item is not None:
             try:

@@ -44,7 +44,7 @@ class ModelProvider(ABC, Generic[T]):
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
         capability = getattr(cls, "capabilities", None)
-        if capability and capability.name in {"manga-ocr", "paddleocr", "lama", "hybrid"}:
+        if capability and capability.name in {"manga-ocr", "paddleocr", "rfdetr", "lama", "hybrid"}:
             from app.services.execution import serialized_model_call
             for name in ("load", "unload", "detect", "recognize", "inpaint"):
                 if name in cls.__dict__:
@@ -61,13 +61,13 @@ class ModelProvider(ABC, Generic[T]):
 
     def unload(self) -> None:
         from app.services.execution import execution_runtime
-        slot = execution_runtime().model_slot() if self.capabilities.name in {"manga-ocr", "paddleocr", "lama", "hybrid"} else nullcontext()
+        slot = execution_runtime().model_slot() if self.capabilities.name in {"manga-ocr", "paddleocr", "rfdetr", "lama", "hybrid"} else nullcontext()
         with slot, self._load_lock:
             self.state = ProviderState.UNLOADED
 
     def ensure_loaded(self) -> None:
         from app.services.execution import execution_runtime
-        slot = execution_runtime().model_slot() if self.capabilities.name in {"manga-ocr", "paddleocr", "lama", "hybrid"} else nullcontext()
+        slot = execution_runtime().model_slot() if self.capabilities.name in {"manga-ocr", "paddleocr", "rfdetr", "lama", "hybrid"} else nullcontext()
         with slot, self._load_lock:
             if self.state == ProviderState.READY:
                 return

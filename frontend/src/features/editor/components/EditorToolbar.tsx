@@ -32,13 +32,19 @@ export function EditorToolbar({ onUndo, onRedo, canUndo, canRedo, disabled = fal
   const phone = usePhoneLayout()
   const tool = useEditorStore(state => state.tool)
   const setTool = useEditorStore(state => state.setTool)
+  const maskOperation = useEditorStore(state => state.maskOperation)
+  const setMaskOperation = useEditorStore(state => state.setMaskOperation)
   const view = useEditorStore(state => state.view)
   const setView = useEditorStore(state => state.setView)
   const shortcuts = useShortcutStore(state => state.shortcuts)
   const toolButton = 'editor-tool-button grid size-8 min-h-8 cursor-pointer place-items-center rounded-lg border border-transparent bg-transparent p-0 text-muted outline-none transition-colors hover:bg-hover hover:text-ink disabled:cursor-not-allowed disabled:opacity-30 focus-visible:ring-2 focus-visible:ring-accent/30'
   return <div className="editor-toolbar border-b border-line-subtle bg-panel" role="toolbar" aria-label="编辑器顶部工具栏">
     <div className={cn('editor-tools flex items-center', view === 'mask' && 'editor-tools-mask')}>
-    {view === 'mask' ? <div className="flex gap-1.5" aria-label="修复蒙版工具">{maskTools.map(item => <button key={item.id} className={cn(toolButton, tool === item.id && '!border-accent-line !bg-accent-soft !text-accent-soft-ink')} disabled={disabled} aria-label={item.title} aria-pressed={tool === item.id} title={item.title} onClick={() => setTool(item.id)}>{item.icon}</button>)}</div>
+    {view === 'mask' ? <div className="flex gap-1.5" aria-label="修复蒙版工具">{maskTools.map(item => {
+      const painting = item.id === 'brush' || item.id === 'eraser'
+      const active = painting ? tool !== 'pan' && tool !== 'select' && maskOperation === item.id : tool === item.id
+      return <button key={item.id} className={cn(toolButton, active && '!border-accent-line !bg-accent-soft !text-accent-soft-ink')} disabled={disabled} aria-label={item.title} aria-pressed={active} title={item.title} onClick={() => painting ? setMaskOperation(item.id as 'brush' | 'eraser') : setTool(item.id)}>{item.icon}</button>
+    })}</div>
       : <div className="flex gap-1.5" aria-label="普通编辑工具">{tools.map(item => <button disabled={disabled} key={item.id} className={cn(toolButton, tool === item.id && '!border-accent-line !bg-accent-soft !text-accent-soft-ink hover:!bg-accent-soft-hover')} title={`${item.title} (${formatShortcut(shortcuts[item.shortcutId])})`} aria-label={item.title} aria-keyshortcuts={shortcutToAria(shortcuts[item.shortcutId])} aria-pressed={tool === item.id} onClick={() => setTool(item.id)}>{item.icon}</button>)}</div>}
     <span className="mx-3 h-5 border-l border-line" />
     <div className="flex gap-1.5"><button className={toolButton} disabled={disabled || !canUndo} onClick={onUndo} title={`撤销 (${formatShortcut(shortcuts['edit.undo'])})`} aria-label="撤销" aria-keyshortcuts={shortcutToAria(shortcuts['edit.undo'])}><Undo2 size={17}/></button><button className={toolButton} disabled={disabled || !canRedo} onClick={onRedo} title={`重做 (${formatShortcut(shortcuts['edit.redo'])})`} aria-label="重做" aria-keyshortcuts={shortcutToAria(shortcuts['edit.redo'])}><Redo2 size={17}/></button></div>

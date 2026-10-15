@@ -24,7 +24,7 @@ const region=(id:string,x:number,y:number,locked=false)=>({id,region_key:id,lock
 describe('multi-region drag gestures',()=>{
   beforeAll(()=>vi.stubGlobal('ResizeObserver',class {observe() {} disconnect() {}}))
   afterAll(()=>vi.unstubAllGlobals())
-  beforeEach(()=>useEditorStore.setState({view:'original',tool:'select',zoom:1,selectedIds:['R001','R002','R003'],layers:{original:true,detection:true,clean:false,translated:false}}))
+  beforeEach(()=>useEditorStore.setState({view:'original',tool:'select',zoom:1,selectedIds:['R001','R002','R003'],layers:{original:true,detection:true,clean:false,translated:false,mask:false}}))
   it.each([false,true])('moves the whole active frame but saves only once at drag end (%s)',translated=>{
     useEditorStore.setState({view:translated?'translated':'original'})
     const regions=[region('R001',20,20),region('R002',100,130),region('R003',0,0,true)]

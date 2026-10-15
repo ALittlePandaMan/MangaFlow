@@ -25,6 +25,7 @@ from app.services.regions import (
     copy_region,
     create_region,
     merge_regions,
+    renumber_region_keys,
     restore_revision,
     save_revision,
     split_region,
@@ -193,6 +194,7 @@ def delete_region(region_id: str, db: Session = Depends(get_db)):
     db.delete(region)
     db.flush()
     remaining=list(db.scalars(select(TextRegion).where(TextRegion.image_id == page.id)).all())
+    region_keys = renumber_region_keys(db, remaining)
     fast=restore_deleted_pixels(page,[region],remaining)
     if fast:
         _invalidate_rendered_artifacts(page)
@@ -201,7 +203,7 @@ def delete_region(region_id: str, db: Session = Depends(get_db)):
     if mask_path:
         _remove_live_mask(page, mask_path)
     if fast or not needs_rebuild:
-        return {"region_id": region_id_value, "rebuild_task": None, "page":image_read(page,include_history=True), "editor_history": history_state(db, page.id)}
+        return {"region_id": region_id_value, "region_keys": region_keys, "rebuild_task": None, "page":image_read(page,include_history=True), "editor_history": history_state(db, page.id)}
     # The clean image is a page-level composite. Rebuild it from the immutable
     # original with only the remaining masks, then recreate the translated layer.
     task = enqueue_page_task(
@@ -211,7 +213,7 @@ def delete_region(region_id: str, db: Session = Depends(get_db)):
         ProcessRequest(force=True, options={"_editor_history_entry_id": entry.id if entry else None}),
         start_stage="inpainting",
     )
-    return {"region_id": region_id_value, "rebuild_task": TaskRead.model_validate(task), "editor_history": history_state(db, page.id)}
+    return {"region_id": region_id_value, "region_keys": region_keys, "rebuild_task": TaskRead.model_validate(task), "editor_history": history_state(db, page.id)}
 
 
 @router.post("/regions/bulk-delete")
@@ -234,6 +236,7 @@ def bulk_delete_regions(region_ids: list[str], db: Session = Depends(get_db)):
         db.delete(region)
     db.flush()
     remaining=list(db.scalars(select(TextRegion).where(TextRegion.image_id == page.id)).all())
+    region_keys = renumber_region_keys(db, remaining)
     fast=restore_deleted_pixels(page,regions,remaining)
     if fast:
         _invalidate_rendered_artifacts(page)
@@ -243,7 +246,7 @@ def bulk_delete_regions(region_ids: list[str], db: Session = Depends(get_db)):
         _remove_live_mask(page, mask_path)
 
     if fast or not needs_rebuild:
-        return {"region_ids": unique_ids, "rebuild_task": None, "page":image_read(page,include_history=True), "editor_history": history_state(db, page.id)}
+        return {"region_ids": unique_ids, "region_keys": region_keys, "rebuild_task": None, "page":image_read(page,include_history=True), "editor_history": history_state(db, page.id)}
     task = enqueue_page_task(
         db,
         page,
@@ -251,7 +254,7 @@ def bulk_delete_regions(region_ids: list[str], db: Session = Depends(get_db)):
         ProcessRequest(force=True, options={"_editor_history_entry_id": entry.id if entry else None}),
         start_stage="inpainting",
     )
-    return {"region_ids": unique_ids, "rebuild_task": TaskRead.model_validate(task), "editor_history": history_state(db, page.id)}
+    return {"region_ids": unique_ids, "region_keys": region_keys, "rebuild_task": TaskRead.model_validate(task), "editor_history": history_state(db, page.id)}
 
 
 @router.post("/regions/{region_id}/copy", response_model=RegionRead, status_code=201)
@@ -281,13 +284,15 @@ def merge_region_list(region_ids: list[str], db: Session = Depends(get_db)):
         mask_paths = [region.pixel_mask_path for region in regions if region.pixel_mask_path]
         needs_rebuild = bool(page.clean_path or page.rendered_path or page.text_layer_path)
         merged = merge_regions(db, regions)
+        remaining = list(db.scalars(select(TextRegion).where(TextRegion.image_id == page.id)).all())
+        region_keys = renumber_region_keys(db, remaining)
         entry = record_page_edit(db, page, before, "合并文字区域", unique_ids)
         db.commit()
         db.refresh(merged)
         for mask_path in mask_paths:
             _remove_live_mask(page, mask_path)
         if not needs_rebuild:
-            return {"region": region_read(merged), "rebuild_task": None}
+            return {"region": region_read(merged), "region_keys": region_keys, "rebuild_task": None}
         # Merging removes the source masks, so this structural operation must
         # rebuild the complete clean page rather than use selected-region
         # incremental repair semantics for the new merged region.
@@ -299,7 +304,7 @@ def merge_region_list(region_ids: list[str], db: Session = Depends(get_db)):
             region_id=merged.id,
             start_stage="mask",
         )
-        return {"region": region_read(merged), "rebuild_task": TaskRead.model_validate(task)}
+        return {"region": region_read(merged), "region_keys": region_keys, "rebuild_task": TaskRead.model_validate(task)}
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
 

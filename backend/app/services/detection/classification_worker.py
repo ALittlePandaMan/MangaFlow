@@ -10,9 +10,9 @@ import sys
 from functools import lru_cache
 from pathlib import Path
 
-import numpy as np
 from app.services.detection.classification import MODEL_SHA256
-from app.services.detection.text_roles import CLASS_NAMES, LayoutPrediction, classify_text_polygons
+from app.services.detection.layout_protocol import MAX_PAGE_PIXELS, encode_predictions
+from app.services.detection.text_roles import CLASS_NAMES, LayoutPrediction
 from PIL import Image
 
 PROTOCOL = "mangaflow-text-classifier-v1"
@@ -33,6 +33,7 @@ def main() -> None:
                 raise ValueError("model_checksum_mismatch")
         with contextlib.redirect_stdout(sys.stderr):
             import torch
+            from app.services.detection.layout_inference import DEFAULT_THRESHOLDS, predict_layout, validate_thresholds
             from rfdetr import RFDETRSeg2XLarge
             from safetensors.torch import load_file
 
@@ -47,6 +48,7 @@ def main() -> None:
                 num_select=160, num_classes=4, device=device,
             )
             model.model.model.load_state_dict(load_file(str(args.weights), device="cpu"), strict=True)
+            model.model.model.to(model.model.device).eval()
             model.model.class_names = list(CLASS_NAMES)
         _send({"ready": True, "device": device})
     except Exception as exc:
@@ -54,46 +56,30 @@ def main() -> None:
         return
 
     @lru_cache(maxsize=2)
-    def predict(path: str, mtime_ns: int, size: int) -> list[LayoutPrediction]:
+    def predict(path: str, mtime_ns: int, size: int, thresholds: tuple[float, ...]) -> tuple[int, int, list[LayoutPrediction]]:
         with Image.open(path) as source:
+            if source.width * source.height > MAX_PAGE_PIXELS:
+                raise ValueError("layout_image_too_large")
             rgba = source.convert("RGBA")
             image = Image.new("RGBA", rgba.size, "white")
             image.alpha_composite(rgba)
             image = image.convert("RGB")
         with contextlib.redirect_stdout(sys.stderr), torch.inference_mode():
-            result = model.predict(image, threshold=0.2)
-        if result.mask is None or len(result.mask) != len(result.xyxy):
-            raise ValueError("model_missing_masks")
-        height, width = image.height, image.width
-        predictions = []
-        for label, confidence, box, mask in zip(result.class_id, result.confidence, result.xyxy, result.mask, strict=True):
-            if not 0 <= int(label) < len(CLASS_NAMES) or not np.isfinite(box).all():
-                continue
-            x0, y0, x1, y1 = box
-            left, top = max(0, int(np.floor(x0))), max(0, int(np.floor(y0)))
-            right, bottom = min(width, int(np.ceil(x1)) + 1), min(height, int(np.ceil(y1)) + 1)
-            if right <= left or bottom <= top or mask.shape != (height, width):
-                continue
-            predictions.append(LayoutPrediction(
-                CLASS_NAMES[int(label)], float(confidence), [float(x0), float(y0), float(x1 - x0), float(y1 - y0)],
-                np.ascontiguousarray(mask[top:bottom, left:right], dtype=np.uint8), (left, top),
-            ))
-        return predictions
+            predictions = predict_layout(model, image, thresholds)
+        return image.width, image.height, predictions
 
     for line in sys.stdin:
         try:
             request = json.loads(line)
             path = Path(request["image_path"])
             stat = path.stat()
-            predictions = predict(str(path), stat.st_mtime_ns, stat.st_size)
-            values = classify_text_polygons(
-                request["polygons"], predictions,
-                min_sfx_confidence=float(request["min_sfx_confidence"]), filter_sfx=request["filter_sfx"] is True,
-                protected_indices=set(request.get("protected_indices", [])),
-            )
-            _send({"classifications": values})
+            thresholds = validate_thresholds(request.get("thresholds", DEFAULT_THRESHOLDS))
+            width, height, predictions = predict(str(path), stat.st_mtime_ns, stat.st_size, thresholds)
+            if request.get("operation") != "layout":
+                raise ValueError("unsupported_layout_operation")
+            _send(encode_predictions(predictions, width, height))
         except Exception as exc:
-            _send({"error": f"classification_failed: {type(exc).__name__}: {exc}"[:350]})
+            _send({"error": f"layout_failed: {type(exc).__name__}: {exc}"[:350]})
 
 
 if __name__ == "__main__":
