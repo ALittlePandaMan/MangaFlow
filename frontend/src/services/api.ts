@@ -1,6 +1,7 @@
 import type { DeviceProfile, FontResource, ImagePage, ModelBootstrapEntry, ModelConfiguration, ModelDescriptor, ProcessingTask, Project, QualityIssue, SetupStatus, TextRegion } from '../types'
 import type {EditorHistoryResult, EditorHistoryState} from '../types'
 import type {ExecutionPolicy, ExecutionStatus} from '../types'
+import {uploadImagesInBatches, type ImageUploadProgress} from './imageUpload'
 
 export class ApiError extends Error {
   constructor(public status: number, message: string) {
@@ -54,11 +55,12 @@ export const api = {
     update: (id: string, payload: Partial<Project>) => request<Project>(`/projects/${id}`, { method: 'PATCH', body: json(payload) }),
     remove: (id: string) => request<void>(`/projects/${id}`, { method: 'DELETE' }),
     images: (id: string) => request<ImagePage[]>(`/projects/${id}/images`),
-    upload: async (id: string, files: File[]) => {
-      const form = new FormData()
-      files.forEach(file => form.append('files', file))
-      return request<ImagePage[]>(`/projects/${id}/images`, { method: 'POST', body: form })
-    },
+    upload: (id: string, files: File[], onProgress?: (progress: ImageUploadProgress) => void, signal?: AbortSignal) =>
+      uploadImagesInBatches(files, batch => {
+        const form = new FormData()
+        batch.forEach(file => form.append('files', file))
+        return request<ImagePage[]>(`/projects/${id}/images`, {method: 'POST', body: form, signal})
+      }, onProgress, signal),
     import: async (file: File) => {
       const form = new FormData(); form.append('file', file)
       return request<Project>('/projects/import', {method: 'POST', body: form})
@@ -68,7 +70,7 @@ export const api = {
       const form = new FormData(); form.append('file', file)
       return request<FontResource>(`/projects/${id}/fonts`, {method: 'POST', body: form})
     },
-    batch: (id: string, payload: typeof defaultProcess & {image_ids?: string[], only_unrecognized?: boolean} = defaultProcess) => request<ProcessingTask[]>(`/projects/${id}/batch-process`, { method: 'POST', body: json(payload) }),
+    batch: (id: string, payload: typeof defaultProcess & {image_ids?: string[], only_unrecognized?: boolean, only_with_regions?: boolean} = defaultProcess) => request<ProcessingTask[]>(`/projects/${id}/batch-process`, { method: 'POST', body: json(payload) }),
     review: (id: string) => request<QualityIssue[]>(`/projects/${id}/review`),
     exportUrl: (id: string) => `/api/projects/${id}/export`,
     export: async (id: string, formats: string[], fallbackFilename = 'mangaflow-export.zip') => {

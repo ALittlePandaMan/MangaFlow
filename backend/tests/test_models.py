@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
 import yaml
 from app.api import models as model_api
 from app.api.models import _extract_model_ids, _model_endpoint_candidates
@@ -68,6 +69,7 @@ def test_bootstrap_recommended_configs_without_downloading(client) -> None:
         item for item in configured if item["kind"] == "detection" and item["is_default"]
     )
     assert recommended_detection["config"]["containment_threshold"] == .9
+    assert recommended_detection["config"]["text_box_padding"] == {"top": 3, "bottom": 3, "left": 3, "right": 3}
     cloud_translation = next(
         item
         for item in configured
@@ -166,3 +168,41 @@ def test_model_api_saves_active_settings_to_yaml_and_env(client, monkeypatch, tm
     assert translation["api_key_env"] == "MANGAFLOW_TRANSLATION_API_KEY"
     assert "persisted-secret" not in manifest_path.read_text(encoding="utf-8")
     assert 'MANGAFLOW_TRANSLATION_API_KEY="persisted-secret"' in environment_path.read_text(encoding="utf-8")
+
+
+def test_detection_padding_persists_and_invalid_updates_keep_saved_value(client, monkeypatch, tmp_path):
+    manifest_path = tmp_path / "config.yaml"
+    monkeypatch.setattr(model_api, "get_settings", lambda: SimpleNamespace(
+        model_manifest_path=manifest_path, environment_file_path=tmp_path / ".env",
+    ))
+    assert client.post("/api/models/bootstrap", json={"preload": False}).status_code == 200
+    payload = {"kind": "detection", "provider": "rfdetr", "name": "padding-test", "is_default": True,
+               "config": {"device": "cpu", "text_box_padding": 8}}
+    response = client.post("/api/models/config", json=payload)
+    assert response.status_code == 201, response.text
+    identifier = response.json()["id"]
+    assert yaml.safe_load(manifest_path.read_text())["stages"]["detection"]["config"]["text_box_padding"] == 8
+    for padding in (0, 50):
+        payload["config"]["text_box_padding"] = padding
+        response = client.patch(f"/api/models/config/{identifier}", json=payload)
+        assert response.status_code == 200, response.text
+        listed = next(c for c in client.get("/api/models").json()["configured"] if c["id"] == identifier)
+        assert listed["config"]["text_box_padding"] == padding
+        assert yaml.safe_load(manifest_path.read_text())["stages"]["detection"]["config"]["text_box_padding"] == padding
+    payload["config"]["text_box_padding"] = -1
+    assert client.patch(f"/api/models/config/{identifier}", json=payload).status_code == 422
+    listed = next(c for c in client.get("/api/models").json()["configured"] if c["id"] == identifier)
+    assert listed["config"]["text_box_padding"] == 50
+    margins = {"top": 0, "bottom": 5, "left": 10, "right": 50}
+    payload["config"]["text_box_padding"] = margins
+    assert client.patch(f"/api/models/config/{identifier}", json=payload).status_code == 200
+    listed = next(c for c in client.get("/api/models").json()["configured"] if c["id"] == identifier)
+    assert listed["config"]["text_box_padding"] == margins
+    assert yaml.safe_load(manifest_path.read_text())["stages"]["detection"]["config"]["text_box_padding"] == margins
+
+
+@pytest.mark.parametrize("padding", [-1, 51, "invalid", None, {"top": -1}, {"right": 51}, {"left": None}, {"typo": 3}])
+def test_detection_api_rejects_invalid_padding(client, padding):
+    response = client.post("/api/models/config", json={"kind": "detection", "provider": "rfdetr",
+        "name": "invalid-padding", "config": {"text_box_padding": padding}})
+    assert response.status_code == 422, response.text

@@ -83,8 +83,10 @@ def test_vertical_layout_wraps_overflow_into_right_to_left_columns() -> None:
     )
 
     assert layout.lines == ["甲乙丙", "丁戊己"]
-    first_column_x = {glyph.x for glyph in layout.placements[:3]}
-    second_column_x = {glyph.x for glyph in layout.placements[3:]}
+    # Actual glyphs have different side bearings/widths; their ink centers,
+    # not their left edges, must share the vertical column's axis.
+    first_column_x = {round(glyph.x+(glyph.ink_box[2]-glyph.ink_box[0])/2, 6) for glyph in layout.placements[:3]}
+    second_column_x = {round(glyph.x+(glyph.ink_box[2]-glyph.ink_box[0])/2, 6) for glyph in layout.placements[3:]}
     assert len(first_column_x) == len(second_column_x) == 1
     assert first_column_x.pop() > second_column_x.pop()
     assert not layout.overflow
@@ -304,7 +306,7 @@ def test_vertical_perspective_render_is_identical_for_every_corner_order(tmp_pat
 
 
 @pytest.mark.parametrize("empty", [False, True])
-def test_shape_renderer_never_draws_outside_balloon(tmp_path, empty):
+def test_renderer_uses_visible_target_frame_instead_of_hidden_balloon_inset(tmp_path, empty):
     import cv2
     font = available_font()
     background, output, layer = [tmp_path / name for name in ("bg.png", "out.png", "layer.png")]
@@ -323,12 +325,16 @@ def test_shape_renderer_never_draws_outside_balloon(tmp_path, empty):
         cv2.ellipse(mask, (90, 100), (75, 95), 0, 0, 360, 255, -1)
     result = PillowRenderer().render(background, [region], output, layer, shape_masks={region.id: mask})
     alpha = np.asarray(Image.open(layer))[:, :, 3]
-    assert not np.any(alpha[mask == 0])
     layout = result["layouts"][region.id]
-    if empty:
-        assert layout["render_skipped"] and layout["overflow"]
-    else:
-        assert layout["shape_layout_applied"] and np.any(alpha)
+    assert not layout["render_skipped"] and not layout["overflow"]
+    assert not layout["shape_layout_applied"] and np.any(alpha)
+    assert layout["effective_text_bbox"] == box
+    ys, xs = np.nonzero(alpha)
+    assert 5 <= xs.min() <= xs.max() < 175
+    assert 5 <= ys.min() <= ys.max() < 195
+    without_mask = PillowRenderer().render(background, [region], output, layer)["layouts"][region.id]
+    assert layout["font_size"] == without_mask["font_size"]
+    np.testing.assert_array_equal(alpha, np.asarray(Image.open(layer))[:, :, 3])
 
 
 def simple_render_region():

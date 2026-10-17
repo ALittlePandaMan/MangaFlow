@@ -3,6 +3,9 @@ import type {TextRegion} from '../../../types'
 import {sizeText,usesAutomaticFontSize} from './fontSizing'
 import {extendedPerspectiveQuad} from './perspectiveText'
 import {shapePreviewRegion} from './shapeText'
+import {fitInk, type GlyphMetrics} from './inkLayout'
+import {hasCurrentComputedFont} from './fontSizing'
+import {PERSPECTIVE_RENDER_OUTPUT_VERSION} from './perspectiveText'
 
 const fixture = (patch: Partial<TextRegion> = {}) => ({bbox:[0,0,200,200],polygon:[[0,0],[200,0],[200,200],[0,200]],
   translated_bbox:[0,0,200,200],translated_polygon:[[0,0],[200,0],[200,200],[0,200]],translated_text:'漫画翻译',
@@ -42,5 +45,57 @@ describe('initial font sizing and subsequent user adjustments',()=>{
     const result=sizeText(fixture({character_spacing:-4}),undefined,measure)
     expect(result.cellHeight).toBeGreaterThan(0)
     expect(result.overflow).toBe(false)
+  })
+  it.each(['horizontal','vertical'] as const)('uses real %s ink instead of a padded em square', orientation => {
+    const ink = (_character: string, size: number): GlyphMetrics => ({advance: size, left: .1*size, right: .9*size, top: -.7*size, bottom: 0})
+    const region = fixture({orientation, translated_text:'甲', stroke_width:0})
+    const result = sizeText(region, {width:100,height:100}, ink)
+    expect(result.fontSize).toBe(122)
+    expect(result.width).toBeCloseTo(97.6)
+    expect(result.overflow).toBe(false)
+    const manual = sizeText({...region,auto_font_size:false,font_size:result.fontSize}, {width:98,height:98}, ink)
+    expect(manual.glyphs).toEqual(result.glyphs)
+    expect(manual.height).toEqual(result.height)
+    expect(sizeText({...region,auto_font_size:false,font_size:200}, {width:100,height:100}, ink).overflow).toBe(true)
+  })
+  it('uses the full visible frame regardless of the polygon area', () => {
+    const region = fixture()
+    expect(sizeText({...region,translated_polygon:[[0,0],[200,0],[100,200]]},undefined,measure)).toEqual(sizeText(region,undefined,measure))
+  })
+  it('preserves paragraphs, vertical punctuation and top-to-bottom right-to-left order', () => {
+    const metrics = (_character: string): GlyphMetrics => ({advance:20,left:0,right:20,top:-20,bottom:0})
+    const layout = fitInk('甲乙\n\n丙!?A',200,200,20,true,1.15,0,'center',metrics)
+    expect(layout.lines).toEqual(['甲乙','','丙!?A'])
+    expect(layout.glyphs.map(glyph=>glyph.text)).toEqual(['甲','乙','丙','︕','︖','A'])
+    expect(layout.glyphs[0].x).toBeGreaterThan(layout.glyphs[2].x)
+    expect(layout.glyphs[0].y).toBeLessThan(layout.glyphs[1].y)
+    expect(layout.glyphs.map(glyph=>glyph.rotate)).toEqual([false,false,false,false,false,true])
+  })
+  it('measures repeated glyphs once per candidate without retaining stale font metrics', () => {
+    const calls: string[] = []
+    const measured = (character: string,size: number) => {calls.push(`${character}:${size}`);return size}
+    sizeText(fixture({translated_text:'甲乙'.repeat(60)}),undefined,measured)
+    expect(calls.length).toBe(new Set(calls).size)
+    expect(calls.length).toBeLessThanOrEqual(22)
+    const first = sizeText(fixture(),undefined,measure)
+    const changed = sizeText(fixture(),undefined,(_char,size)=>size*.5)
+    expect(changed.fontSize).toBeGreaterThan(first.fontSize)
+  })
+  it('invalidates the previous sizing algorithm even when saved inputs match', () => {
+    const region = fixture()
+    region.layout_data = {render_output_version:PERSPECTIVE_RENDER_OUTPUT_VERSION-1,render_input:{...region,auto_font_size:true,custom_font_path:null}}
+    expect(hasCurrentComputedFont(region)).toBe(false)
+    expect(sizeText(region,undefined,measure).fontSize).toBeGreaterThan(region.font_size)
+  })
+  it('fits perspective auto text without charging for the detector angle twice', () => {
+    const region=fixture({orientation:'horizontal',translated_text:'甲乙',rotation:-28,perspective_warp:true,
+      layout_data:{text_rotation:{source:'detector',role:'free_text',angle:-28}}})
+    const rect={width:160,height:40}
+    expect(sizeText(region,rect,measure)).toEqual(sizeText({...region,rotation:0,layout_data:{}},rect,measure))
+    const automatic={...region,layout_data:{...region.layout_data,render_output_version:PERSPECTIVE_RENDER_OUTPUT_VERSION,
+      render_input:{...region,auto_font_size:true,custom_font_path:null,text_rotation:region.layout_data.text_rotation}}}
+    expect(hasCurrentComputedFont(automatic)).toBe(true)
+    expect(hasCurrentComputedFont({...automatic,layout_data:{...automatic.layout_data,
+      text_rotation:{source:'user',angle:-28}}})).toBe(false)
   })
 })

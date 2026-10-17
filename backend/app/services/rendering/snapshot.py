@@ -16,6 +16,7 @@ def render_input(region, *, font_size=None) -> dict:
     snapshot = {name: deepcopy(getattr(region, name, None)) for name in VISUAL_FIELDS}
     snapshot["custom_font_path"] = (region.layout_data or {}).get("custom_font_path")
     snapshot["auto_font_size"] = uses_automatic_font_size(region)
+    snapshot["text_rotation"] = deepcopy((region.layout_data or {}).get("text_rotation"))
     if font_size is not None:
         snapshot["font_size"] = font_size
     return snapshot

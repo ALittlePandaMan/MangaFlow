@@ -228,10 +228,21 @@ def _validate_cloud_ocr(payload: ModelConfigCreate, existing: ModelConfig | None
         raise HTTPException(422, "请填写云端 OCR 的 API Key；更换服务地址后需要重新输入。")
 
 
+def _validate_detection(payload: ModelConfigCreate) -> None:
+    if payload.kind != "detection" or payload.provider != "rfdetr":
+        return
+    from app.services.detection.layout import layout_options
+    try:
+        layout_options(payload.config)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
 @router.post("/models/config", status_code=201)
 def configure_model(payload: ModelConfigCreate, db: Session = Depends(get_db)) -> dict:
     payload = _reuse_translation_connection(payload, db)
     _validate_cloud_ocr(payload)
+    _validate_detection(payload)
     if payload.provider == "cloud-ocr" and payload.config.get("auth_mode") == "none":
         payload = payload.model_copy(update={"api_key": None})
     descriptions = {(entry["kind"], entry["name"]) for entry in registry.describe()}
@@ -286,6 +297,7 @@ def update_model_config(config_id: str, payload: ModelConfigCreate, db: Session 
         raise HTTPException(404, "Model config not found")
     payload = _reuse_translation_connection(payload, db)
     _validate_cloud_ocr(payload, item)
+    _validate_detection(payload)
     descriptions = {(entry["kind"], entry["name"]) for entry in registry.describe()}
     if (payload.kind, payload.provider) not in descriptions:
         raise HTTPException(422, f"Provider {payload.provider} is not registered for {payload.kind}")

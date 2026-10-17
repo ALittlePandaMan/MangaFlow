@@ -66,6 +66,10 @@ def postprocess_layout(outputs, width: int, height: int, thresholds=DEFAULT_THRE
         rows = foreground.any(dim=1).nonzero().flatten()
         columns = foreground.any(dim=0).nonzero().flatten()
         if not rows.numel():
+            # Segmentation can fail independently of box detection. Retain the
+            # instance (as Koharu does) so OCR can fall back to its valid bbox;
+            # never invent foreground pixels or a bubble containment relation.
+            predictions.append(LayoutPrediction(CLASS_NAMES[label], score, bbox, np.empty((0, 0), np.uint8), (0, 0)))
             del foreground
             continue
         top, bottom = int(rows[0]), int(rows[-1])+1

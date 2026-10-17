@@ -31,7 +31,7 @@ const viewLayers: Record<ViewMode, LayerVisibility> = {
   original: { original: true, detection: true, clean: false, translated: false, mask: false },
   clean: { original: false, detection: true, clean: true, translated: false, mask: false },
   translated: { original: false, detection: true, clean: true, translated: true, mask: false },
-  comparison: { original: false, detection: false, clean: false, translated: false, mask: false },
+  comparison: { original: false, detection: false, clean: false, translated: true, mask: false },
   mask: { original: false, detection: false, clean: false, translated: false, mask: false },
 }
 

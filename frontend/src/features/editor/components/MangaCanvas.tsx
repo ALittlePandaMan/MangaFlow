@@ -2,7 +2,7 @@ import {RegionLabel} from './RegionLabel'
 import Konva from 'konva'
 import { Eraser, Languages, ScanText, TextCursorInput } from 'lucide-react'
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { Circle, Group, Image as KonvaImage, Layer, Line, Rect, Stage, Text } from 'react-konva'
+import { Circle, Group, Image as KonvaImage, Layer, Line, Rect, Shape, Stage, Text } from 'react-konva'
 import type { ImagePage, TextRegion } from '../../../types'
 import {cn} from '../../../ui'
 import {ButtonLoading} from '../../../components/LoadingUI'
@@ -15,9 +15,13 @@ import {MASK_OVERLAY_OPACITY} from '../lib/maskOverlay'
 import {useCanvasTouch} from '../hooks/useCanvasTouch'
 import {canvasPalette, polygonDraftStyle} from '../lib/canvasPalette'
 import {shapePreviewRegion} from '../lib/shapeText'
-import {currentTextLayer} from '../lib/renderedText'
-import {extendedPerspectiveQuad, isPerspectiveQuad, perspectiveQuadSize, warpCanvasToQuad, type WarpedCanvas} from '../lib/perspectiveText'
+import {extendedPerspectiveQuad, isPerspectiveQuad, perspectiveQuadSize, perspectiveRasterRatio, warpCanvasToQuad, type WarpedCanvas} from '../lib/perspectiveText'
 import {sizeText, usesAutomaticFontSize} from '../lib/fontSizing'
+import {drawInkText, inkTextBounds} from '../lib/drawInkText'
+import {effectiveTextRotation} from '../lib/textRotation'
+import {useFontRevision} from '../lib/fontRevision'
+import {VERTICAL_FORMS} from '../lib/inkLayout'
+import {translationTextFrame} from '../lib/textFrame'
 import {constrainGroupMove, moveRegions, type RegionChange} from '../lib/regionEditing'
 
 interface Props {
@@ -35,14 +39,6 @@ interface Props {
 
 type RenderStyle = {textColor: string, strokeColor: string, strokeWidth: number}
 
-const VERTICAL_FORMS: Record<string, string> = {
-  '（': '︵', '）': '︶', '(': '︵', ')': '︶', '【': '︻', '】': '︼',
-  '「': '﹁', '」': '﹂', '『': '﹃', '』': '﹄',
-  ',': '︐', '，': '︐', '、': '︑', '.': '︒', '．': '︒', '。': '︒',
-  ':': '︓', '：': '︓', ';': '︔', '；': '︔', '!': '︕', '！': '︕', '?': '︖', '？': '︖',
-  '…': '︙', '—': '︱', 'ー': '︱', '～': '︴', '〜': '︴',
-}
-
 const bboxPolygon = ([x, y, width, height]: number[]) => [[x, y], [x + width, y], [x + width, y + height], [x, y + height]]
 const MIN_ZOOM = .05
 const MAX_ZOOM = 6
@@ -56,14 +52,10 @@ type ViewTransform = {zoom: number, pan: {x: number, y: number}}
 type MarqueePoint = [number, number]
 type MarqueeSelection = {start: MarqueePoint, current: MarqueePoint}
 type RegionGeometry = {polygon: number[][], bbox: number[]}
-type TranslatedGeometryPreview = {regionId: string, polygon: number[][], rotation: number}
+type TranslatedGeometryPreview = {regionId: string, polygon: number[][]}
 const polygonBbox = (points: number[][]) => {
   const xs = points.map(point => point[0]), ys = points.map(point => point[1])
   return [Math.min(...xs), Math.min(...ys), Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys)]
-}
-const normalizedRotation = (degrees: number) => {
-  const value = ((degrees + 180) % 360 + 360) % 360 - 180
-  return Math.abs(value) < .001 ? 0 : value
 }
 const flat = (points: number[][]) => points.flatMap(point => point)
 const regionGeometry = (region: TextRegion, translated = false): RegionGeometry => {
@@ -194,7 +186,6 @@ function MangaCanvasComponent({ page, regions, onCreate, onUpdate, onUpdateMany,
       ...region,
       translated_polygon: translatedGeometryPreview.polygon,
       translated_bbox: polygonBbox(translatedGeometryPreview.polygon),
-      rotation: translatedGeometryPreview.rotation,
     } : region)
     : regions, [regions, translatedGeometryPreview])
   const comparisonWidth = page.width * 2 + COMPARISON_GAP
@@ -620,16 +611,16 @@ function MangaCanvasComponent({ page, regions, onCreate, onUpdate, onUpdateMany,
                 label={label} labelColor={labelColor} visible={region.visible}
                 onSelect={() => select(region.id, true)}
                 onContextMenu={event => openRegionContextMenu(event, region)}
-                onPreview={editingTranslatedGeometry ? (polygon, rotationDelta = 0) => setTranslatedGeometryPreview({
+                onPreview={editingTranslatedGeometry ? polygon => setTranslatedGeometryPreview({
                   regionId: region.id,
                   polygon,
-                  rotation: normalizedRotation(region.rotation + rotationDelta),
                 }) : undefined}
-                onCommit={async (polygon, rotationDelta = 0) => {
-                  const rotation = normalizedRotation(region.rotation + rotationDelta)
+                onCommit={async polygon => {
+                  // Frame manipulation does not author a text rotation. Explicit
+                  // typography rotation and opt-in perspective remain independent.
                   // Keep the preview until the editor adopts the geometry locally.
                   try {await onUpdate(region.id, editingTranslatedGeometry
-                      ? {translated_polygon: polygon, translated_bbox: polygonBbox(polygon), rotation}
+                      ? {translated_polygon: polygon, translated_bbox: polygonBbox(polygon)}
                       : {polygon, bbox: polygonBbox(polygon)})}
                   finally {if (editingTranslatedGeometry) setTranslatedGeometryPreview(null)}
                 }}
@@ -683,17 +674,17 @@ function MangaCanvasComponent({ page, regions, onCreate, onUpdate, onUpdateMany,
             <Rect x={page.width + COMPARISON_GAP} width={page.width} height={page.height} fill="#ffffff" shadowColor="#000000" shadowOpacity={.12} shadowBlur={18 / scale} shadowOffsetY={4 / scale} listening={false}/>
             <Group x={page.width + COMPARISON_GAP} clipX={0} clipY={0} clipWidth={page.width} clipHeight={page.height} listening={false}>
               <KonvaImage image={clean ?? undefined} width={page.width} height={page.height}/>
-              <TranslatedPageLayer page={page} regions={translatedRenderRegions} displayScale={scale}/>
+              {layers.translated && <TranslatedRegions regions={translatedRenderRegions} displayScale={scale}/>}
               {maskOverlay.image && <KonvaImage name="mask-overlay-translated" image={maskOverlay.image} width={page.width} height={page.height} opacity={MASK_OVERLAY_OPACITY} listening={false}/>}
             </Group>
             <ComparisonLabel x={12 / scale} scale={1 / scale} text="原图"/>
             <ComparisonLabel x={page.width + COMPARISON_GAP + 12 / scale} scale={1 / scale} text="译文"/>
           </>}
-          {layers.original && <KonvaImage image={original ?? undefined} width={page.width} height={page.height} listening={false} />}
-          {layers.clean && <KonvaImage image={clean ?? undefined} width={page.width} height={page.height} listening={false} />}
-          {layers.translated && (editingTranslatedGeometry && groupSelectionIds.size > 1
+          {view !== 'comparison' && layers.original && <KonvaImage image={original ?? undefined} width={page.width} height={page.height} listening={false} />}
+          {view !== 'comparison' && layers.clean && <KonvaImage image={clean ?? undefined} width={page.width} height={page.height} listening={false} />}
+          {view !== 'comparison' && layers.translated && (editingTranslatedGeometry && groupSelectionIds.size > 1
             ? <TranslatedRegions regions={translatedRenderRegions.filter(region => !groupSelectionIds.has(region.id))} displayScale={scale}/>
-            : <TranslatedPageLayer page={page} regions={translatedRenderRegions} displayScale={scale}/>)}
+            : <TranslatedRegions regions={translatedRenderRegions} displayScale={scale}/>)}
           {view !== 'comparison' && maskOverlay.image && <KonvaImage name="mask-overlay" image={maskOverlay.image} width={page.width} height={page.height} opacity={MASK_OVERLAY_OPACITY} listening={false}/>}
           {layers.detection && interactionRegions.filter(region => !groupSelectionIds.has(region.id)).map(renderInteractionRegion)}
           {groupSelectionIds.size > 1 && <Group name="selected-region-group" draggable onDragStart={beginGroupDrag} onDragMove={moveGroupDrag} onDragEnd={endGroupDrag}>
@@ -765,17 +756,11 @@ export const MangaCanvas = memo(MangaCanvasComponent, (previous, next) =>
   previous.interactionKey === next.interactionKey
 )
 
-function TranslatedPageLayer({page, regions, displayScale}: {page: ImagePage, regions: TextRegion[], displayScale: number}) {
-  // Reuse the existing bounded/deduplicated image cache. Editing any visual
-  // input invalidates this artifact immediately, before the autosave response.
-  const source = useMemo(() => currentTextLayer(page, regions), [page, regions])
-  const {image} = useImage(source)
-  return image && source
-    ? <KonvaImage image={image} width={page.width} height={page.height} listening={false}/>
-    : <TranslatedRegions regions={regions} displayScale={displayScale}/>
-}
-
-function TranslatedRegions({regions, displayScale}: {regions: TextRegion[], displayScale: number}) {
+export function TranslatedRegions({regions, displayScale}: {regions: TextRegion[], displayScale: number}) {
+  // Always draw editor text at the viewport's canvas resolution. The exported
+  // page-size PNG loses small-glyph detail when scaled, and switching away from
+  // it on the first edit used to change the sharpness of every region at once.
+  // Keep that artifact for export, not as an alternate editor renderer.
   const rasterScale = Math.max(1, Math.ceil(displayScale * 2) / 2)
   return <>{regions.map(region => <TranslatedRegion key={region.id} original={region}
     rasterScale={region.perspective_warp ? rasterScale : 1}/>)}</>
@@ -799,6 +784,7 @@ const TranslatedRegion = memo(function TranslatedRegion({original, rasterScale}:
 })
 
 function PerspectiveTranslatedText({region, style, displayScale}: {region: TextRegion, style: RenderStyle, displayScale: number}) {
+  const registeredFonts = useFontRevision()
   const [fontRevision, setFontRevision] = useState(0)
   useEffect(() => {
     if (!document.fonts) return
@@ -814,9 +800,9 @@ function PerspectiveTranslatedText({region, style, displayScale}: {region: TextR
   const rasterScale = Math.max(1, Math.ceil(displayScale * 2) / 2)
   const preview = useMemo(() => {
     // A newly loaded font invalidates the raster even with unchanged text/style.
-    void fontRevision
+    void fontRevision; void registeredFonts
     return createPerspectivePreview(region, {strokeColor:style.strokeColor, strokeWidth:style.strokeWidth, textColor:style.textColor}, rasterScale)
-  }, [fontRevision, rasterScale, region, style.strokeColor, style.strokeWidth, style.textColor])
+  }, [fontRevision, registeredFonts, rasterScale, region, style.strokeColor, style.strokeWidth, style.textColor])
   if (!preview) return null
   return <KonvaImage
     image={preview.image} x={preview.x} y={preview.y} width={preview.width} height={preview.height}
@@ -856,10 +842,13 @@ function createTextTile(region: TextRegion, style: RenderStyle, width: number, h
     y: height / 2,
     offsetX: width / 2,
     offsetY: height / 2,
-    rotation: region.rotation,
+    rotation: effectiveTextRotation(region),
   })
   root.add(content)
-  if (region.orientation === 'vertical') {
+  if (layout.glyphs) {
+    content.add(new Konva.Shape({width, height, listening: false, perfectDrawEnabled: false,
+      sceneFunc: context => drawInkText(context._context, region, layout, style, width, height)}))
+  } else if (region.orientation === 'vertical') {
     const offsetX = (width - layout.width) / 2
     const offsetY = (height - layout.height) / 2
     layout.lines.forEach((column, index) => {
@@ -896,27 +885,31 @@ function createTextTile(region: TextRegion, style: RenderStyle, width: number, h
       listening: false,
     })))
   }
-  const bounds = auto ? {x:0,y:0,width,height} : root.getClientRect()
+  const bounds = auto ? {x:0,y:0,width,height} : layout.glyphs
+    ? inkTextBounds(layout, width, height, style.strokeWidth, effectiveTextRotation(region))
+    : root.getClientRect()
   // Raster allocation stays bounded; lowering raster density does not change
   // manual font size or map oversized text back into the original frame.
-  const ratio = Math.max(.1, Math.min(pixelRatio, Math.sqrt(PERSPECTIVE_PREVIEW_PIXEL_BUDGET / Math.max(1,bounds.width*bounds.height))))
+  const ratio = perspectiveRasterRatio(bounds.width, bounds.height, pixelRatio, PERSPECTIVE_PREVIEW_PIXEL_BUDGET)
   const canvas = root.toCanvas({...bounds, pixelRatio:ratio, imageSmoothingEnabled: true})
   root.destroy()
   return {canvas,...bounds}
 }
 
 function VerticalTranslatedText({region, style}: {region: TextRegion, style: RenderStyle}) {
+  useFontRevision()
   const layout = sizeText(region)
   if (!region.translated_text.trim() || (usesAutomaticFontSize(region) && layout.overflow)) return null
-  const geometry = regionGeometry(region, true)
-  const offsetX = (geometry.bbox[2] - layout.width) / 2
-  const offsetY = (geometry.bbox[3] - layout.height) / 2
+  const bbox = translationTextFrame(region) ?? regionGeometry(region, true).bbox
+  const offsetX = (bbox[2] - layout.width) / 2
+  const offsetY = (bbox[3] - layout.height) / 2
   return <Group
-    x={geometry.bbox[0]+geometry.bbox[2]/2} y={geometry.bbox[1]+geometry.bbox[3]/2}
-    offsetX={geometry.bbox[2]/2} offsetY={geometry.bbox[3]/2} rotation={region.rotation}
+    x={bbox[0]+bbox[2]/2} y={bbox[1]+bbox[3]/2}
+    offsetX={bbox[2]/2} offsetY={bbox[3]/2} rotation={region.rotation}
     opacity={region.opacity} listening={false}
   >
-    {layout.lines.map((column, index) => {
+    {layout.glyphs ? <Shape width={bbox[2]} height={bbox[3]} listening={false} perfectDrawEnabled={false}
+      sceneFunc={context => drawInkText(context._context, region, layout, style, bbox[2], bbox[3])}/> : layout.lines.map((column, index) => {
       // Japanese/Chinese vertical text reads top-to-bottom, with subsequent
       // columns placed to the left of the first column.
       const x = offsetX + layout.width - layout.fontSize - index * layout.columnWidth
@@ -940,12 +933,14 @@ function horizontalLineX(region: TextRegion, lineWidth: number, width: number, a
 }
 
 function HorizontalTranslatedText({region, style}: {region: TextRegion, style: RenderStyle}) {
+  useFontRevision()
   const layout = sizeText(region)
   if (!region.translated_text.trim() || (usesAutomaticFontSize(region) && layout.overflow)) return null
-  const {bbox} = regionGeometry(region,true)
+  const bbox = translationTextFrame(region) ?? regionGeometry(region,true).bbox
   return <Group x={bbox[0]+bbox[2]/2} y={bbox[1]+bbox[3]/2} offsetX={bbox[2]/2} offsetY={bbox[3]/2}
     rotation={region.rotation} opacity={region.opacity} listening={false}>
-    {layout.lines.map((line,index) => <Text key={index}
+    {layout.glyphs ? <Shape width={bbox[2]} height={bbox[3]} listening={false} perfectDrawEnabled={false}
+      sceneFunc={context => drawInkText(context._context, region, layout, style, bbox[2], bbox[3])}/> : layout.lines.map((line,index) => <Text key={index}
       x={horizontalLineX(region,layout.lineWidths[index],bbox[2],layout.coordinateWidth)} y={(bbox[3]-layout.height)/2+index*layout.columnWidth}
       text={line} wrap="none" fontSize={layout.fontSize} fontFamily={region.font_family} fontStyle={region.font_weight >= 600 ? 'bold' : 'normal'}
       fill={style.textColor} stroke={style.strokeColor} strokeWidth={style.strokeWidth} letterSpacing={region.character_spacing} listening={false}/>) }

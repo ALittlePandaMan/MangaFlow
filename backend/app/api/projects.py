@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session, selectinload
 from app.api.helpers import image_read, project_read, require_project
 from app.core.config import get_settings
 from app.core.database import get_db
-from app.models import ImagePage, ProcessingTask, Project
+from app.models import ImagePage, ProcessingTask, Project, TextRegion
 from app.models.enums import TaskStatus
 from app.pipeline.processor import PipelineProcessor
 from app.schemas.domain import ExportRequest, ImageRead, ProjectCreate, ProjectRead, ProjectUpdate
@@ -150,7 +150,13 @@ def list_images(project_id: str, db: Session = Depends(get_db)) -> list[ImageRea
     pages = list(
         db.scalars(select(ImagePage).where(ImagePage.project_id == project_id).order_by(ImagePage.order_index)).all()
     )
-    return [image_read(page) for page in pages]
+    # One aggregate query, not a region-list request (or ORM lazy load) per page.
+    counts = dict(db.execute(
+        select(TextRegion.image_id, func.count(TextRegion.id))
+        .join(ImagePage, ImagePage.id == TextRegion.image_id)
+        .where(ImagePage.project_id == project_id).group_by(TextRegion.image_id)
+    ).all())
+    return [image_read(page, region_count=counts.get(page.id, 0)) for page in pages]
 
 
 @router.post("/projects/{project_id}/images/order", response_model=list[ImageRead])

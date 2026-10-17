@@ -1,4 +1,4 @@
-import type {TextRegion, ViewMode} from '../../types'
+import type {ViewMode} from '../../types'
 
 export type PageWorkflowStage = 'ocr' | 'translation' | 'inpainting' | 'rendering'
 
@@ -28,40 +28,9 @@ export function pageWorkflowTargetView(stage: PageWorkflowStage): ViewMode | nul
   return null
 }
 
-type OcrRegionLayout = Pick<TextRegion, 'layout_data'>
-type OcrDetectionRegion = OcrRegionLayout & Pick<TextRegion, 'locked'>
-// Match backend/services/detection/layout.py; migration is user-confirmed.
-const UNIFIED_LAYOUT_VERSION = 2
-
-export function pageOcrNeedsDetection(regions: OcrDetectionRegion[]): boolean {
-  if (regions.length === 0) return true
-  return regions.some(region => !region.locked && isLegacyAutomaticRegion(region))
-}
-
-function isLegacyAutomaticRegion(region: OcrDetectionRegion): boolean {
-  if (region.layout_data.manual === true) return false
-  const detection = region.layout_data.detection
-  if (!detection || typeof detection !== 'object' || Array.isArray(detection)) return false
-  if ((detection as Record<string, unknown>).detector === 'rfdetr') return false
-  // OpenCV is a deliberately chosen fallback, not an unfinished migration.
-  return (detection as Record<string, unknown>).detector !== 'opencv-fallback'
-}
-
-export function unifiedLayoutNeedsDetection(regions:OcrDetectionRegion[], config:Record<string,unknown>):boolean {
-  const defaults={text_threshold:0.25,bubble_threshold:0.5,panel_threshold:0.5,containment_threshold:0.9}
-  return regions.some(region => {
-    if(region.locked || region.layout_data.manual === true) return false
-    const detection=region.layout_data.detection as Record<string,unknown> | undefined
-    if(!detection) return false // Legacy API-created/manual frames have no detection provenance.
-    if(detection.detector!=='rfdetr' || detection.layout_version!==UNIFIED_LAYOUT_VERSION) return true
-    const settings=detection.layout_settings as Record<string,unknown> | undefined
-    return Object.entries(defaults).some(([name,fallback]) => Number(settings?.[name])!==Number(config[name] ?? fallback))
-  })
-}
-
-export function buildPageWorkflowRequest(stage: PageWorkflowStage, startsWithDetection = false): PageWorkflowRequest {
+export function buildPageWorkflowRequest(stage: PageWorkflowStage): PageWorkflowRequest {
   if (stage === 'ocr') return {
-    start_stage: startsWithDetection ? 'detection' : 'ocr',
+    start_stage: 'detection',
     end_stage: 'ocr',
     force: true,
     options: {crop_padding: 4},

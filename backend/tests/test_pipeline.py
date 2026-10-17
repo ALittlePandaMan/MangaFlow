@@ -613,7 +613,8 @@ def test_generated_mask_is_clipped_to_current_polygon_after_expansion(client, mo
     assert generation["automatic_mask_sha256"] == hashlib.sha256(mask.tobytes()).hexdigest()
 
 
-def test_manual_frame_still_uses_learned_text_segmentation(client, monkeypatch):
+@pytest.mark.parametrize("legacy_expand", [None, 2, 12])
+def test_manual_frame_still_uses_learned_text_segmentation(client, monkeypatch, legacy_expand):
     from app.pipeline import processor as processor_module
 
     probability = np.zeros((100, 180), np.float32)
@@ -633,7 +634,8 @@ def test_manual_frame_still_uses_learned_text_segmentation(client, monkeypatch):
     ).json()
     assert created["layout_data"]["manual"] is True
     task = client.post(
-        f"/api/images/{page['id']}/process", json={"start_stage": "mask", "end_stage": "mask", "force": True}
+        f"/api/images/{page['id']}/process", json={"start_stage": "mask", "end_stage": "mask", "force": True,
+            "options": {} if legacy_expand is None else {"expand": legacy_expand}}
     ).json()
     assert wait_for_task(client, task["id"])["status"] == "COMPLETED"
     current = client.get(f"/api/images/{page['id']}/regions").json()[0]
@@ -644,6 +646,9 @@ def test_manual_frame_still_uses_learned_text_segmentation(client, monkeypatch):
     assert generation["fallback_reason"] is None
     assert mask[45, 42] == 255
     assert mask[45, 70] == 0
+    assert np.array_equal(mask, (probability > 0).astype(np.uint8) * 255)
+    assert generation["glyph_expansion_px"] == 0
+    assert current["polygon"] == created["polygon"]
 
 
 def test_manual_mask_edit_preserves_clean_page_and_marks_only_the_mask_pending(client, monkeypatch) -> None:

@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 
 from app.core.database import SessionLocal
+from app.core.transactions import is_sqlite_busy, retry_write
 from app.models import ProcessingTask
 from app.models.enums import TaskStatus
 from app.pipeline.processor import PipelineProcessor, TaskCancelled, TaskPaused
@@ -46,6 +47,7 @@ class TaskManager:
         self.workers_started: set[str] = set()
         self.attempts: dict[str, _TaskAttempt] = {}
         self.lock = threading.Lock()
+        self.terminal_errors: dict[str, str] = {}
 
     def start(self) -> None:
         self.loop = asyncio.get_running_loop()
@@ -90,6 +92,7 @@ class TaskManager:
             attempt.estimate = 128 * 1024**2 + pixels * 48
             attempt.kind = kind
             attempt.units = max(.25, pixels / 1_000_000)
+            self.terminal_errors.pop(task_id, None)
             self.attempts[task_id] = attempt
             self.pending.add(task_id)
         self.loop.call_soon_threadsafe(self._schedule, task_id, attempt)
@@ -148,6 +151,25 @@ class TaskManager:
                     # asyncio cancellation does not kill a running native call.
                     await asyncio.shield(future)
                     raise
+            except Exception as exc:
+                # The failure handler can itself fail (e.g. SQLite is locked).
+                # Keep ownership of this page until the terminal state is saved;
+                # expose the failure immediately instead of polling stale RUNNING.
+                error = str(exc)
+                with self.lock:
+                    self.terminal_errors[task_id] = error
+                logger.exception("Task %s exited without a persisted terminal state", task_id)
+                while True:
+                    try:
+                        await asyncio.to_thread(self._recover_failed_task, task_id, error)
+                        with self.lock:
+                            self.terminal_errors.pop(task_id, None)
+                        break
+                    except Exception as recovery_error:
+                        logger.warning("Terminal recovery for task %s failed: %s", task_id, type(recovery_error).__name__)
+                        if self.stopping or not is_sqlite_busy(recovery_error):
+                            break
+                        await asyncio.sleep(1)
             finally:
                 runtime.pages.release(time.monotonic() - started, attempt.estimate, kind=attempt.kind, units=attempt.units, failed=failed)
                 with self.lock:
@@ -167,6 +189,8 @@ class TaskManager:
         attempt: _TaskAttempt,
         wrapper: asyncio.Task[None],
     ) -> None:
+        if not wrapper.cancelled() and (error := wrapper.exception()) is not None:
+            logger.error("Task wrapper %s failed", task_id, exc_info=(type(error), error, error.__traceback__))
         with self.lock:
             attempt.started = False
             if self.running.get(task_id) is wrapper:
@@ -186,6 +210,7 @@ class TaskManager:
         db = SessionLocal()
         processor: PipelineProcessor | None = None
         history_entry_id: int | None = None
+        terminal_persisted = True
         task = None
         try:
             task = db.get(ProcessingTask, task_id)
@@ -240,32 +265,62 @@ class TaskManager:
                 db.commit()
         except Exception as exc:
             db.rollback()
-            task = db.get(ProcessingTask, task_id)
-            if task and task.status in {TaskStatus.CANCELLING.value, TaskStatus.CANCELLED.value}:
-                if processor is not None:
-                    processor.finish_interrupted_page()
-                TaskManager._finish_cancelled_task(task)
-                db.commit()
-            elif task:
-                logger.exception("Processing task %s failed", task_id)
-                task.status = TaskStatus.FAILED.value
-                task.error_message = str(exc)
-                task.message = "Failed"
-                task.current_stage = None
-                task.finished_at = datetime.now(timezone.utc)
-                if task.page:
-                    task.page.status = "FAILED"
-                    task.page.error_message = str(exc)
-                    task.page.current_stage = None
-                db.commit()
+            logger.exception("Processing task %s failed", task_id)
+            # A poisoned transaction must never be reused to record its failure.
+            terminal_persisted = False
+            outcome = TaskManager._persist_failure(task_id, str(exc))
+            terminal_persisted = True
+            return outcome
         finally:
-            if history_entry_id is not None:
-                try:
+            try:
+                if history_entry_id is not None and terminal_persisted:
                     finish_task_history(db, task_id, history_entry_id)
-                except Exception:
-                    logger.exception("Could not finalize editor history for task %s", task_id)
-            db.close()
+            finally:
+                db.close()
         return task.status if task is not None else None
+
+    @staticmethod
+    def _persist_failure(task_id: str, error: str) -> str | None:
+        with SessionLocal() as db:
+            def save() -> str | None:
+                task = db.get(ProcessingTask, task_id)
+                if task is None:
+                    return None
+                if task.status in {TaskStatus.COMPLETED.value, TaskStatus.FAILED.value, TaskStatus.PAUSED.value}:
+                    return task.status
+                if task.status in {TaskStatus.CANCELLING.value, TaskStatus.CANCELLED.value}:
+                    if task.page:
+                        task.page.status = PipelineProcessor.stable_status_before(task.current_stage, task.page.status)
+                        task.page.current_stage = None
+                        task.page.error_message = None
+                    TaskManager._finish_cancelled_task(task)
+                else:
+                    task.status = TaskStatus.FAILED.value
+                    task.error_message = error
+                    task.message = "Failed"
+                    task.current_stage = None
+                    task.finished_at = datetime.now(timezone.utc)
+                    if task.page:
+                        task.page.status = "FAILED"
+                        task.page.error_message = error
+                        task.page.current_stage = None
+                return task.status
+
+            return retry_write(db, save)
+
+    @staticmethod
+    def _recover_failed_task(task_id: str, error: str) -> None:
+        from app.models import EditorHistoryEntry
+        from app.services.editor_history import finish_task_history
+
+        TaskManager._persist_failure(task_id, error)
+        with SessionLocal() as db:
+            entry_id = db.scalar(select(EditorHistoryEntry.id).where(EditorHistoryEntry.task_id == task_id))
+            finish_task_history(db, task_id, entry_id)
+
+    def terminal_error(self, task_id: str) -> str | None:
+        with self.lock:
+            return self.terminal_errors.get(task_id)
 
     @staticmethod
     def _finish_cancelled_task(task: ProcessingTask) -> None:

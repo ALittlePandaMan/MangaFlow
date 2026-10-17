@@ -54,7 +54,11 @@ def decode_predictions(response: dict[str, Any]) -> tuple[int, int, list[LayoutP
         x, y = origin
         w, h = shape
         total += w * h
-        if min(x, y) < 0 or min(w, h) <= 0 or x+w > width or y+h > height or total > MAX_TOTAL_MASK_PIXELS:
+        # A canonical empty crop represents a detected box whose segmentation
+        # failed. Reject partial-empty/negative shapes just like malformed crops.
+        empty = (x, y, w, h) == (0, 0, 0, 0)
+        if (not empty and (min(x, y) < 0 or min(w, h) <= 0 or x+w > width or y+h > height)
+                or total > MAX_TOTAL_MASK_PIXELS):
             raise ValueError("layout_mask_out_of_bounds")
         expected = (w*h+7)//8
         decoder = zlib.decompressobj()

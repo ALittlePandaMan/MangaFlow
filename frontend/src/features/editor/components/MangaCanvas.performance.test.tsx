@@ -5,23 +5,18 @@ import type {ImagePage,TextRegion} from '../../../types'
 import {useEditorStore} from '../store'
 import {MangaCanvas} from './MangaCanvas'
 import {shapePreviewRegion} from '../lib/shapeText'
-import {currentTextLayer} from '../lib/renderedText'
 
 vi.mock('konva',()=>({default:{}}))
 vi.mock('react-konva',()=>{
   const Container=({children}:{children?:ReactNode})=><>{children}</>
   const Empty=()=>null
-  return {Stage:Container,Layer:Container,Group:Container,Circle:Empty,Image:Empty,Line:Empty,Rect:Empty,Text:Empty}
+  return {Stage:Container,Layer:Container,Group:Container,Circle:Empty,Image:Empty,Line:Empty,Rect:Empty,Text:Empty,Shape:Empty}
 })
 vi.mock('../hooks/useImage',()=>({useImage:()=>({image:null,loading:false,error:false})}))
 vi.mock('./RegionPolygonEditor',()=>({RegionPolygonEditor:()=>null}))
 vi.mock('../lib/shapeText',async importOriginal=>({
   ...await importOriginal<typeof import('../lib/shapeText')>(),
   shapePreviewRegion:vi.fn((region:TextRegion)=>region),
-}))
-vi.mock('../lib/renderedText',async importOriginal=>({
-  ...await importOriginal<typeof import('../lib/renderedText')>(),
-  currentTextLayer:vi.fn(()=>null),
 }))
 
 const page={id:'page',width:1200,height:1800,original_url:'/page.png',clean_url:'/clean.png'} as ImagePage
@@ -34,25 +29,26 @@ const region=(index:number)=>({id:`r${index}`,region_key:`R${index}`,visible:tru
 const callbacks={onCreate:vi.fn(async()=>true),onUpdate:vi.fn(async()=>undefined),onRegionAction:vi.fn(),runningAction:null,interactionKey:'perf'}
 
 describe('dense-page preview work',()=>{
-  beforeAll(()=>vi.stubGlobal('ResizeObserver',class {observe() {} disconnect() {}}))
-  afterAll(()=>vi.unstubAllGlobals())
+  beforeAll(()=>{
+    vi.stubGlobal('ResizeObserver',class {observe() {} disconnect() {}})
+  })
+  afterAll(()=>{vi.unstubAllGlobals();vi.restoreAllMocks()})
   beforeEach(()=>{
-    vi.mocked(shapePreviewRegion).mockClear();vi.mocked(currentTextLayer).mockClear()
+    vi.spyOn(HTMLCanvasElement.prototype,'getContext').mockReturnValue(null)
+    vi.mocked(shapePreviewRegion).mockClear()
     useEditorStore.setState({view:'translated',tool:'select',zoom:1,selectedIds:[],layers:{original:false,detection:true,clean:true,translated:true,mask:false}})
   })
-  it('does not redo layout or text-layer validation for unchanged regions on 60 zoom frames',()=>{
+  it('does not redo layout for unchanged regions on 60 zoom frames',()=>{
     const regions=Array.from({length:100},(_,index)=>region(index))
     render(<MangaCanvas {...callbacks} page={page} regions={regions}/>)
     for(let frame=1;frame<=60;frame++) act(()=>useEditorStore.getState().setZoom(1+frame/100))
     expect(shapePreviewRegion).toHaveBeenCalledTimes(100)
-    expect(currentTextLayer).toHaveBeenCalledOnce()
   })
-  it('recomputes only the edited region and invalidates the old text-layer snapshot',()=>{
+  it('recomputes only the edited region',()=>{
     const regions=Array.from({length:100},(_,index)=>region(index))
     const {rerender}=render(<MangaCanvas {...callbacks} page={page} regions={regions}/>)
     const edited=regions.map((item,index)=>index===42?{...item,translated_text:'新译文'}:item)
     rerender(<MangaCanvas {...callbacks} page={page} regions={edited}/>)
     expect(shapePreviewRegion).toHaveBeenCalledTimes(101)
-    expect(currentTextLayer).toHaveBeenCalledTimes(2)
   })
 })

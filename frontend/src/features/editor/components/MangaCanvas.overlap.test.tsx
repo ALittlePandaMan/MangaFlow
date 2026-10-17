@@ -13,8 +13,9 @@ vi.mock('react-konva', () => {
 })
 vi.mock('../hooks/useImage', () => ({useImage: () => ({image: null, loading: false, error: false})}))
 vi.mock('./RegionPolygonEditor', () => ({
-  RegionPolygonEditor: ({label, polygon, onCommit}: {label: string, polygon: number[][], onCommit: (polygon: number[][]) => void}) =>
-    <button onClick={() => onCommit(polygon.map(([x, y]) => [x + 10, y]))}>{label}</button>,
+  RegionPolygonEditor: ({label, polygon, onCommit}: {label: string, polygon: number[][], onCommit: (polygon: number[][], rotationDelta?: number) => void}) =>
+    <><button onClick={() => onCommit(polygon.map(([x, y]) => [x + 10, y]))}>{label}</button>
+      <button aria-label="rotate-frame" onClick={() => onCommit(polygon.map(([x,y]) => [-y,x]),90)}>Rotate</button></>,
 }))
 
 const page = {id: 'page', width: 800, height: 1000, original_url: '/page.png'} as ImagePage
@@ -52,9 +53,20 @@ describe('overlapping region interaction order', () => {
     fireEvent.click(screen.getByRole('button', {name: new RegExp('R010.*框')}))
     const translated = view === 'translated'
     expect(callbacks.onUpdate).toHaveBeenCalledWith('R010', translated
-      ? {translated_bbox: [50, 20, 200, 300], translated_polygon: [[50, 20], [250, 20], [250, 320], [50, 320]], rotation: 0}
+      ? {translated_bbox: [50, 20, 200, 300], translated_polygon: [[50, 20], [250, 20], [250, 320], [50, 320]]}
       : {bbox: [30, 20, 200, 300], polygon: [[30, 20], [230, 20], [230, 320], [30, 320]]})
     expect(callbacks.onUpdate).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([false,true])('does not add a frame rotation to typography, including explicit perspective (%s)', perspective_warp => {
+    useEditorStore.setState({view:'translated'})
+    const callbacks=props(), selected={...regions[0],rotation:17,perspective_warp}
+    render(<MangaCanvas {...callbacks} regions={[selected,...regions.slice(1)]}/>)
+    fireEvent.click(screen.getByRole('button',{name:'rotate-frame'}))
+    expect(callbacks.onUpdate).toHaveBeenCalledExactlyOnceWith('R010',{
+      translated_polygon:[[-20,40],[-20,240],[-320,240],[-320,40]],translated_bbox:[-320,40,300,200],
+    })
+    expect(selected.rotation).toBe(17)
   })
 
   it('does not enable editing for locked, multi-selected, pan or comparison states', () => {

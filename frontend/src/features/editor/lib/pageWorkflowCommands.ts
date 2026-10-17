@@ -3,7 +3,7 @@ import type {DialogOptions} from '../../../components/GlobalDialog'
 import type {TaskUpdateHandler} from '../hooks/useTaskMonitor'
 import {api} from '../../../services/api'
 import {useEditorStore} from '../store'
-import {buildPageWorkflowRequest, canRunPageWorkflowStage, pageOcrNeedsDetection, pageWorkflowTargetView, unifiedLayoutNeedsDetection, type PageWorkflowStage} from '../pageWorkflow'
+import {buildPageWorkflowRequest, canRunPageWorkflowStage, pageWorkflowTargetView, type PageWorkflowStage} from '../pageWorkflow'
 import {blurActiveControl, pageWorkflowRank} from './pagePresentation'
 
 export interface PageWorkflowContext {
@@ -33,40 +33,25 @@ export function createPageWorkflowCommands(ctx:PageWorkflowContext) {
     const rank = pageWorkflowRank(page, ctx.getRegions())
     if (!canRunPageWorkflowStage(stage, rank)) return
     const currentRegions = ctx.getRegions()
-    let unifiedLayout = false, layoutChanged = false
-    if (stage === 'ocr') {
-      // Only a whole-page OCR action checks this policy. Dragging, typing and
-      // region-only OCR never fetch settings or re-run classification.
-      try {
-        const models = await api.models.list()
-        const detection = models?.configured.find(item => item.kind === 'detection' && item.enabled && item.is_default)
-        unifiedLayout = detection?.provider === 'rfdetr'
-        layoutChanged = !!detection && unifiedLayout && unifiedLayoutNeedsDetection(currentRegions,detection.config)
-      } catch {
-        // A settings read failure must not prevent ordinary OCR.
-      }
-      if (ctx.currentPageId() !== page.id || ctx.isBusy()) return
-    }
-    const startsWithDetection = stage === 'ocr' && (pageOcrNeedsDetection(currentRegions) || layoutChanged)
-    if (startsWithDetection && currentRegions.length > 0 && !await confirmDialog({
-      title: unifiedLayout ? '使用 RF-DETR 重新检测？' : '重新检测文字区域？',
-      message: '将重新检测文字区域。未锁定的自动框及其原文、译文、样式会重建，净图与译图会失效。手工区域和锁定区域保留。RF-DETR 会关联文字、气泡和分镜，不强制合并同气泡文字。',
+    if (stage === 'ocr' && currentRegions.length > 0 && !await confirmDialog({
+      title: '重新检测？',
+      message: '将按当前检测设置重新检测文字区域，再执行 OCR。未锁定的自动框及其原文、译文、样式会重建，净图与译图会失效。手工区域和锁定区域保留。',
       tone: 'info',
-      confirmLabel: '重新检测并 OCR',
+      confirmLabel: '重新检测',
     })) return
     if (ctx.currentPageId() !== page.id || ctx.isBusy()) return
     const targetView = pageWorkflowTargetView(stage)
     if (targetView) setView(targetView)
-    const request = buildPageWorkflowRequest(stage, startsWithDetection)
+    const request = buildPageWorkflowRequest(stage)
     if (stage === 'inpainting') request.options = {...request.options, repair_geometry: repairGeometry}
     const startingNotices: Record<PageWorkflowStage, string> = {
-      ocr: startsWithDetection ? unifiedLayout ? '正在使用 RF-DETR 检测文字、关联气泡并执行 OCR…' : '正在重新检测文字区域并执行 OCR…' : '正在重新 OCR 当前页的文字区域…',
+      ocr: '正在重新检测文字区域并执行 OCR…',
       translation: '正在重新翻译当前页…',
       inpainting: '正在重新生成文字 Mask、修复背景并自动重新排版…',
       rendering: '正在根据当前译文重新排版…',
     }
     const completedNotices: Record<PageWorkflowStage, string> = {
-      ocr: startsWithDetection ? unifiedLayout ? 'RF-DETR 检测与 OCR 已完成，文字框保持独立；请核对区域和原文后再翻译。' : '重新检测与 OCR 已完成，请核对文字区域和原文；确认无误后再执行重新翻译。' : 'OCR 已完成，请核对文字区域和原文；确认无误后再执行重新翻译。',
+      ocr: '重新检测与 OCR 已完成，请核对文字区域和原文；确认无误后再执行重新翻译。',
       translation: '当前页翻译已完成。',
       inpainting: '背景修复与重新排版已完成。',
       rendering: '当前页重新排版已完成。',

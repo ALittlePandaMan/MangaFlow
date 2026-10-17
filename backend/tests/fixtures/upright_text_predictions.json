@@ -1,0 +1,65 @@
+{
+  "image_size": [
+    592,
+    840
+  ],
+  "detections": [
+    {
+      "label": "bubble",
+      "confidence": 0.966627836227417,
+      "bbox": [
+        454.06540536880493,
+        42.22537815570831,
+        96.98212718963623,
+        125.06687700748444
+      ],
+      "origin": [
+        454,
+        43
+      ],
+      "size": [
+        97,
+        126
+      ],
+      "mask": "eAHtlDFOBDEMRbOioEGaI+QmhJtlbsJRNjfgCJuOkpEoWMQQM/7f7P5mJQSiQCLFzLMT58dWnJR87NptuuvAdGXbGMI2w9i537rwUXgVZjDXG/wJsbFRhdEwUcAdnMELeAJT4BpMARwuTvcvsBXmmyVCSa15rTO531Rj1c2WQp9/j8Jrdg/HyJ+0/ZXvxf8g/Cj8Ivwm/C48hK2KsRc+CKvAs/hfhX8k8CQb/UoGlwRE92u4l2UH4UsCWqJV1o96NkYRzmc+3Rp3sVc5yV61xZs/epXNzWlyhcFbXMBs9AzmSzKB+ZKEwOw3NwSacwh053ht/phAnLohg4qUOzgLM336mTKZwcHFA4IR0NJpTDPxA2r/Fjo="
+    },
+    {
+      "label": "text",
+      "confidence": 0.9430547952651978,
+      "bbox": [
+        515.0486997067928,
+        51.1634561419487,
+        23.425956070423126,
+        74.18209254741669
+      ],
+      "origin": [
+        516,
+        52
+      ],
+      "size": [
+        23,
+        74
+      ],
+      "mask": "eAFFTrsNgzAUPMcSLymClS4FCmVaBkDxKkwSGzFA1klpRJE1HmKBV7pAOAgKrjrdTwc0jWKmMZRTsD+fPu1iu9lpyRRnOoA8DPAoUFsfXRsXkrmUr2VxfXh23hCKHNUZTaWCUMelYWf75IYl0ZamVW63EeVrjWiUvPU4mymW4zrCaegT4ZXjjgMnwDAujP0CHc7OcqCGilACLSDGNeDmoT3W5h+bskdu"
+    },
+    {
+      "label": "text",
+      "confidence": 0.9418433904647827,
+      "bbox": [
+        468.93833833932877,
+        95.69491803646088,
+        24.636381030082703,
+        61.79848551750183
+      ],
+      "origin": [
+        470,
+        96
+      ],
+      "size": [
+        24,
+        63
+      ],
+      "mask": "eAE1zDEOgjAYhuG3qUk3WdngCI4aTeQoTRxYGTuYwOjgoXoSghNXYDD9/Qvy5RnffFBjlsZ+/SNNs3SzhFaCzUorGDVi3pgXdmxc+szic5a6NgUn6uy0TOjPuoK6GJTfVNFfo79Ej2pOW1PCDfpIP2Wye0KAfwTVwH1VDDhFdtwd4AfGqjqW"
+    }
+  ]
+}

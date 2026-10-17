@@ -39,6 +39,7 @@ RECOMMENDED_MODELS = {
             "bubble_threshold": 0.5,
             "panel_threshold": 0.5,
             "containment_threshold": 0.9,
+            "text_box_padding": {"top": 3.0, "bottom": 3.0, "left": 3.0, "right": 3.0},
         },
     ),
     "ocr": RecommendedModel(

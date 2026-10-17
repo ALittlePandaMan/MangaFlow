@@ -97,14 +97,14 @@ def text_probability(
 
 
 def learned_text_mask(
-    probability: np.ndarray, region: np.ndarray, *, expand: int = 2, allow_outside: bool = False
+    probability: np.ndarray, region: np.ndarray, *, search_margin: int = 0
 ) -> np.ndarray:
-    """Hysteresis and polygon anchoring reject isolated artwork predictions."""
+    """Keep seeded glyph pixels without dilation; a search margin only finds ink."""
     if probability.shape != region.shape or not np.isfinite(probability).all():
         raise ValueError("Text probability dimensions/values are invalid")
-    radius = max(0, min(6, int(expand)))
+    radius = max(0, min(6, int(search_margin)))
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (radius * 2 + 1, radius * 2 + 1))
-    search = cv2.dilate(region, kernel) if allow_outside else region
+    search = cv2.dilate(region, kernel) if radius else region
     weak = ((probability >= 0.25) & (search > 0)).astype(np.uint8)
     n, labels, stats, _ = cv2.connectedComponentsWithStats(weak, connectivity=8)
     seeds = np.bincount(labels[(probability >= 0.65) & (region > 0)], minlength=n)
@@ -116,4 +116,4 @@ def learned_text_mask(
     # A wildly overconfident map is not permission to erase a whole rectangle.
     if cv2.countNonZero(glyphs) > cv2.countNonZero(search) * 0.8:
         return np.zeros_like(region)
-    return cv2.bitwise_and(cv2.dilate(glyphs, kernel), search)
+    return cv2.bitwise_and(glyphs, search)

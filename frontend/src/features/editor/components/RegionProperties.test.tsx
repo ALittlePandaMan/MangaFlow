@@ -1,4 +1,5 @@
 import {fireEvent, render, screen, within} from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import {beforeEach, describe, expect, it, vi} from 'vitest'
 
 import type {ImagePage, TextRegion} from '../../../types'
@@ -101,6 +102,33 @@ describe('RegionProperties coordinate rotation', () => {
     expect(onUpdate).not.toHaveBeenCalled()
   })
 
+  it('decreases mixed font sizes as one batch while clamping each region independently', () => {
+    const targets=[{...region,font_size:1,auto_font_size:false},{...region,id:'region-2',font_size:40,auto_font_size:false}]
+    const onUpdateMany=vi.fn(), onUpdate=vi.fn()
+    render(<RegionProperties selectedRegions={targets} selectedCount={2} fontOptions={[]} onUpdate={onUpdate} onUpdateMany={onUpdateMany} onAction={vi.fn()}/>)
+    expect(screen.getByRole('textbox',{name:'批量字号'})).toHaveValue('')
+    fireEvent.click(screen.getByRole('button',{name:'批量字号减小'}))
+    expect(onUpdateMany).toHaveBeenCalledExactlyOnceWith([
+      {id:region.id,patch:{font_size:1,auto_font_size:false}},
+      {id:'region-2',patch:{font_size:39,auto_font_size:false}},
+    ])
+    expect(onUpdate).not.toHaveBeenCalled()
+  })
+
+  it.each([null,'region-2'])('commits the old selection before canvas mousedown selects %s',async target => {
+    const user=userEvent.setup(), onUpdate=vi.fn()
+    useEditorStore.getState().select(region.id)
+    render(<><LayerInspectorHarness onUpdate={onUpdate} onAction={vi.fn()}/><canvas data-testid="canvas" onMouseDown={() => useEditorStore.getState().select(target)}/></>)
+    const input=screen.getByRole('textbox',{name:'字号'})
+    await user.click(input)
+    await user.clear(input)
+    await user.type(input,'36')
+    expect(onUpdate).not.toHaveBeenCalled()
+    await user.click(screen.getByTestId('canvas'))
+    expect(onUpdate).toHaveBeenCalledExactlyOnceWith(region.id,{font_size:36,auto_font_size:false})
+    expect(useEditorStore.getState().selectedIds).toEqual(target ? [target] : [])
+  })
+
   it.each(['original','translated'] as const)('omits the batch action panel for multi-selection in %s view without changing selection',view => {
     useEditorStore.setState({view,selectedIds:['region-1','region-2']})
     const onUpdate=vi.fn(),onAction=vi.fn()
@@ -201,7 +229,7 @@ describe('RegionProperties coordinate rotation', () => {
     expect(patch.bbox).toHaveLength(4)
   })
 
-  it('rotates translated geometry and keeps translated text aligned', () => {
+  it('rotates translated geometry without changing the authored text rotation', () => {
     useEditorStore.setState({view: 'translated'})
     const onUpdate = renderProperties()
 
@@ -210,9 +238,64 @@ describe('RegionProperties coordinate rotation', () => {
 
     expect(onUpdate).toHaveBeenCalledOnce()
     const [, patch] = onUpdate.mock.calls[0] as [string, Partial<TextRegion>]
-    expect(patch.rotation).toBe(13)
+    expect(patch).not.toHaveProperty('rotation')
     expect(patch.translated_polygon).not.toEqual(region.translated_polygon)
     expect(patch.translated_bbox).toHaveLength(4)
+  })
+
+  it.each([1, 2])('commits a complete line spacing once for %i selected regions', count => {
+    const selectedRegions=layerRegions.slice(0,count), onUpdateMany=vi.fn(), onUpdate=vi.fn()
+    render(<RegionProperties selectedRegions={selectedRegions} selectedCount={count} fontOptions={[]} onUpdate={onUpdate} onUpdateMany={onUpdateMany} onAction={vi.fn()}/>)
+    const input=screen.getByRole('textbox',{name:'行距'})
+    fireEvent.focus(input)
+    for(const value of ['0','0.','0.9']) fireEvent.change(input,{target:{value}})
+    expect(onUpdateMany).not.toHaveBeenCalled()
+    fireEvent.keyDown(input,{key:'Enter'})
+    fireEvent.blur(input)
+    expect(onUpdateMany).toHaveBeenCalledExactlyOnceWith(selectedRegions.map(item=>({id:item.id,patch:{line_spacing:0.9}})))
+    expect(onUpdate).not.toHaveBeenCalled()
+  })
+
+  it('keeps explicit typography rotation separate from frame geometry', () => {
+    useEditorStore.setState({view:'translated'})
+    const onUpdate=renderProperties()
+    const input=screen.getByRole('textbox',{name:'译文旋转角度'})
+    fireEvent.focus(input)
+    fireEvent.change(input,{target:{value:'27'}})
+    fireEvent.blur(input)
+    expect(onUpdate).toHaveBeenCalledExactlyOnceWith(region.id,{rotation:27})
+  })
+
+  it('publishes an intentional zero rotation even when the region is already upright', () => {
+    const onUpdate=vi.fn(), upright={...region,rotation:0}
+    render(<RegionProperties region={upright} selectedRegions={[upright]} selectedCount={1} fontOptions={[]} onUpdate={onUpdate} onAction={vi.fn()}/>)
+    const input=screen.getByRole('textbox',{name:'译文旋转角度'})
+    fireEvent.focus(input)
+    fireEvent.change(input,{target:{value:'0.0'}})
+    fireEvent.keyDown(input,{key:'Enter'})
+    fireEvent.blur(input)
+    expect(onUpdate).toHaveBeenCalledExactlyOnceWith(region.id,{rotation:0})
+  })
+
+  it('shows only additional rotation in perspective while retaining the automatic standard angle', () => {
+    const onUpdate=vi.fn(), automatic={...region,rotation:-28,perspective_warp:true,
+      layout_data:{text_rotation:{version:1,source:'detector',role:'free_text',angle:-28}}}
+    const props={region:automatic,selectedRegions:[automatic],selectedCount:1,fontOptions:[],onUpdate,onAction:vi.fn()}
+    const {rerender}=render(<RegionProperties {...props}/>)
+    expect(screen.getByRole('textbox',{name:'译文旋转角度'})).toHaveValue('0')
+    const standard={...automatic,perspective_warp:false}
+    rerender(<RegionProperties {...props} region={standard} selectedRegions={[standard]}/>)
+    expect(screen.getByRole('textbox',{name:'译文旋转角度'})).toHaveValue('-28')
+    expect(onUpdate).not.toHaveBeenCalled()
+  })
+
+  it('reflects and toggles the translated group visibility in comparison view', () => {
+    useEditorStore.getState().setView('comparison')
+    renderProperties()
+    fireEvent.click(screen.getByRole('button',{name:'隐藏文本组'}))
+    expect(useEditorStore.getState().layers.translated).toBe(false)
+    fireEvent.click(screen.getByRole('button',{name:'显示文本组'}))
+    expect(useEditorStore.getState().layers.translated).toBe(true)
   })
 
   it('shows all text rows without a selection and expands only the clicked row', () => {
@@ -227,6 +310,45 @@ describe('RegionProperties coordinate rotation', () => {
     fireEvent.click(screen.getByRole('button',{name:'选择 R003：third source'}))
     expect(screen.getByRole('textbox',{name:'原文'})).toHaveValue('third source')
     expect(screen.getAllByRole('textbox',{name:'译文'})).toHaveLength(1)
+  })
+
+  it.each(['auto','visible'] as const)('reveals the selected row in the active scroll container when list overflow is %s', overflow => {
+    const {container}=render(<LayerInspectorHarness onUpdate={vi.fn()} onAction={vi.fn()}/>)
+    const list=container.querySelector<HTMLElement>('.inspector-layer-list')!
+    const inspector=container.querySelector<HTMLElement>('.region-inspector')!
+    list.style.overflowY=overflow
+    const scroller=overflow === 'visible' ? inspector : list
+    const inactive=overflow === 'visible' ? list : inspector
+    const button=screen.getByRole('button',{name:'选择 R003：third source'})
+    const row=button.closest('article')!
+    vi.spyOn(scroller,'getBoundingClientRect').mockReturnValue(new DOMRect(0,100,280,300))
+    vi.spyOn(inactive,'getBoundingClientRect').mockReturnValue(new DOMRect(0,0,280,1000))
+    vi.spyOn(row,'getBoundingClientRect').mockReturnValue(new DOMRect(0,450,280,180))
+
+    fireEvent.click(button)
+
+    expect(scroller.scrollTop).toBe(230)
+    expect(inactive.scrollTop).toBe(0)
+  })
+
+  it.each([
+    {top:50,height:180,delta:-50},
+    {top:450,height:500,delta:350},
+    {top:150,height:180,delta:0},
+  ])('keeps a row at $top with height $height reachable in the whole-panel scroller', ({top,height,delta}) => {
+    const {container}=render(<LayerInspectorHarness onUpdate={vi.fn()} onAction={vi.fn()}/>)
+    const list=container.querySelector<HTMLElement>('.inspector-layer-list')!
+    const inspector=container.querySelector<HTMLElement>('.region-inspector')!
+    list.style.overflowY='visible'
+    inspector.scrollTop=100
+    const button=screen.getByRole('button',{name:'选择 R003：third source'})
+    vi.spyOn(inspector,'getBoundingClientRect').mockReturnValue(new DOMRect(0,100,280,300))
+    vi.spyOn(button.closest('article')!,'getBoundingClientRect').mockReturnValue(new DOMRect(0,top,280,height))
+
+    fireEvent.click(button)
+
+    expect(inspector.scrollTop).toBe(100+delta)
+    expect(list.scrollTop).toBe(0)
   })
 
   it('supports range and additive selection from the text list without the removed batch panel', () => {

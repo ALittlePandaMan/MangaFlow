@@ -23,7 +23,7 @@ interface Props {
 }
 
 const shortLabels: Record<PageWorkflowStage, string> = {
-  ocr: 'OCR', translation: '翻译', inpainting: '修复', rendering: '排版',
+  ocr: '检测', translation: '翻译', inpainting: '修复', rendering: '排版',
 }
 
 const actionClass = 'flex h-[52px] min-w-0 cursor-pointer flex-col items-center justify-center gap-1 rounded-lg border px-1 text-xs font-medium leading-none outline-none transition-colors focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent disabled:cursor-not-allowed disabled:opacity-40'
@@ -31,7 +31,7 @@ const actionClass = 'flex h-[52px] min-w-0 cursor-pointer flex-col items-center 
 // Mounted only below 640px. Desktop/tablet keep their existing workflow buttons.
 export function MobilePageWorkflow({actions, recommended, disabled, running, resetting, resetDisabled, onRun, onReset}: Props) {
   const busy = disabled || !!running || resetting
-  return <div className="mobile-page-workflow grid min-w-0 grid-cols-5 gap-1.5" role="group" aria-label="当前页处理流程">
+  return <div className="mobile-page-workflow grid min-w-0 grid-cols-4 gap-1.5" role="group" aria-label="当前页处理流程">
     {actions.map(({stage, label, title, icon: Icon, disabled: unavailable}) => <button
       key={stage}
       type="button"

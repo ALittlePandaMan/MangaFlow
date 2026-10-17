@@ -7,6 +7,7 @@ from PIL import Image
 
 torch = pytest.importorskip("torch")
 from app.services.detection.layout_inference import postprocess_layout, prepare_image  # noqa: E402
+from app.services.detection.layout_protocol import decode_predictions, encode_predictions  # noqa: E402
 
 
 def outputs():
@@ -19,6 +20,24 @@ def test_empty_high_resolution_page_does_not_allocate_any_full_page_masks():
     with patch("app.services.detection.layout_inference.F.interpolate") as resize:
         assert postprocess_layout(outputs(), 4000, 6000) == []
         resize.assert_not_called()
+
+
+@pytest.mark.parametrize("label", range(4))
+def test_empty_segmentation_keeps_the_confident_box_through_worker_transport(label):
+    values = outputs()
+    values["pred_logits"][0, 0, label] = torch.logit(torch.tensor(.99))
+    values["pred_masks"].fill_(-1)
+    predictions = postprocess_layout(values, 80, 100)
+    assert len(predictions) == 1
+    assert predictions[0].bbox == pytest.approx([16, 20, 32, 40])
+    assert predictions[0].mask.shape == (0, 0)
+    assert predictions[0].mask_origin == (0, 0)
+    assert predictions[0].mask.nbytes == 0
+    width, height, decoded = decode_predictions(encode_predictions(predictions, 80, 100))
+    assert (width, height) == (80, 100)
+    assert len(decoded) == 1 and decoded[0].label == predictions[0].label
+    assert decoded[0].bbox == predictions[0].bbox
+    assert decoded[0].mask.shape == (0, 0)
 
 
 def test_thresholds_and_background_are_filtered_before_single_mask_resize():

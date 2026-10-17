@@ -14,10 +14,10 @@ function region(): TextRegion {
     layout_data: {shape_layout_applied: true, effective_text_bbox: [20, 15, 60, 120], shape_layout_source: {bbox, polygon}}}
 }
 
-describe('shape-aware text preview', () => {
-  it('uses the same safe bounds as export without mutating stored geometry', () => {
+describe('visible-frame text preview', () => {
+  it('ignores old hidden safe bounds without mutating stored geometry', () => {
     const original = region()
-    expect(shapePreviewRegion(original)?.translated_bbox).toEqual([20, 15, 60, 120])
+    expect(shapePreviewRegion(original)?.translated_bbox).toEqual(bbox)
     expect(original.translated_bbox).toBe(bbox)
   })
   it.each([{rotation: 10}, {perspective_warp: true}, {bbox: [1, 0, 100, 150]},
@@ -29,10 +29,10 @@ describe('shape-aware text preview', () => {
     const original = region()
     expect(shapePreviewRegion({...original, locked: true})?.translated_bbox).toEqual(shapePreviewRegion(original)?.translated_bbox)
   })
-  it('does not preview text when no safe area exists', () => {
+  it('does not hide text because an old bubble mask had no safe area', () => {
     const original = region()
     original.layout_data = {...original.layout_data, shape_layout_applied: false, render_skipped: true}
-    expect(shapePreviewRegion(original)).toBeNull()
+    expect(shapePreviewRegion(original)).toBe(original)
     expect(shapePreviewRegion({...original, rotation: 5})).not.toBeNull()
   })
   it('ignores stale or malformed layout metadata', () => {

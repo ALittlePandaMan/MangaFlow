@@ -4,7 +4,7 @@ import unicodedata
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from functools import lru_cache
-from math import cos, radians, sin
+from math import ceil, cos, radians, sin
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +29,9 @@ class GlyphPlacement:
     font_path: str
     font_size: int
     rotate: float = 0.0
+    # Automatic layout positions the actual ink rectangle, not the font's em
+    # square. Bounds are measured at an alphabetic baseline (Pillow 'ls').
+    ink_box: tuple[float, float, float, float] | None = None
 
 
 @dataclass(slots=True)
@@ -181,50 +184,27 @@ class MangaLayoutEngine:
     ) -> LayoutResult:
         if not text.strip() or len(bbox) != 4:
             return LayoutResult(self.min_font_size, [], 0, 0, overflow=not bool(text.strip()), warnings=["empty_text"])
-        polygon_factor = self._polygon_factor(polygon, bbox)
-        padding = 2 + max(0, stroke_width) if auto_fit else 0
-        factor = polygon_factor if auto_fit else 1
-        available_width = max(1.0, bbox[2] * factor - padding * 2)
-        available_height = max(1.0, bbox[3] * factor - padding * 2)
+        # The editor's visible target frame is the sizing contract. Polygon
+        # area is not a linear text inset, and must not silently shrink it.
+        padding = 1 + ceil(max(0, stroke_width)) if auto_fit else 0
+        available_width = max(1.0, bbox[2] - padding * 2)
+        available_height = max(1.0, bbox[3] - padding * 2)
         resolve_font = self.fonts.prepare(font_family, custom_font_path, font_weight)
         def candidate(size: int) -> LayoutResult:
-            if orientation == "vertical":
-                result = self._vertical(
-                    text,
-                    available_width,
-                    available_height,
-                    size,
-                    font_family,
-                    line_spacing,
-                    character_spacing,
-                    custom_font_path,
-                    font_weight,
-                    resolve_font,
-                )
-            else:
-                result = self._horizontal(
-                    text,
-                    available_width,
-                    available_height,
-                    size,
-                    font_family,
-                    line_spacing,
-                    character_spacing,
-                    alignment,
-                    custom_font_path,
-                    font_weight,
-                    resolve_font,
-                )
-            if auto_fit and (bbox[2] * factor <= padding * 2 or bbox[3] * factor <= padding * 2):
+            result = self._fit_ink(text, available_width, available_height, size,
+                                   orientation, line_spacing, character_spacing, alignment, resolve_font)
+            if auto_fit and (bbox[2] <= padding * 2 or bbox[3] <= padding * 2):
                 result.overflow = True
             if auto_fit and abs(rotation) > .01 and not result.overflow:
                 angle = radians(rotation)
                 offset_x = (bbox[2] - (result.coordinate_width or result.width)) / 2
                 offset_y = (bbox[3] - result.height) / 2
                 for glyph in result.placements:
-                    ink = self._font(Path(glyph.font_path), size).getbbox(glyph.text, anchor="lt")
                     gx, gy = glyph.x + offset_x, glyph.y + offset_y
-                    gw, gh = (size,size) if glyph.rotate else (ink[2],ink[3])
+                    ink = glyph.ink_box
+                    gw, gh = ink[2] - ink[0], ink[3] - ink[1]
+                    if glyph.rotate:
+                        gw, gh = gh, gw
                     for px,py in ((gx,gy),(gx+gw,gy),(gx+gw,gy+gh),(gx,gy+gh)):
                         dx,dy = px-bbox[2]/2,py-bbox[3]/2
                         rx = bbox[2]/2 + dx*cos(angle)-dy*sin(angle)
@@ -240,11 +220,13 @@ class MangaLayoutEngine:
             if result.overflow:
                 result.warnings.append("manual_font_size_overflow")
             return result
-        maximum = max(1, min(512, int(available_height if orientation != "vertical" else min(available_width, available_height))))
+        # Lowercase, punctuation and narrow glyphs can have ink smaller than
+        # one em. A cap based on frame height would leave that space unused.
+        maximum = 512
         best = candidate(1)
         # Wrapping/height is monotonic for ordinary spacing. Negative spacing
         # can reverse glyph advances, so use exact descending search there.
-        if character_spacing < 0:
+        if character_spacing < 0 or abs(rotation) > .01:
             for size in range(maximum, 0, -1):
                 result = candidate(size)
                 if not result.overflow:
@@ -262,6 +244,84 @@ class MangaLayoutEngine:
         if best.overflow:
             best.warnings.extend(["text_overflow", "minimum_font_size_reached"])
         return best
+
+    def _fit_ink(self, text, width, height, size, orientation, line_spacing,
+                 character_spacing, alignment, resolve_font) -> LayoutResult:
+        """Wrap and fit real glyph bounds; keep user-entered paragraph breaks.
+
+        Metrics are cached per candidate so repeated dialogue costs one font
+        lookup/measurement per distinct glyph, not per growing line prefix.
+        """
+        vertical = orientation == "vertical"
+        step = max(1., size + character_spacing)
+        pitch = size * line_spacing
+
+        @lru_cache(maxsize=None)
+        def metrics(original):
+            character = original.translate(VERTICAL_FORMS) if vertical else original
+            path = resolve_font(character)
+            font = self._font(path, size)
+            ink = self._ink_bounds(path, size, character)
+            rotate = 90. if vertical and self._rotate_in_vertical(original) else 0.
+            w, h = ink[2] - ink[0], ink[3] - ink[1]
+            if rotate:
+                w, h = h, w
+            return character, path, ink, rotate, w, h, float(font.getlength(character))
+
+        lines = []
+        for paragraph in text.replace("\r", "").split("\n"):
+            current, cursor, left, right = "", 0., float("inf"), float("-inf")
+            for character in paragraph:
+                _, _, ink, _, _, h, advance = metrics(character)
+                new_left, new_right = min(left, cursor + ink[0]), max(right, cursor + ink[2])
+                extent = len(current) * step + h if vertical else new_right - new_left
+                if current and extent > (height if vertical else width):
+                    lines.append(current)
+                    current, cursor = "", 0.
+                    new_left, new_right = ink[0], ink[2]
+                current += character
+                cursor += advance + character_spacing
+                left, right = new_left, new_right
+            lines.append(current)
+
+        placements = []
+        min_x = min_y = float("inf")
+        max_x = max_y = float("-inf")
+        for index, line in enumerate(lines):
+            line_glyphs = []
+            cursor = 0.
+            line_left, line_right = float("inf"), float("-inf")
+            for row, original in enumerate(line):
+                character, path, ink, rotate, w, h, advance = metrics(original)
+                x = -index * pitch + (size-w)/2 if vertical else cursor + ink[0]
+                y = row * step if vertical else index * pitch + ink[1]
+                glyph = GlyphPlacement(character, x, y, str(path), size, rotate, ink)
+                line_glyphs.append((glyph, w, h))
+                line_left, line_right = min(line_left, x), max(line_right, x+w)
+                cursor += advance + character_spacing
+            if not line_glyphs:
+                # Preserve blank paragraph spacing, even at the ends.
+                if vertical:
+                    min_x, max_x = min(min_x, -index*pitch), max(max_x, -index*pitch+size)
+                else:
+                    min_y, max_y = min(min_y, index*pitch-size), max(max_y, index*pitch)
+                continue
+            shift = 0. if vertical else {"left": 0., "right": width-(line_right-line_left)}.get(
+                alignment, (width-(line_right-line_left))/2) - line_left
+            for glyph, w, h in line_glyphs:
+                glyph.x += shift
+                min_x, max_x = min(min_x, glyph.x), max(max_x, glyph.x+w)
+                min_y, max_y = min(min_y, glyph.y), max(max_y, glyph.y+h)
+                placements.append(glyph)
+        if not placements:
+            return LayoutResult(size, [], 0, 0, lines=lines)
+        used_width, used_height = max_x-min_x, max_y-min_y
+        for glyph in placements:
+            glyph.x -= min_x if vertical else 0
+            glyph.y -= min_y
+        return LayoutResult(size, placements, used_width, used_height,
+                            overflow=used_width > width or used_height > height, lines=lines,
+                            coordinate_width=None if vertical else width)
 
     def _horizontal(
         self,
@@ -376,6 +436,18 @@ class MangaLayoutEngine:
         )
         coverage = max(0.2, min(1.0, area / (bbox[2] * bbox[3])))
         return coverage**0.5
+
+    @staticmethod
+    @lru_cache(maxsize=8192)
+    def _ink_bounds(path: Path, size: int, character: str) -> tuple[int, int, int, int]:
+        # getbbox includes font side bearings/advance space for some fonts.
+        # Raster ink bounds match Canvas actualBoundingBox* and visual centering.
+        font = MangaLayoutEngine._font(path, size)
+        mask, offset = font.getmask2(character, anchor="ls")
+        bounds = mask.getbbox()
+        if bounds is None:
+            return (0, 0, 0, 0)
+        return (bounds[0]+offset[0], bounds[1]+offset[1], bounds[2]+offset[0], bounds[3]+offset[1])
 
     @staticmethod
     @lru_cache(maxsize=512)

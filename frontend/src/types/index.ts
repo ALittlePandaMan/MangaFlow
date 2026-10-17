@@ -54,6 +54,7 @@ export interface ImagePage {
   current_stage: string | null
   error_message: string | null
   ocr_exempt: boolean
+  region_count?: number
   original_url: string
   thumbnail_url?: string | null
   thumbnail_2x_url?: string | null

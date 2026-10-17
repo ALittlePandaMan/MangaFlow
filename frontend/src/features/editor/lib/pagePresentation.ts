@@ -8,7 +8,7 @@ export function blurActiveControl() {
 export function pageTaskBusyLabel(task: ProcessingTask | null, requestedStage: PageWorkflowStage | null): string {
   if (task?.current_stage === 'translation' && task.message.startsWith('翻译前自动识别')) return task.message
   if (!task?.current_stage) return ({
-    ocr: '正在重新 OCR 当前页…',
+    ocr: '正在重新检测当前页并执行 OCR…',
     translation: '正在重新翻译当前页…',
     inpainting: '正在重新修复当前页…',
     rendering: '正在重新排版当前页…',

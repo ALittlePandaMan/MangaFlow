@@ -1,5 +1,5 @@
 import {describe, expect, it} from 'vitest'
-import {isPerspectiveQuad, orderPerspectiveQuad, perspectiveQuadSize} from './perspectiveText'
+import {isPerspectiveQuad, orderPerspectiveQuad, perspectiveQuadSize, perspectiveRasterRatio} from './perspectiveText'
 
 // Same three angled boxes as the reported page, in geometric TL/TR/BR/BL order.
 const quads = [
@@ -27,5 +27,14 @@ describe('perspective reading direction', () => {
     expect(isPerspectiveQuad([[0,0], [100,0], [30,20], [0,100]])).toBe(false)
     expect(isPerspectiveQuad([[0,0], [100,0], [100,100], [0,0]])).toBe(false)
     expect(isPerspectiveQuad([[0,0], [100,0], [100,Number.NaN], [0,100]])).toBe(false)
+  })
+  it.each([[100_000,100_000],[100,1_000_000]])('bounds overflow raster allocation for a %s x %s tile', (width,height) => {
+    const ratio=perspectiveRasterRatio(width,height,6)
+    expect(ratio).toBeGreaterThan(0)
+    expect(width*height*ratio*ratio).toBeLessThanOrEqual(8_000_000.001)
+    expect(Math.max(width,height)*ratio).toBeLessThanOrEqual(16_384)
+  })
+  it('keeps high-resolution small text unchanged', () => {
+    expect(perspectiveRasterRatio(100,50,6)).toBe(6)
   })
 })

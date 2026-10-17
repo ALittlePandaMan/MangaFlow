@@ -22,10 +22,11 @@ def test_pixel_segmentation_keeps_seeded_weak_strokes_and_bounds_growth():
     probability[60:64, 28:30] = 0.95  # Detached outside illustration.
     region = np.zeros((100, 100), np.uint8)
     region[20:80, 30:75] = 255
-    mask = learned_text_mask(probability, region, expand=3, allow_outside=True)
+    mask = learned_text_mask(probability, region, search_margin=3)
     assert np.all(mask[30:50, 28:35] == 255)
     assert not np.any(mask[60:64, 28:30])
-    bounded = learned_text_mask(probability, region, expand=3)
+    assert not np.any(mask[probability < .25])  # No synthetic fringe around model pixels.
+    bounded = learned_text_mask(probability, region)
     assert not np.any(bounded[region == 0])
     assert not np.any(learned_text_mask(np.ones_like(probability), region))
 

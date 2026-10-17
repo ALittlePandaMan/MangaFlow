@@ -16,7 +16,7 @@ from app.services.inpainting.background import (
 from app.services.inpainting.text_segmentation import learned_text_mask
 from PIL import Image, ImageDraw
 
-MASK_ALGORITHM_VERSION = 4
+MASK_ALGORITHM_VERSION = 5
 
 
 def load_text_mask_source(image_path: Path) -> tuple[np.ndarray, np.ndarray]:
@@ -52,7 +52,6 @@ def create_text_mask(
     polygon: list[list[float]],
     output_path: Path,
     *,
-    expand: int = 2,
     color_threshold: float = 18.0,
     source_image: np.ndarray | None = None,
     source_lab: np.ndarray | None = None,
@@ -80,7 +79,7 @@ def create_text_mask(
     if balloon_mask is not None:
         result = _create_balloon_text_mask(
             image, lab, [polygon], balloon_mask, output_path,
-            expand=expand, color_threshold=color_threshold, context=balloon_context,
+            color_threshold=color_threshold, context=balloon_context,
             sample_exclusion=sample_exclusion, glyph_output_path=glyph_output_path,
             text_probability=text_probability,
         )
@@ -177,15 +176,7 @@ def create_text_mask(
         candidate = np.zeros_like(candidate)
     glyph_evidence = candidate.copy()
     method = "conservative_glyph" if conservative else "enclosed_background_color" if enclosed_background else "local_background_glyph" if clear_glyphs else "local_color_distance"
-    if expand > 0:
-        # Expand only the antialiased fringe, not in proportion to the whole
-        # frame: large closing/filling kernels turn dense glyphs into a box.
-        size = min(6, int(expand)) * 2 + 1
-        candidate = cv2.dilate(
-            candidate,
-            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (size, size)),
-            iterations=1,
-        )
+    # Frame padding widens the search area, never the segmented glyph strokes.
     candidate = cv2.bitwise_and(candidate, crop_region)
     mask = np.zeros((height, width), dtype=np.uint8)
     mask[y : y + box_height, x : x + box_width] = candidate
@@ -194,7 +185,7 @@ def create_text_mask(
     learned_pixels = 0
     learned_available = False
     if text_probability is not None:
-        learned = learned_text_mask(text_probability, region, expand=expand, allow_outside=balloon_mask is not None)
+        learned = learned_text_mask(text_probability, region)
         learned_available = cv2.countNonZero(learned) > 0
         if learned_available and paper is None:
             # Without verified plain paper, disconnected dark lines are not
@@ -238,6 +229,7 @@ def create_text_mask(
 
     metadata = {
         "version": MASK_ALGORITHM_VERSION,
+        "glyph_expansion_px": 0,
         "method": method,
         "coverage": round(
             cv2.countNonZero(cv2.bitwise_and(mask, region)) / max(1, cv2.countNonZero(region)),
@@ -271,7 +263,6 @@ def create_text_mask_union(
     polygons: list[list[list[float]]],
     output_path: Path,
     *,
-    expand: int = 2,
     color_threshold: float = 18.0,
     source_image: np.ndarray | None = None,
     source_lab: np.ndarray | None = None,
@@ -290,7 +281,6 @@ def create_text_mask_union(
             image_path,
             polygons[0],
             output_path,
-            expand=expand,
             color_threshold=color_threshold,
             source_image=source_image,
             source_lab=source_lab,
@@ -311,7 +301,7 @@ def create_text_mask_union(
     if balloon_mask is not None:
         result = _create_balloon_text_mask(
             resolved_source_image, resolved_source_lab, polygons, balloon_mask, output_path,
-            expand=expand, color_threshold=color_threshold, context=balloon_context,
+            color_threshold=color_threshold, context=balloon_context,
             sample_exclusion=sample_exclusion,
             text_probability=text_probability,
         )
@@ -335,7 +325,6 @@ def create_text_mask_union(
                     image_path,
                     polygon,
                     temporary,
-                    expand=expand,
                     color_threshold=color_threshold,
                     source_image=resolved_source_image,
                     source_lab=resolved_source_lab,
@@ -382,6 +371,7 @@ def create_text_mask_union(
 
     metadata: dict[str, Any] = {
         "version": MASK_ALGORITHM_VERSION,
+        "glyph_expansion_px": 0,
         "method": "source_polygon_union",
         "source_count": len(polygons),
         "components": component_metadata,
@@ -399,7 +389,6 @@ def _create_balloon_text_mask(
     balloon: np.ndarray,
     output_path: Path,
     *,
-    expand: int,
     color_threshold: float,
     context: dict[str, Any] | None,
     sample_exclusion: np.ndarray | None = None,
@@ -424,7 +413,9 @@ def _create_balloon_text_mask(
     background = balloon_background(image, lab, balloon, exclusion)
     if background is None:
         return None
-    radius = max(0, min(12, max(int(expand), round(min(minimum_side) * .08)))) if expand > 0 else 0
+    # Search for connected clipped strokes without dilating the recovered ink.
+    # This margin is not the repair-mask thickness or the detector's box padding.
+    radius = min(12, max(2, round(min(minimum_side) * .08)))
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * radius + 1, 2 * radius + 1))
     search = cv2.dilate(region, kernel) if radius else region.copy()
     points = cv2.findNonZero(search)
@@ -444,13 +435,10 @@ def _create_balloon_text_mask(
             keep[label] = 255
     glyphs = np.zeros_like(region)
     glyphs[roi] = keep[labels]
-    # Expansion includes antialiasing but remains bounded by the local search
-    # and, finally, the actual safe balloon interior. Do not fill the OCR box.
-    mask = cv2.dilate(glyphs, kernel) if radius else glyphs.copy()
-    mask = cv2.bitwise_and(mask, search)
+    mask = glyphs.copy()
     learned_pixels = 0
     if text_probability is not None:
-        learned = learned_text_mask(text_probability, region, expand=radius, allow_outside=True)
+        learned = learned_text_mask(text_probability, region, search_margin=radius)
         learned_pixels = cv2.countNonZero(cv2.bitwise_and(learned, cv2.bitwise_not(mask)))
         mask = cv2.bitwise_or(mask, learned)
         glyphs = cv2.bitwise_or(glyphs, learned)
@@ -467,6 +455,7 @@ def _create_balloon_text_mask(
             raise ValueError(f"Cannot write glyph evidence: {glyph_output_path}")
     metadata: dict[str, Any] = {
         "version": MASK_ALGORITHM_VERSION,
+        "glyph_expansion_px": 0,
         "method": "source_polygon_union" if len(polygons) > 1 else "balloon_glyph",
         "source_count": len(polygons),
         "background": background,

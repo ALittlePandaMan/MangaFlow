@@ -10,6 +10,7 @@ import pytest
 from app.services.base import ProviderError
 from app.services.detection.classification import LayoutTextClassifier
 from app.services.detection.layout import (
+    TEXT_BOX_PADDING,
     RFDetrTextDetector,
     build_layout_regions,
     layout_options,
@@ -38,6 +39,31 @@ def test_roundtrip_packed_crop_protocol_preserves_exact_geometry_and_binary_mask
     for source, target in zip(items, decoded, strict=True):
         assert source.label == target.label and source.bbox == target.bbox and source.mask_origin == target.mask_origin
         np.testing.assert_array_equal(source.mask, target.mask)
+
+
+@pytest.mark.parametrize("empty_label", ["text", "bubble"])
+def test_empty_segmentation_preserves_ocr_box_without_inventing_bubble_association(empty_label):
+    text, bubble = prediction(), prediction("bubble", (0, 0, 60, 80))
+    item = text if empty_label == "text" else bubble
+    item.mask, item.mask_origin = np.empty((0, 0), np.uint8), (0, 0)
+    _, _, decoded = decode_predictions(encode_predictions([text, bubble], 200, 200))
+    results = build(decoded)
+    assert len(results) == 1
+    assert results[0].bbox == [7., 7., 18., 30.]
+    assert results[0].metadata["raw_bbox"] == text.bbox
+    assert results[0].orientation == "vertical"
+    assert results[0].bubble_id is None and results[0].balloon_mask is None
+    kept, _ = partition_text_roles(results)
+    assert kept == results
+
+
+@pytest.mark.parametrize("origin,shape", [([0, 0], [0, 1]), ([0, 0], [1, 0]), ([1, 0], [0, 0]),
+                                         ([0, 1], [0, 0]), ([0, 0], [-1, -1])])
+def test_empty_crop_support_does_not_accept_malformed_mask_geometry(origin, shape):
+    response = encode_predictions([prediction()], 200, 200)
+    response["detections"][0].update(origin=origin, size=shape)
+    with pytest.raises(ValueError, match="layout_mask_out_of_bounds"):
+        decode_predictions(response)
 
 
 @pytest.mark.parametrize("damage", ["extra_bytes", "truncated", "negative_origin", "huge_size", "nan_box", "too_many"])
@@ -141,7 +167,7 @@ def test_reading_order_keeps_bubble_children_together_despite_interleaved_column
              prediction(box=(70, 120, 10, 20)), prediction("bubble", (10, 0, 110, 100)),
              prediction("bubble", (65, 110, 30, 50))]
     results = build(list(reversed(items)))
-    assert [r.bbox[:2] for r in results] == [[100., 10.], [40., 60.], [70., 120.]]
+    assert [r.metadata["raw_bbox"][:2] for r in results] == [[100., 10.], [40., 60.], [70., 120.]]
     assert results[0].bubble_id == results[1].bubble_id != results[2].bubble_id
 
 
@@ -150,7 +176,7 @@ def test_layout_order_uses_panel_then_bubble_ancestry_and_geometry_not_scores():
              prediction("bubble", (90, 50, 40, 60)), prediction("bubble", (0, 5, 40, 40)),
              prediction("panel", (85, 0, 100, 160)), prediction("panel", (0, 0, 80, 160))]
     results = build(items)
-    assert [r.bbox[0] for r in results] == [100, 10]
+    assert [r.metadata["raw_bbox"][0] for r in results] == [100, 10]
     assert results[0].metadata["panel"]["bbox"] == [85, 0, 100, 160]
     assert results[1].metadata["panel"]["bbox"] == [0, 0, 80, 160]
 
@@ -163,6 +189,165 @@ def test_orientation_uses_line_projection_instead_of_the_whole_block_aspect_rati
     assert orientation == "horizontal" and angle == 0 and len(polygon) == 4
     _, orientation, angle = text_geometry(prediction(box=(10, 10, 100, 60), mask=mask.T), 200, 200)
     assert orientation == "vertical" and angle == 0
+
+
+@pytest.mark.parametrize("origin", [(0, 0), (70, 40)])
+def test_typography_ignores_disconnected_foreground_outside_text_window(origin):
+    clean = np.zeros((160, 240), np.uint8)
+    for x in (12, 28, 44):
+        clean[12:80, x:x+3] = 1
+    noisy = clean.copy()
+    for y in (100, 116, 132):
+        noisy[y:y+3, 5:235] = 1  # much more horizontal ink, but outside this text
+    x, y = origin
+    bbox = [x+8, y+8, 45, 76]
+    expected = text_geometry(LayoutPrediction("text", .95, bbox, clean, origin), 400, 300)
+    actual = text_geometry(LayoutPrediction("text", .95, bbox, noisy, origin), 400, 300)
+    assert actual == expected
+    assert actual[1:] == ("vertical", 0.)
+
+
+def test_typography_falls_back_to_box_direction_when_its_window_has_no_foreground():
+    mask = np.ones((20, 100), np.uint8)
+    item = LayoutPrediction("text", .95, [10, 10, 20, 70], mask, (60, 100))
+    polygon, orientation, angle = text_geometry(item, 200, 200)
+    assert orientation == "vertical" and angle == 0
+    assert polygon == [[10., 10.], [30., 10.], [30., 80.], [10., 80.]]
+
+
+def test_detection_pads_each_edge_once_without_mutating_model_predictions():
+    text = prediction(box=(10, 20, 20, 50))
+    original_mask = text.mask.copy()
+    first, second = build([text])[0], build([text])[0]
+    assert first.bbox == second.bbox == [7., 17., 26., 56.]
+    assert first.polygon == [[7., 17.], [33., 17.], [33., 73.], [7., 73.]]
+    assert first.metadata["text_box_padding"] == dict.fromkeys(("top", "bottom", "left", "right"), TEXT_BOX_PADDING)
+    assert first.metadata["raw_bbox"] == text.bbox == [10, 20, 20, 50]
+    np.testing.assert_array_equal(text.mask, original_mask)
+
+
+@pytest.mark.parametrize("padding", [0, 1, 8, 50])
+def test_configured_padding_only_changes_final_frame(padding):
+    text = prediction(box=(70, 70, 20, 50))
+    bubble = prediction("bubble", (10, 10, 180, 180))
+    result, = build([text, bubble], {"text_box_padding": padding})
+    assert result.bbox == [70-padding, 70-padding, 20+2*padding, 50+2*padding]
+    assert result.metadata["text_box_padding"] == dict.fromkeys(("top", "bottom", "left", "right"), padding)
+    assert result.metadata["raw_bbox"] == text.bbox
+    assert result.metadata["balloon_assignment"]["coverage"] == 1
+    np.testing.assert_array_equal(result.text_mask, text.mask)
+    assert result.balloon_mask is bubble.mask
+
+
+@pytest.mark.parametrize("padding", [0, 8, 50])
+def test_configured_padding_preserves_duplicate_and_sfx_decisions(padding):
+    first, second = prediction(box=(10, 10, 2, 8)), prediction(box=(12, 10, 2, 8))
+    bubble = prediction("bubble", (10, 10, 4, 8))
+    sfx = prediction("onomatopoeia", (80, 80, 12, 24))
+    results = build([first, second, bubble, sfx], {"text_box_padding": padding})
+    text = [r for r in results if not r.metadata["text_classification"]["excluded"]]
+    assert len(text) == 2
+    assert text[0].bubble_id == text[1].bubble_id is not None
+    excluded, = [r for r in results if r.metadata["text_classification"]["excluded"]]
+    assert excluded.bbox == sfx.bbox
+
+
+@pytest.mark.parametrize("padding", [-1, 51, float("nan"), float("inf")])
+def test_invalid_padding_is_rejected_before_model_loading(padding):
+    with pytest.raises(ValueError, match="0–50"):
+        layout_options({"text_box_padding": padding})
+
+
+@pytest.mark.parametrize("side", ["top", "bottom", "left", "right"])
+def test_each_padding_side_moves_only_its_own_edge(side):
+    margins = dict.fromkeys(("top", "bottom", "left", "right"), 0)
+    margins[side] = 7
+    result, = build([prediction(box=(70, 70, 20, 50))], {"text_box_padding": margins})
+    assert result.bbox == [70-margins["left"], 70-margins["top"],
+                           20+margins["left"]+margins["right"], 50+margins["top"]+margins["bottom"]]
+    assert result.metadata["text_box_padding"] == margins
+
+
+@pytest.mark.parametrize("angle", [-12, 12])
+def test_asymmetric_padding_keeps_slanted_edges_parallel_in_local_axes(angle):
+    import cv2
+
+    mask = np.zeros((140, 240), np.uint8)
+    for y in (45, 65, 85):
+        mask[y:y+3, 40:200] = 1
+    mask = cv2.warpAffine(mask, cv2.getRotationMatrix2D((120, 70), -angle, 1), (240, 140), flags=cv2.INTER_NEAREST)
+    item = LayoutPrediction("text", .95, [120, 130, 160, 80], mask, (80, 100))
+    polygon, orientation, detected_angle = text_geometry(item, 500, 500, padding={"top": 0, "bottom": 9, "left": 7, "right": 2})
+    original, original_orientation, original_angle = text_geometry(item, 500, 500)
+    assert (orientation, detected_angle) == (original_orientation, original_angle)
+    rad = np.radians(detected_angle)
+    rotation = np.array([[np.cos(rad), -np.sin(rad)], [np.sin(rad), np.cos(rad)]])
+    local = (np.asarray(polygon)-[200, 170])@rotation + [200, 170]
+    np.testing.assert_allclose(local, [[113, 130], [282, 130], [282, 219], [113, 219]])
+    old_edges = np.roll(original, -1, axis=0)-np.asarray(original)
+    new_edges = np.roll(polygon, -1, axis=0)-np.asarray(polygon)
+    np.testing.assert_allclose(old_edges/np.linalg.norm(old_edges, axis=1)[:, None],
+                               new_edges/np.linalg.norm(new_edges, axis=1)[:, None])
+
+
+@pytest.mark.parametrize("side", ["top", "bottom", "left", "right"])
+@pytest.mark.parametrize("invalid", [-1, 51, None, float("nan")])
+def test_each_invalid_side_is_rejected(side, invalid):
+    with pytest.raises(ValueError):
+        layout_options({"text_box_padding": {side: invalid}})
+
+
+@pytest.mark.parametrize("box,expected", [
+    ((0, 0, 10, 20), [0., 0., 13., 23.]),
+    ((190, 180, 10, 20), [187., 177., 13., 23.]),
+    ((0, 180, 10, 20), [0., 177., 13., 23.]),
+    ((190, 0, 10, 20), [187., 0., 13., 23.]),
+])
+def test_detection_padding_is_clipped_to_image_bounds(box, expected):
+    result = build([prediction(box=box)])[0]
+    assert result.bbox == expected
+    assert all(0 <= x <= 200 and 0 <= y <= 200 for x, y in result.polygon)
+
+
+@pytest.mark.parametrize("angle", [-12, 12])
+def test_padding_slanted_text_moves_edges_parallel_without_changing_typography(angle):
+    import cv2
+
+    mask = np.zeros((140, 240), np.uint8)
+    for y in (45, 65, 85):
+        mask[y:y+3, 40:200] = 1
+    mask = cv2.warpAffine(mask, cv2.getRotationMatrix2D((120, 70), -angle, 1), (240, 140), flags=cv2.INTER_NEAREST)
+    item = LayoutPrediction("text", .95, [120, 130, 160, 80], mask, (80, 100))
+    original, direction, detected_angle = text_geometry(item, 400, 400)
+    padded, padded_direction, padded_angle = text_geometry(item, 400, 400, padding=TEXT_BOX_PADDING)
+    assert detected_angle == pytest.approx(angle, abs=.5)
+    assert (padded_direction, padded_angle) == (direction, detected_angle)
+    old_points, new_points = np.asarray(original), np.asarray(padded)
+    np.testing.assert_allclose(old_points.mean(axis=0), new_points.mean(axis=0))
+    old_edges = np.roll(old_points, -1, axis=0) - old_points
+    new_edges = np.roll(new_points, -1, axis=0) - new_points
+    old_lengths = np.linalg.norm(old_edges, axis=1)
+    new_lengths = np.linalg.norm(new_edges, axis=1)
+    np.testing.assert_allclose(new_lengths, old_lengths + 2*TEXT_BOX_PADDING)
+    np.testing.assert_allclose(new_edges/new_lengths[:, None], old_edges/old_lengths[:, None])
+
+
+def test_padding_does_not_change_deduplication_or_balloon_association():
+    first, second = prediction(box=(10, 10, 2, 8)), prediction(box=(12, 10, 2, 8))
+    bubble = prediction("bubble", (10, 10, 4, 8))
+    results = build([first, second, bubble])
+    # Expanded boxes overlap by >50%, but the actual detections are distinct.
+    assert len(results) == 2
+    assert results[0].bubble_id == results[1].bubble_id is not None
+    assert all(result.metadata["balloon_assignment"]["coverage"] == 1 for result in results)
+    assert all(result.balloon_mask is bubble.mask for result in results)
+
+
+def test_padding_does_not_expand_excluded_sfx_candidates():
+    sfx = prediction("onomatopoeia")
+    result = build([sfx])[0]
+    assert result.bbox == sfx.bbox
+    assert result.metadata["text_box_padding"] == dict.fromkeys(("top", "bottom", "left", "right"), 0)
 
 
 @pytest.mark.parametrize("value", [-1, float("nan"), 1.1, .1])
@@ -234,7 +419,7 @@ def test_pipeline_persists_independent_texts_and_shared_exact_balloon_without_ru
         db.refresh(stored)
         assert len(stored.regions) == 2
         ordered = sorted(stored.regions, key=lambda item: item.reading_order)
-        assert [item.bbox[0] for item in ordered] == [45, 10]
+        assert [item.bbox[0] for item in ordered] == [42, 7]
         assert [item.region_key for item in ordered] == ["R001", "R002"]
         first, second = stored.regions
         assert first.bubble_id == second.bubble_id and first.bbox != second.bbox
@@ -260,4 +445,60 @@ def test_pipeline_persists_independent_texts_and_shared_exact_balloon_without_ru
         with pytest.raises(ProviderError):
             processor.detect(stored, None, force=True)
         assert [region.id for region in stored.regions] == previous_ids
+    detector.unload()
+
+
+@pytest.mark.parametrize("in_balloon", [False, True])
+@pytest.mark.parametrize("angle", [-12, 12])
+@pytest.mark.parametrize("orientation", ["horizontal", "vertical"])
+def test_slanted_detection_initializes_only_free_text_angle(client, monkeypatch, in_balloon, angle, orientation):
+    from io import BytesIO
+
+    import cv2
+    from app.core.database import SessionLocal
+    from app.models import ImagePage
+    from app.pipeline.processor import PipelineProcessor
+
+    mask = np.zeros((140, 240), np.uint8)
+    for y in (45, 65, 85):
+        mask[y:y+3, 40:200] = 1
+    if orientation == "vertical":
+        mask = mask.T
+    height, width = mask.shape
+    mask = cv2.warpAffine(mask, cv2.getRotationMatrix2D((width/2, height/2), -angle, 1), (width, height), flags=cv2.INTER_NEAREST)
+    ys, xs = np.nonzero(mask)
+    box = [int(xs.min()), int(ys.min()), int(xs.max()-xs.min()+1), int(ys.max()-ys.min()+1)]
+    output = BytesIO()
+    Image.new("RGB", (width, height), "white").save(output, "PNG")
+    project = client.post("/api/projects", json={"name": "independent-text-angle"}).json()
+    page = client.post(f"/api/projects/{project['id']}/images", files={"files": ("page.png", output.getvalue(), "image/png")}).json()[0]
+    detector = RFDetrTextDetector({"device": "cpu"})
+    detector._text_classifier.ensure_loaded = Mock()
+    predictions = [LayoutPrediction("text", .95, box, mask, (0, 0))]
+    if in_balloon:
+        predictions.append(LayoutPrediction("bubble", .95, [0, 0, width, height], np.ones_like(mask), (0, 0)))
+    detector._text_classifier.detect_layout = Mock(return_value=(width, height, predictions))
+    monkeypatch.setattr(PipelineProcessor, "_provider", lambda *_: (detector, "rfdetr"))
+    with SessionLocal() as db:
+        stored = db.get(ImagePage, page["id"])
+        PipelineProcessor(db).detect(stored, None, force=True)
+        db.commit()
+        db.refresh(stored)
+        region = stored.regions[0]
+        assert region.layout_data["detection"]["text_angle"] == pytest.approx(angle, abs=.5)
+        assert region.orientation == orientation
+        assert (region.polygon[1][1] - region.polygon[0][1]) * angle > 0
+        assert region.translated_polygon == region.polygon
+        assert region.rotation == (0. if in_balloon else region.layout_data["detection"]["text_angle"])
+        assert bool(region.bubble_id) is in_balloon
+        assert not region.perspective_warp
+        # A forced detection must not overwrite user-adjusted/locked text.
+        region.rotation, region.locked = 7., True
+        db.commit()
+        region_id = region.id
+        PipelineProcessor(db).detect(stored, None, force=True)
+        db.commit()
+        db.refresh(stored)
+        assert len(stored.regions) == 1
+        assert stored.regions[0].id == region_id and stored.regions[0].rotation == 7.
     detector.unload()

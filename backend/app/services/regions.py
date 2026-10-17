@@ -6,6 +6,7 @@ from uuid import uuid4
 
 from app.models import ImagePage, RegionRevision, TextRegion
 from app.schemas.domain import RegionCreate, RegionUpdate
+from app.services.layout.text_rotation import record_user_rotation
 from app.utils.geometry import bbox_to_polygon, polygon_to_bbox
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -95,9 +96,9 @@ def synchronize_translation_geometry_after_repair(db: Session, region: TextRegio
         save_revision(db, region, "translation_geometry_synced")
         region.translated_bbox = deepcopy(region.bbox)
         region.translated_polygon = deepcopy(region.polygon)
-        # Source vertices already encode their shape/angle. Transforms for
-        # the old target must not be reapplied to the newly synchronized one.
-        region.rotation = 0.0
+        # Text rotation is an absolute, independent typography value, including
+        # the initial FitsTo angle. Synchronizing vertices must not erase it.
+        # Perspective mapping belongs to the old target shape, not this frame.
         region.perspective_warp = False
         revision += 1
     layout[TRANSLATION_GEOMETRY_SYNC_KEY] = {
@@ -182,6 +183,8 @@ def create_region(db: Session, page: ImagePage, data: RegionCreate) -> TextRegio
         layout_data={"manual": True, "auto_font_size": auto_size},
         **values,
     )
+    if "rotation" in data.model_fields_set:
+        record_user_rotation(region)
     db.add(region)
     db.flush()
     save_revision(db, region, "created")
@@ -204,6 +207,8 @@ def update_region(db: Session, region: TextRegion, data: RegionUpdate, action: s
         region.layout_data = {**(region.layout_data or {}), "auto_font_size": auto_size if auto_size is not None else False}
     for field, value in changes.items():
         setattr(region, field, value)
+    if "rotation" in changes:
+        record_user_rotation(region)
     if "region_type" in changes:
         # Mask analysis may suggest a repair strategy, but an explicit choice
         # made in the editor must remain authoritative on later reruns.

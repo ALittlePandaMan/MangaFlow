@@ -49,7 +49,6 @@ def test_text_mask_prefers_glyphs_on_uniform_background(tmp_path: Path, backgrou
         image_path,
         [[25, 15], [75, 15], [75, 85], [25, 85]],
         mask_path,
-        expand=1,
     )
     mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
     masked = cv2.countNonZero(mask)
@@ -73,7 +72,6 @@ def test_conservative_text_mask_never_fills_uniform_ocr_rectangle(tmp_path: Path
         image_path,
         [[25, 15], [75, 15], [75, 85], [25, 85]],
         mask_path,
-        expand=1,
         conservative=True,
     )
     mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
@@ -133,7 +131,7 @@ def test_text_mask_union_preserves_space_between_grouped_lines(tmp_path: Path) -
         [[100, 20], [132, 20], [132, 85], [100, 85]],
     ]
 
-    metadata = create_text_mask_union(image_path, polygons, mask_path, expand=1)
+    metadata = create_text_mask_union(image_path, polygons, mask_path)
     mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
 
     assert metadata["method"] == "source_polygon_union"
@@ -169,7 +167,6 @@ def test_text_mask_union_applies_shared_balloon_constraint_once(tmp_path: Path, 
         image_path,
         polygons,
         mask_path,
-        expand=1,
         balloon_mask=balloon,
     )
 
@@ -191,7 +188,6 @@ def test_text_mask_preserves_enclosed_label_background(tmp_path: Path) -> None:
         image_path,
         [[20, 25], [80, 25], [80, 75], [20, 75]],
         mask_path,
-        expand=1,
     )
     mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
     assert mask[50, 45] == 255
@@ -214,7 +210,7 @@ def test_stylized_text_uses_polygon_only_after_segmentation_failure(tmp_path: Pa
     probability = np.zeros(image.shape[:2], np.float32)
     if segmented:
         cv2.putText(probability, "TITLE", (35, 85), cv2.FONT_HERSHEY_DUPLEX, 1.4, 1., 8)
-    metadata = create_text_mask(image_path, polygon, mask_path, expand=2, text_probability=probability)
+    metadata = create_text_mask(image_path, polygon, mask_path, text_probability=probability)
     mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
 
     if segmented:
@@ -486,7 +482,6 @@ def test_text_mask_rectangle_corners_are_clipped_to_ellipse_safe_interior(tmp_pa
         image_path,
         polygon,
         mask_path,
-        expand=2,
         balloon_mask=balloon,
         balloon_context={"bubble_id": "bubble-ellipse", "bubble_confidence": 0.98},
     )

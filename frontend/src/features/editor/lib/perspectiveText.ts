@@ -1,6 +1,11 @@
 export type PerspectivePoint = [number, number]
 // Keep in sync with the export renderer when perspective mapping changes.
-export const PERSPECTIVE_RENDER_OUTPUT_VERSION = 6
+export const PERSPECTIVE_RENDER_OUTPUT_VERSION = 9
+
+/** Bound both the source tile and the warped output, including manual overflow. */
+export function perspectiveRasterRatio(width: number, height: number, requested: number, pixelBudget = 8_000_000): number {
+  return Math.min(requested, Math.sqrt(pixelBudget/Math.max(1,width*height)), 16_384/Math.max(1,width,height))
+}
 
 /** Preserve frame scale when a manually sized text tile extends outside it. */
 export function extendedPerspectiveQuad(points: number[][], frame: {width: number, height: number}, tile: {x: number, y: number, width: number, height: number}): PerspectivePoint[] | null {
@@ -85,7 +90,7 @@ export function warpCanvasToQuad(source: HTMLCanvasElement, points: number[][], 
   const y = Math.min(...ys)
   const width = Math.max(1, Math.max(...xs) - x)
   const height = Math.max(1, Math.max(...ys) - y)
-  const ratio = Math.max(.25, pixelRatio)
+  const ratio = perspectiveRasterRatio(width, height, Math.max(.25, pixelRatio))
   const output = document.createElement('canvas')
   output.width = Math.max(1, Math.ceil(width * ratio))
   output.height = Math.max(1, Math.ceil(height * ratio))

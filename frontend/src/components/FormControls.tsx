@@ -86,6 +86,7 @@ interface NumberControlProps {
   value?: number
   defaultValue?: number | string
   onChange?: (value: number) => void
+  onCommit?: (value: number) => void
   name?: string
   min?: number
   max?: number
@@ -96,16 +97,32 @@ interface NumberControlProps {
   compact?: boolean
   mixed?: boolean
   onStep?: (direction: 1 | -1) => void
+  commitOnBlur?: boolean
 }
 
-export function NumberControl({value, defaultValue = '', onChange, name, min, max, step = 1, disabled = false, placeholder, ariaLabel, compact = false, mixed = false, onStep}: NumberControlProps) {
+export function NumberControl({value, defaultValue = '', onChange, onCommit, name, min, max, step = 1, disabled = false, placeholder, ariaLabel, compact = false, mixed = false, onStep, commitOnBlur = false}: NumberControlProps) {
   const [draft, setDraft] = useState(mixed ? '' : String(value ?? defaultValue))
   const [focused, setFocused] = useState(false)
+  const dirty = useRef(false)
+  const controlRef = useRef<HTMLDivElement>(null)
+  const inputRef = useRef<HTMLInputElement>(null)
   useEffect(() => {
     if (focused) return
     if (mixed) setDraft('')
     else if (value !== undefined) setDraft(String(value))
   }, [focused, mixed, value])
+
+  useEffect(() => {
+    if (!commitOnBlur || !focused) return
+    // Canvas pointer handlers can change selection and unmount this input
+    // before the browser sends blur. Finish the edit in the capture phase,
+    // while its original selection and callback are still available.
+    const finishBeforePointer = (event: PointerEvent) => {
+      if (event.target instanceof Node && !controlRef.current?.contains(event.target)) inputRef.current?.blur()
+    }
+    document.addEventListener('pointerdown', finishBeforePointer, true)
+    return () => document.removeEventListener('pointerdown', finishBeforePointer, true)
+  }, [commitOnBlur, focused])
 
   const normalize = (candidate: number) => {
     let next = candidate
@@ -115,28 +132,46 @@ export function NumberControl({value, defaultValue = '', onChange, name, min, ma
     return Number(next.toFixed(decimals))
   }
   const commit = (candidate: number) => {
-    if (!Number.isFinite(candidate)) return
+    if (disabled || !Number.isFinite(candidate)) return
     const next = normalize(candidate)
+    dirty.current = false
     setDraft(String(next))
-    onChange?.(next)
+    if (mixed || next !== value) onChange?.(next)
+    // Explicit intent can matter even when the number stays the same, e.g.
+    // keeping text upright at 0 instead of accepting a detected angle later.
+    onCommit?.(next)
   }
   const changeDraft = (next: string) => {
+    dirty.current = true
     setDraft(next)
     const parsed = Number(next)
-    if (next.trim() && Number.isFinite(parsed)) onChange?.(parsed)
+    // Drafts such as "0" while entering "0.9" must never reach an API whose
+    // minimum is 0.5. Inspector edits commit one complete value per interaction.
+    if (!commitOnBlur && next.trim() && Number.isFinite(parsed)
+      && (min === undefined || parsed >= min) && (max === undefined || parsed <= max)) onChange?.(parsed)
+  }
+  const finishDraft = () => {
+    if (!dirty.current) return
+    if (draft.trim() && Number.isFinite(Number(draft))) commit(Number(draft))
+    else {dirty.current = false; setDraft(mixed ? '' : String(value ?? defaultValue))}
   }
   const stepBy = (direction: 1 | -1) => {
-    if (mixed && onStep) {
+    if (mixed && onStep && !draft.trim()) {
+      dirty.current = false
       onStep(direction)
       return
     }
-    const parsed = Number(draft)
+    const parsed = draft.trim() ? Number(draft) : NaN
     const fallback = value ?? (min !== undefined ? min : 0)
     commit((Number.isFinite(parsed) ? parsed : fallback) + direction * step)
   }
-  const numeric = Number(draft)
-  return <div className={cn('number-control grid min-w-0 overflow-hidden rounded-lg border border-line bg-surface transition hover:border-line-strong hover:bg-hover focus-within:border-accent focus-within:ring-3 focus-within:ring-accent/15', compact ? 'h-[34px] grid-cols-[minmax(0,1fr)_24px]' : 'h-[38px] grid-cols-[minmax(0,1fr)_30px]', disabled && 'opacity-50')}>
-    <input className={cn('min-w-0 border-0 bg-transparent font-mono font-medium text-ink outline-none placeholder:text-disabled disabled:cursor-not-allowed', compact ? 'h-8 px-2 text-[10px]' : 'h-9 px-3 text-[11px]')} type="text" inputMode="decimal" name={name} value={draft} disabled={disabled} placeholder={placeholder} aria-label={ariaLabel} onFocus={() => setFocused(true)} onChange={event => changeDraft(event.target.value)} onKeyDown={event => {if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {event.preventDefault(); stepBy(event.key === 'ArrowUp' ? 1 : -1)}}} onBlur={() => {setFocused(false); if (draft.trim() && Number.isFinite(Number(draft))) commit(Number(draft)); else if (value !== undefined) setDraft(String(value))}}/>
+  const numeric = draft.trim() ? Number(draft) : NaN
+  return <div ref={controlRef} className={cn('number-control grid min-w-0 overflow-hidden rounded-lg border border-line bg-surface transition hover:border-line-strong hover:bg-hover focus-within:border-accent focus-within:ring-3 focus-within:ring-accent/15', compact ? 'h-[34px] grid-cols-[minmax(0,1fr)_24px]' : 'h-[38px] grid-cols-[minmax(0,1fr)_30px]', disabled && 'opacity-50')}>
+    <input ref={inputRef} className={cn('min-w-0 border-0 bg-transparent font-mono font-medium text-ink outline-none placeholder:text-disabled disabled:cursor-not-allowed', compact ? 'h-8 px-2 text-[10px]' : 'h-9 px-3 text-[11px]')} type="text" inputMode="decimal" name={name} value={draft} disabled={disabled} placeholder={placeholder} aria-label={ariaLabel} onFocus={() => setFocused(true)} onChange={event => changeDraft(event.target.value)} onKeyDown={event => {
+      if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {event.preventDefault(); stepBy(event.key === 'ArrowUp' ? 1 : -1)}
+      else if (commitOnBlur && event.key === 'Enter') {event.preventDefault(); finishDraft()}
+      else if (commitOnBlur && event.key === 'Escape') {event.preventDefault(); event.stopPropagation(); dirty.current = false; setDraft(mixed ? '' : String(value ?? defaultValue))}
+    }} onBlur={() => {setFocused(false); finishDraft()}}/>
     <span className="grid grid-rows-2 border-l border-line">
       <button className={cn('grid min-h-0 cursor-pointer place-items-center border-0 border-b border-line bg-surface p-0 text-muted transition-colors hover:bg-hover hover:text-accent disabled:cursor-not-allowed disabled:opacity-30', compact ? 'h-4' : 'h-[18px]')} type="button" tabIndex={-1} aria-label={`${ariaLabel || '数值'}增大`} disabled={disabled || (max !== undefined && Number.isFinite(numeric) && numeric >= max)} onMouseDown={event => event.preventDefault()} onClick={() => stepBy(1)}><Plus size={11}/></button>
       <button className={cn('grid min-h-0 cursor-pointer place-items-center border-0 bg-surface p-0 text-muted transition-colors hover:bg-hover hover:text-accent disabled:cursor-not-allowed disabled:opacity-30', compact ? 'h-4' : 'h-[18px]')} type="button" tabIndex={-1} aria-label={`${ariaLabel || '数值'}减小`} disabled={disabled || (min !== undefined && Number.isFinite(numeric) && numeric <= min)} onMouseDown={event => event.preventDefault()} onClick={() => stepBy(-1)}><Minus size={11}/></button>

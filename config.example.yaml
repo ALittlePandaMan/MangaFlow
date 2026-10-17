@@ -12,6 +12,11 @@ stages:
       bubble_threshold: 0.5
       panel_threshold: 0.5
       containment_threshold: 0.9
+      text_box_padding:  # Original-image pixels per edge (0–50); no mask dilation.
+        top: 3
+        bottom: 3
+        left: 3
+        right: 3
 
   inpainting:
     name: 推荐复杂修复（LaMa）

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from fastapi import HTTPException
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, object_session
 
 from app.models import ImagePage, ProcessingTask, Project, TextRegion
@@ -47,10 +48,13 @@ def project_read(project: Project) -> ProjectRead:
         "cover_thumbnail_url": preview_url(cover_page, "cover") if cover_page else None})
 
 
-def image_read(page: ImagePage, *, include_history: bool = False) -> ImageRead:
+def image_read(page: ImagePage, *, include_history: bool = False, region_count: int | None = None) -> ImageRead:
     from app.services.editor_history import history_state
     storage = get_storage()
     result = ImageRead.model_validate(page)
+    if region_count is None:
+        db = object_session(page)
+        region_count = db.scalar(select(func.count(TextRegion.id)).where(TextRegion.image_id == page.id)) if db else len(page.regions)
     classification = (page.metadata_json or {}).get("text_classification")
     classification_summary = {
         key: classification[key]
@@ -79,6 +83,7 @@ def image_read(page: ImagePage, *, include_history: bool = False) -> ImageRead:
             "text_classification": classification_summary,
             "editor_history": history_state(object_session(page), page.id) if include_history and object_session(page) else None,
             "ocr_exempt": bool((page.metadata_json or {}).get("ocr_exempt", False)),
+            "region_count": region_count,
             "original_url": versioned(page.original_path, "original"),
             "thumbnail_url": preview_url(page, "page"),
             "thumbnail_2x_url": preview_url(page, "page-2x"),

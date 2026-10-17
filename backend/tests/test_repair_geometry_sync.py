@@ -154,7 +154,7 @@ def test_failure_keeps_pending_sync_and_retry_consumes_it_only_once(client, repa
     assert success["status"] == "COMPLETED", success
     synchronized = client.get(f"/api/images/{page['id']}/regions").json()[0]
     assert synchronized["translated_polygon"] == source["polygon"]
-    assert synchronized["rotation"] == 0 and synchronized["perspective_warp"] is False
+    assert synchronized["rotation"] == 18 and synchronized["perspective_warp"] is False
     custom = client.patch(f"/api/regions/{before['id']}", json={
         "translated_bbox": [40, 30, 80, 90], "rotation": -12, "perspective_warp": True,
     }).json()

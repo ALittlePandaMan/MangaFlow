@@ -447,6 +447,14 @@ function FontManager({initialFonts, onCancel, onChanged}: {initialFonts: FontRes
   </div>
 }
 
+const TEXT_BOX_PADDING_SIDES = [['top','上'],['bottom','下'],['left','左'],['right','右']] as const
+
+function paddingValue(config:Record<string,unknown>, side:typeof TEXT_BOX_PADDING_SIDES[number][0]):string {
+  const padding=config.text_box_padding
+  return String(padding && typeof padding === 'object' && !Array.isArray(padding)
+    ? (padding as Record<string,unknown>)[side] ?? 3 : padding ?? 3)
+}
+
 function ModelForm({available, configured, translation, fixedKind, initial, onCancel, onSave}: {available: ModelDescriptor[], configured: ModelConfiguration[], translation?: ModelConfiguration, fixedKind?: string, initial?: ModelConfiguration, onCancel: () => void, onSave: (payload: Record<string, unknown>) => Promise<void>}) {
   const [submitting, setSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState('')
@@ -537,6 +545,8 @@ function ModelForm({available, configured, translation, fixedKind, initial, onCa
       // must not change which objects become translatable text regions.
       delete config.text_classification
       for (const [name,fallback] of [['text_threshold',0.25],['bubble_threshold',0.5],['panel_threshold',0.5],['containment_threshold',0.9]] as const) config[name]=Number(data.get(name) || fallback)
+      config.text_box_padding=Object.fromEntries(TEXT_BOX_PADDING_SIDES.map(([side]) =>
+        [side,Number(data.get(`text_box_padding_${side}`) ?? paddingValue(defaults,side))]))
     }
     for (const key of ['api_protocol','base_url','model','device','batch_size','timeout','retries','temperature','max_tokens','min_font_size','prompt','request_format','image_field','image_encoding','auth_mode','api_key_header','response_text_path','concurrency_mode','max_concurrency','requests_per_minute']) {
       if (!data.has(key)) continue
@@ -578,7 +588,7 @@ function ModelForm({available, configured, translation, fixedKind, initial, onCa
     {kind !== 'translation' && <div className="col-span-full grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 rounded-lg bg-surface p-3"><strong className="text-[11px] text-ink">{providerLabel(kind, provider)}</strong><span className="text-[10px] text-muted">{selected?.description}</span><i className="text-[9px] not-italic text-accent">{selected?.devices.join(' / ')}</i></div>}
     {kind !== 'translation' && kind !== 'rendering' && !cloud && <div className={fieldClass} key={`${kind}-${provider}-device`}><span>运行设备</span><SelectControl name="device" ariaLabel="运行设备" value={device} options={deviceOptions(selected)} onChange={setDevice}/></div>}
     {selected?.supports_batch && kind !== 'translation' && <label className={fieldClass} key={`${kind}-${provider}-batch`}>Batch Size<NumberControl ariaLabel="Batch Size" name="batch_size" min={1} step={1} defaultValue={String(defaults.batch_size ?? '')} placeholder="4"/></label>}
-    {kind === 'detection' && provider === 'rfdetr' && <fieldset className="col-span-full grid grid-cols-2 gap-3 rounded-lg border border-line p-3"><legend className="px-1 text-[11px]">统一版面检测</legend>{([['text_threshold','文字检测置信度',0.25],['bubble_threshold','气泡检测置信度',0.5],['panel_threshold','分镜检测置信度',0.5],['containment_threshold','文字气泡包含率',0.9]] as const).map(([name,label,fallback]) => <label key={name} className={fieldClass}>{label}<NumberControl name={name} ariaLabel={label} min={name==='containment_threshold'?0.5:0.2} max={1} step={0.05} defaultValue={String(defaults[name] ?? fallback)}/></label>)}<p className="col-span-full m-0 text-[10px] leading-relaxed text-muted">仅正文进入识别和翻译，拟声词保留在原图中。默认至少 90% 的框内文字像素在气泡内才建立关联；同一气泡内的文字框保持独立。</p></fieldset>}
+    {kind === 'detection' && provider === 'rfdetr' && <fieldset className="col-span-full grid grid-cols-2 gap-3 rounded-lg border border-line p-3"><legend className="px-1 text-[11px]">统一版面检测</legend>{([['text_threshold','文字检测置信度',0.25],['bubble_threshold','气泡检测置信度',0.5],['panel_threshold','分镜检测置信度',0.5],['containment_threshold','文字气泡包含率',0.9]] as const).map(([name,label,fallback]) => <label key={name} className={fieldClass}>{label}<NumberControl name={name} ariaLabel={label} min={name==='containment_threshold'?0.5:0.2} max={1} step={0.05} defaultValue={String(defaults[name] ?? fallback)}/></label>)}<fieldset className="col-span-full grid grid-cols-2 gap-3"><legend className="mb-2 text-[11px] text-secondary">文本框扩边（px）</legend>{TEXT_BOX_PADDING_SIDES.map(([side,label]) => <label key={side} className={fieldClass}>{label}<NumberControl name={`text_box_padding_${side}`} ariaLabel={`文本框${label}扩边像素`} min={0} max={50} step={1} defaultValue={paddingValue(defaults,side)}/></label>)}<small className="col-span-full block text-[10px] leading-relaxed text-muted">按原图像素分别向上、下、左、右扩展，0 表示该边不扩展；保存后用于新检测的文本框。修复 Mask 仍按字形生成，不额外膨胀。</small></fieldset><p className="col-span-full m-0 text-[10px] leading-relaxed text-muted">仅正文进入识别和翻译，拟声词保留在原图中。默认至少 90% 的框内文字像素在气泡内才建立关联；同一气泡内的文字框保持独立。</p></fieldset>}
     {genericOcr && <GenericOCRFields key={`${kind}-${provider}`} defaults={defaults} baseUrl={baseUrl} onBaseUrlChange={setBaseUrl} savedKeyUsable={savedKeyUsable}/>}
     {cloud && !genericOcr && <div className="col-span-full grid grid-cols-2 max-sm:grid-cols-1 gap-3" key={`${kind}-${provider}`}>
       {cloudOcr && <><p className="col-span-full m-0 rounded-lg bg-accent-soft p-3 text-xs leading-relaxed text-accent-soft-ink">多模态大语言模型直接看图识字：按检测框逐个上传裁剪区域，结果写入原文，不改变气泡检测与合并。图片会发送到你配置的服务，可能产生费用；请选择支持图片输入的模型。</p><div className={cn(fieldClass, 'col-span-full')}><span>连接配置</span><SelectControl ariaLabel="连接配置" value={useTranslation ? 'translation' : 'custom'} options={[{value:'translation', label:'使用当前翻译模型', disabled:!canReuseTranslation}, {value:'custom', label:'独立配置视觉模型'}]} onChange={value => {setReuseTranslation(value === 'translation'); invalidateDiscovery()}}/></div>{useTranslation && <p className="col-span-full m-0 break-all rounded-lg border border-line p-3 text-xs leading-relaxed text-secondary">模型：{String(translation?.config.model)}<br/>接口：{String(translation?.config.base_url)}<br/>保存时在后端复制当前连接及密钥；之后两份配置独立。下方识字 Prompt 不会覆盖翻译 Prompt。</p>}</>}
@@ -639,7 +649,7 @@ Requirements:
 6. Return only one valid JSON object whose keys exactly match all supplied Region IDs and whose values are translated strings. Do not use Markdown, code fences, comments, or any text outside the JSON object.`
 
 const PROVIDER_PRESETS: Record<string, {label: string, title: string, config: Record<string, unknown>}> = {
-  'detection:rfdetr': {label:'RF-DETR 漫画版面检测', title:'推荐漫画版面检测（RF-DETR）', config:{device:'cuda:0',text_threshold:0.25,bubble_threshold:0.5,panel_threshold:0.5,containment_threshold:0.9}},
+  'detection:rfdetr': {label:'RF-DETR 漫画版面检测', title:'推荐漫画版面检测（RF-DETR）', config:{device:'cuda:0',text_threshold:0.25,bubble_threshold:0.5,panel_threshold:0.5,containment_threshold:0.9,text_box_padding:{top:3,bottom:3,left:3,right:3}}},
   'detection:opencv-fallback': {label: 'OpenCV 文本检测', title: '本地 OpenCV 文本检测', config: {device: 'cpu'}},
   'ocr:manga-ocr': {label: 'MangaOCR 漫画识别', title: '推荐漫画识别（MangaOCR）', config: {device: 'cuda:0', model: 'kha-white/manga-ocr-base'}},
   'ocr:cloud-multimodal': {label: '多模态大模型识字', title: '多模态大模型识字', config: {api_protocol: 'auto', timeout: 90, retries: 2, max_tokens: 2048, prompt: DEFAULT_OCR_PROMPT}},

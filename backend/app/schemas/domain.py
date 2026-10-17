@@ -59,6 +59,7 @@ class ImageRead(ORMModel):
     current_stage: str | None
     error_message: str | None
     ocr_exempt: bool = False
+    region_count: int = 0
     original_url: str | None = None
     thumbnail_url: str | None = None
     thumbnail_2x_url: str | None = None
@@ -293,6 +294,7 @@ class ExportRequest(BaseModel):
 class BatchProcessRequest(ProcessRequest):
     image_ids: list[str] | None = None
     only_unrecognized: bool = False
+    only_with_regions: bool = False
 
 
 class QualityIssue(BaseModel):

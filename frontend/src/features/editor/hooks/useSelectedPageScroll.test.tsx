@@ -4,8 +4,11 @@ import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest'
 import {useSelectedPageScroll} from './useSelectedPageScroll'
 
 const scrollIntoView = vi.fn()
+const scrollTo = vi.fn()
 const resizeCallbacks = new Set<() => void>()
 const disconnect = vi.fn()
+let activeBounds = {top: 250, bottom: 450}
+let nextBounds = {top: 460, bottom: 660}
 
 function Fixture({pageId = 'page-30', ready = true, hidden = false, version = 0}: {pageId?: string, ready?: boolean, hidden?: boolean, version?: number}) {
   const list = useRef<HTMLDivElement>(null)
@@ -18,6 +21,9 @@ function Fixture({pageId = 'page-30', ready = true, hidden = false, version = 0}
 describe('selected page list positioning', () => {
   beforeEach(() => {
     scrollIntoView.mockReset()
+    scrollTo.mockReset()
+    activeBounds = {top: 250, bottom: 450}
+    nextBounds = {top: 460, bottom: 660}
     disconnect.mockReset()
     resizeCallbacks.clear()
     vi.stubGlobal('ResizeObserver',class {
@@ -27,10 +33,18 @@ describe('selected page list positioning', () => {
     })
     vi.spyOn(HTMLElement.prototype,'clientWidth','get').mockImplementation(function (this: HTMLElement) {return this.hidden ? 0 : 200})
     vi.spyOn(HTMLElement.prototype,'clientHeight','get').mockImplementation(function (this: HTMLElement) {return this.hidden ? 0 : 500})
+    vi.spyOn(HTMLElement.prototype,'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      const bounds = this.hasAttribute('data-page-list') ? {top:0,bottom:500}
+        : this.getAttribute('aria-current') === 'page' ? activeBounds : nextBounds
+      return {...bounds,x:0,y:bounds.top,left:0,right:200,width:200,height:bounds.bottom-bounds.top,toJSON() {return {}}}
+    })
     Object.defineProperty(HTMLElement.prototype,'scrollIntoView',{configurable:true,value:scrollIntoView})
+    Object.defineProperty(HTMLElement.prototype,'scrollTo',{configurable:true,value:scrollTo})
   })
   afterEach(() => {
     delete (HTMLElement.prototype as {scrollIntoView?: unknown}).scrollIntoView
+    delete (HTMLElement.prototype as {scrollTo?: unknown}).scrollTo
+    vi.restoreAllMocks()
     vi.unstubAllGlobals()
   })
   it('positions page 30 on initial load and again after a full refresh/remount', () => {
@@ -58,6 +72,42 @@ describe('selected page list positioning', () => {
     rerender(<Fixture pageId="page-31" ready={false}/>)
     rerender(<Fixture pageId="page-31" ready/>)
     expect(scrollIntoView).toHaveBeenCalledTimes(2)
+    expect(scrollTo).toHaveBeenCalledTimes(2)
+  })
+  it('leaves the next page fully visible below the selected page', () => {
+    render(<Fixture/>)
+    expect(scrollTo).toHaveBeenCalledOnce()
+    expect(scrollTo).toHaveBeenCalledWith({top:160,behavior:'instant'})
+    expect(scrollTo.mock.contexts[0]).toBe(screen.getByRole('button',{name:'第 30 页'}).parentElement)
+  })
+  it('does not move the list when the current and next page already fit', () => {
+    activeBounds = {top:50,bottom:250}
+    nextBounds = {top:260,bottom:460}
+    render(<Fixture/>)
+    expect(scrollTo).not.toHaveBeenCalled()
+  })
+  it('prioritizes the current thumbnail when two pages cannot fit', () => {
+    activeBounds = {top:50,bottom:450}
+    nextBounds = {top:460,bottom:860}
+    render(<Fixture/>)
+    expect(scrollTo).toHaveBeenCalledWith({top:50,behavior:'instant'})
+  })
+  it('uses the current scroll offset and the list padding for lookahead', () => {
+    vi.spyOn(HTMLElement.prototype,'scrollTop','get').mockReturnValue(1000)
+    vi.stubGlobal('getComputedStyle', () => ({paddingTop:'10px',paddingBottom:'10px'}))
+    render(<Fixture/>)
+    expect(scrollTo).toHaveBeenCalledWith({top:1170,behavior:'instant'})
+  })
+  it('only reveals the selected page at the end of the project', () => {
+    render(<Fixture pageId="page-40"/>)
+    expect(scrollIntoView.mock.contexts[0]).toBe(screen.getByRole('button',{name:'第 40 页'}))
+    expect(scrollTo).not.toHaveBeenCalled()
+  })
+  it('does not scroll an extra row when mobile thumbnails share a row', () => {
+    activeBounds = {top:200,bottom:450}
+    nextBounds = {top:200,bottom:450}
+    render(<Fixture/>)
+    expect(scrollTo).not.toHaveBeenCalled()
   })
   it('waits for the mobile page sheet to become visible and then positions only once', () => {
     const {rerender,unmount} = render(<Fixture hidden/>)
@@ -68,8 +118,8 @@ describe('selected page list positioning', () => {
     expect(scrollIntoView.mock.contexts[0]).toBe(screen.getByRole('button',{name:'第 30 页'}))
     act(() => resizeCallbacks.forEach(callback => callback()))
     expect(scrollIntoView).toHaveBeenCalledOnce()
-    expect(disconnect).toHaveBeenCalled()
     unmount()
+    expect(disconnect).toHaveBeenCalled()
   })
   it('cancels a hidden-panel observer when navigating before that panel opens', () => {
     const {rerender} = render(<Fixture hidden/>)
@@ -79,5 +129,16 @@ describe('selected page list positioning', () => {
     act(() => resizeCallbacks.forEach(callback => callback()))
     expect(scrollIntoView).toHaveBeenCalledOnce()
     expect(scrollIntoView.mock.contexts[0]).toBe(screen.getByRole('button',{name:'第 31 页'}))
+  })
+  it('repositions after switching between the desktop list and mobile grid', () => {
+    render(<Fixture/>)
+    vi.spyOn(HTMLElement.prototype,'clientWidth','get').mockReturnValue(800)
+    act(() => resizeCallbacks.forEach(callback => callback()))
+    expect(scrollIntoView).toHaveBeenCalledTimes(2)
+    act(() => resizeCallbacks.forEach(callback => callback()))
+    expect(scrollIntoView).toHaveBeenCalledTimes(2)
+    vi.spyOn(HTMLElement.prototype,'clientWidth','get').mockReturnValue(320)
+    act(() => resizeCallbacks.forEach(callback => callback()))
+    expect(scrollIntoView).toHaveBeenCalledTimes(3)
   })
 })

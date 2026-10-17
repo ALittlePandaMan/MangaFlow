@@ -38,7 +38,6 @@ def test_balloon_search_recovers_clipped_stroke_but_not_unrelated_ink(tmp_path):
         path,
         source_image=image,
         balloon_mask=balloon,
-        expand=2,
     )
     mask = cv2.imread(str(path), 0)
     assert np.all(mask[90:105, 97:118] == 255)
@@ -46,6 +45,8 @@ def test_balloon_search_recovers_clipped_stroke_but_not_unrelated_ink(tmp_path):
     assert np.all(mask[150:153, 95:97] == 0)
     assert np.all(mask[balloon == 0] == 0)
     assert meta["method"] == "balloon_glyph"
+    assert not np.any(mask[image[:, :, 0] == 250])  # Searching outside never thickens the recovered strokes.
+    assert meta["glyph_expansion_px"] == 0
 
 
 def test_joint_lines_share_background_and_keep_the_gap(tmp_path):

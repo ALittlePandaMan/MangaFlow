@@ -19,7 +19,8 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.core.config import get_settings
 from app.core.secrets import get_secret_store
-from app.models import ImagePage, ModelConfig, ProcessingTask, TextRegion, Translation
+from app.core.transactions import has_pending_writes, retry_write
+from app.models import ImagePage, ModelConfig, ProcessingTask, RegionRevision, TextRegion, Translation
 from app.models.enums import PageStatus, PipelineStage, TaskStatus
 from app.services.base import DetectionResult, OCRResult
 from app.services.cloud_budget import request_budget
@@ -32,12 +33,17 @@ from app.services.detection.artifacts import (
     persist_balloon_mask,
 )
 from app.services.detection.panels import detect_panel_frames, panel_reading_order
+from app.services.detection.preserved_text import (
+    exclude_preserved_text,
+    frame_is_preserved,
+    preserved_free_text_angles,
+    protected_duplicate_candidates,
+)
 from app.services.detection.text_roles import partition_text_roles
 from app.services.execution import execution_runtime
 from app.services.infra.model_manifest import persist_model_settings
 from app.services.infra.model_provisioning import ensure_recommended_config
 from app.services.inpainting import create_text_mask, create_text_mask_union, load_text_mask_source
-from app.services.inpainting.background import outline_guard
 from app.services.inpainting.local_text import (
     LocalResidualConfirmer,
     inspection_area,
@@ -47,6 +53,7 @@ from app.services.inpainting.local_text import (
 from app.services.inpainting.repair import repair_masks
 from app.services.inpainting.text_segmentation import text_probability
 from app.services.inpainting.verification import verify_and_retry
+from app.services.layout.text_rotation import can_initialize_rotation, free_text_angle, initialize_free_text_rotation
 from app.services.ocr.cloud import CloudMultimodalOCRProvider
 from app.services.ocr.concurrency import OCRJob, recognize_regions
 from app.services.ocr.generic import GenericCloudOCRProvider
@@ -58,7 +65,6 @@ from app.services.regions import (
     synchronize_translation_geometry_after_repair,
 )
 from app.services.registry import registry
-from app.services.rendering.pillow_renderer import PillowRenderer
 from app.services.translation.context import page_context, page_image_data_url
 from app.services.translation.providers import OpenAICompatibleTranslator
 from app.storage import get_storage
@@ -141,17 +147,20 @@ def _exclude_preserved_geometry(
     grouping = result.metadata.get("line_grouping")
     source_boxes = grouping.get("source_boxes") if isinstance(grouping, dict) else None
     if not isinstance(source_boxes, list) or not source_boxes:
-        return None if any(_substantial_bbox_overlap(result.bbox, region.bbox) for region in preserved) else result
+        return None if frame_is_preserved(result.polygon, preserved) else result
     try:
         boxes = [[float(value) for value in box] for box in source_boxes if len(box) == 4]
     except (TypeError, ValueError):
         boxes = []
     if len(boxes) != len(source_boxes):
-        return None if any(_substantial_bbox_overlap(result.bbox, region.bbox) for region in preserved) else result
+        return None if frame_is_preserved(result.polygon, preserved) else result
+    source_polygons = grouping.get("source_polygons")
+    polygons = (source_polygons if isinstance(source_polygons, list) and len(source_polygons) == len(boxes)
+                else [bbox_to_polygon(box) for box in boxes])
     kept_indices = [
         index
-        for index, box in enumerate(boxes)
-        if not any(_substantial_bbox_overlap(box, region.bbox) for region in preserved)
+        for index in range(len(boxes))
+        if not frame_is_preserved(polygons[index], preserved)
     ]
     if len(kept_indices) == len(boxes):
         return result
@@ -322,10 +331,16 @@ class PipelineProcessor:
                 # Validate the complete selection before changing any frame.
                 for region in self._regions(page, region_id, region_ids):
                     synchronize_source_geometry_before_repair(self.db, region)
+                # Geometry synchronization flushes its revisions. Persist the
+                # accepted frames before segmentation/model work starts.
+                self.db.commit()
                 if stage == "inpainting":
                     # Direct inpainting requests also need fresh masks after
                     # adopting a target frame; never repair with the old ROI.
                     self.generate_masks(page, force=True, region_id=region_id, region_ids=region_ids, options=options)
+                    # Direct target-frame repair generated/flushed masks in
+                    # this stage. Release its writer before waiting for LaMa.
+                    self.db.commit()
             if stage == "detection":
                 self.detect(page, payload.get("provider"), force=force)
             elif stage == "ocr":
@@ -432,6 +447,27 @@ class PipelineProcessor:
             for region in preserved
             if (instance_id := _region_balloon_constraint_id(region)) in previous_geometry
         }
+        # Reuse this detection pass to recover only the missing typography of
+        # clearly matched free text. Protected frames/masks/texts stay intact.
+        for region, evidence in preserved_free_text_angles(preserved, detected):
+            self._initialize_text_rotation(region, evidence)
+        # A verified whole-dialogue duplicate may cover a manual/locked column.
+        # Restore its original column candidates before overlap filtering, so
+        # preserving one column cannot discard the other along with the parent.
+        detected = [member for result in detected
+                    for member in (protected_duplicate_candidates(result, preserved) if result.duplicate_members and any(
+                        _substantial_bbox_overlap(result.bbox, region.bbox) for region in preserved
+                    ) else [result])]
+        # Use lettering evidence before generic geometry: a small user frame
+        # inside a detected block must not discard the block's uncovered text.
+        filtered = []
+        for result in detected:
+            mask_filtered = exclude_preserved_text(result, preserved) if preserved else [result]
+            if mask_filtered is not None:
+                filtered.extend(mask_filtered)
+            elif (remaining := _exclude_preserved_geometry(result, preserved)) is not None:
+                filtered.append(remaining)
+        detected = filtered
         raw = [{"bbox": result.bbox} for result in detected]
         unified_layout = bool(getattr(getattr(provider, "capabilities", None), "extra", {}).get("layout_instances"))
         if unified_layout:
@@ -447,12 +483,6 @@ class PipelineProcessor:
         used_keys = {region.region_key for region in preserved}
         next_number = 1
         for index, result in enumerate(detected):
-            # Manual and locked regions are authoritative. Forced re-detection
-            # excludes only overlapping source members from a grouped result,
-            # retaining any other text lines from that same bubble.
-            result = _exclude_preserved_geometry(result, preserved)
-            if result is None:
-                continue
             while f"R{next_number:03d}" in used_keys:
                 next_number += 1
             key = f"R{next_number:03d}"
@@ -490,25 +520,29 @@ class PipelineProcessor:
                         "status": "unavailable",
                         "reason": "artifact_write_failed",
                     }
-            self.db.add(
-                TextRegion(
-                    image_id=page.id,
-                    region_key=key,
-                    polygon=result.polygon,
-                    bbox=result.bbox,
-                    translated_polygon=result.polygon,
-                    translated_bbox=result.bbox,
-                    confidence=result.confidence,
-                    orientation=result.orientation,
-                    reading_order=rank.get(index, index + 1),
-                    bubble_id=result.bubble_id,
-                    panel_id=detection_metadata.get("panel", {}).get("id"),
-                    # Keep detector boxes independent and use complex repair
-                    # for every region instead of classifying flat bubbles.
-                    region_type="background_complex",
-                    layout_data={"source_orientation": result.orientation, "detection": detection_metadata},
-                )
+            region = TextRegion(
+                image_id=page.id,
+                region_key=key,
+                polygon=result.polygon,
+                bbox=result.bbox,
+                translated_polygon=result.polygon,
+                translated_bbox=result.bbox,
+                confidence=result.confidence,
+                orientation=result.orientation,
+                rotation=0.0,
+                perspective_warp=False,
+                locked=False,
+                reading_order=rank.get(index, index + 1),
+                bubble_id=result.bubble_id,
+                panel_id=detection_metadata.get("panel", {}).get("id"),
+                # Keep detector boxes independent and use complex repair
+                # for every region instead of classifying flat bubbles.
+                region_type="background_complex",
+                layout_data={"source_orientation": result.orientation, "detection": detection_metadata},
             )
+            if unified_layout:
+                initialize_free_text_rotation(region)
+            self.db.add(region)
         page_metadata = dict(page.metadata_json or {})
         page_metadata["text_classification"] = classification_report
         if geometry_items:
@@ -532,6 +566,22 @@ class PipelineProcessor:
         self.db.flush()
         self.db.expire(page, ["regions"])
         list(page.regions)
+
+    def _initialize_text_rotation(self, region: TextRegion, evidence: dict | None = None) -> bool:
+        if not can_initialize_rotation(region):
+            return False
+        evidence = evidence if evidence is not None else (region.layout_data or {}).get("detection", {})
+        if free_text_angle(evidence, region.bubble_id) is None:
+            return False
+        # Old releases had no explicit user-angle marker. A historical angle
+        # followed by zero may be an intentional reset; never overwrite it.
+        if self.db.scalar(select(RegionRevision.id).where(
+            RegionRevision.region_id == region.id,
+            RegionRevision.snapshot["rotation"].as_float() != 0,
+        ).limit(1)) is not None:
+            return False
+        save_revision(self.db, region, "text_rotation_initialized")
+        return initialize_free_text_rotation(region, evidence)
 
     def ocr(
         self,
@@ -561,11 +611,13 @@ class PipelineProcessor:
         self._ocr_attempted_ids.update(region.id for region in pending_regions)
         if progress:
             progress(0, total, f"Loading OCR model · 0/{total}")
+        # No write transaction may span model loading or an HTTP/GPU call.
+        self.db.commit()
         provider.ensure_loaded()
         if progress:
             progress(0, total, f"OCR 0/{total}")
         if isinstance(provider, (CloudMultimodalOCRProvider, GenericCloudOCRProvider)):
-            self.db.flush()
+            self.db.commit()
             versions = {region.id: region.updated_at for region in pending_regions}
             jobs = [OCRJob(region.id, tuple(region.bbox), str(options.get("orientation") or region.orientation)) for region in pending_regions]
             completed = skipped = 0
@@ -578,21 +630,30 @@ class PipelineProcessor:
             # Close/drain workers even if the DB, progress callback or cancellation raises.
             with closing(recognize_regions(provider, source, jobs, int(options.get("crop_padding", 4)), self._check_interruption, report)) as results:
                 for identifier, result in results:
-                    region = self.db.scalar(select(TextRegion).where(TextRegion.id == identifier).execution_options(populate_existing=True))
-                    if region is None or region.updated_at != versions[identifier] or not self._apply_ocr_result(region, result, expected_version=versions[identifier]):
+                    if not self._save_ocr_result(page, identifier, result, expected_version=versions[identifier]):
                         skipped += 1
                     completed += 1
-                    # Commit each cloud result; a later failed region must not roll back successes.
-                    self.db.commit()
                     report("已保存" if completed == total else request_budget(provider.config).status())
             return
         for completed, region in enumerate(pending_regions, start=1):
             self._check_interruption()
             orientation = str(options.get("orientation") or region.orientation)
             result = provider.recognize(source, region.bbox, orientation, int(options.get("crop_padding", 4)))
-            self._apply_ocr_result(region, result)
+            # Retain the computed result while retrying only its short save.
+            # Every successful region is durable before the next inference.
+            self._save_ocr_result(page, region.id, result)
             if progress:
                 progress(completed, total, f"OCR {completed}/{total}")
+
+    def _save_ocr_result(self, page: ImagePage, identifier: str, result: OCRResult, *, expected_version=None) -> bool:
+        def save() -> bool:
+            region = self.db.get(TextRegion, identifier)
+            if region is None or (expected_version is not None and region.updated_at != expected_version):
+                return False
+            self._invalidate_outputs(page, clean=False)
+            return self._apply_ocr_result(region, result, expected_version=expected_version)
+
+        return retry_write(self.db, save)
 
     def _apply_ocr_result(self, region: TextRegion, result: OCRResult, *, expected_version=None) -> bool:
         reasons = [reason for reason in (region.review_reasons or []) if reason not in {"low_ocr_confidence", "empty_source_text"}]
@@ -648,9 +709,20 @@ class PipelineProcessor:
         if completed not in {0, 1, total} and now - self._last_progress_commit < 0.5:
             return
         fraction = completed / total if total else 1.0
-        task.progress = min(1.0, (stage_index + fraction) / max(1, stage_count))
-        task.message = message
-        self.db.commit()
+        def save_progress() -> None:
+            # A cancel/pause request may have arrived while acquiring the lock.
+            self.db.refresh(task)
+            if task.status == TaskStatus.RUNNING.value and not task.pause_requested:
+                task.progress = min(1.0, (stage_index + fraction) / max(1, stage_count))
+                task.message = message
+
+        if has_pending_writes(self.db):
+            # Other stages still use this checkpoint to persist their results.
+            # Never roll those writes back to retry a progress-only callback.
+            save_progress()
+            self.db.commit()
+        else:
+            retry_write(self.db, save_progress)
         self._last_progress_commit = now
         self._last_progress_counts = (completed, total)
 
@@ -758,6 +830,7 @@ class PipelineProcessor:
         if set(translations) != expected:
             raise ValueError(f"Translation ID mismatch: expected {sorted(expected)}, got {sorted(translations)}")
         for region in selected:
+            self._initialize_text_rotation(region)
             save_revision(self.db, region, "translation")
             for previous in region.translations:
                 previous.is_current = False
@@ -979,7 +1052,8 @@ class PipelineProcessor:
                     "reason": "geometry_unavailable",
                 }
             mask_arguments = {
-                "expand": int(options.get("expand", 2)),
+                # Automatic masks preserve segmented ink. Legacy task options
+                # must not re-enable dilation; explicit mask edits are separate.
                 "color_threshold": float(options.get("color_threshold", 18.0)),
                 "source_image": source_image,
                 "source_lab": source_lab,
@@ -1225,50 +1299,11 @@ class PipelineProcessor:
         page_directory = self.storage.page_dir(page.project_id, page.id)
         output = page_directory / "rendered" / "translated.png"
         text_layer = page_directory / "layers" / "translated-text.png"
-        shape_masks = {}
-        geometry = (page.metadata_json or {}).get(BUBBLE_GEOMETRY_KEY, {})
-        source_matches = isinstance(geometry, dict) and geometry.get("source") == {
-            "path": page.original_path, "width": page.width, "height": page.height,
-        }
-        if isinstance(provider, PillowRenderer) and source_matches:
-            items = bubble_geometry_items(page.metadata_json)
-            _, lab = load_text_mask_source(self.storage.absolute(page.original_path))
-            balloon_shapes = {}
-            for region in page.regions:
-                # Explicit transforms/target geometry remain authoritative.
-                if (region.rotation or region.perspective_warp
-                        or (region.translated_bbox and region.translated_bbox != region.bbox)
-                        or (region.translated_polygon and region.translated_polygon != region.polygon)):
-                    continue
-                detection = (region.layout_data or {}).get("detection", {})
-                if not isinstance(detection, dict):
-                    continue
-                assignment = detection.get("balloon_assignment", {})
-                constraint = detection.get("balloon_constraint", {})
-                if not isinstance(assignment, dict) or not isinstance(constraint, dict):
-                    continue
-                instance_id = constraint.get("instance_id")
-                if (instance_id not in items or assignment.get("status") != "assigned"
-                        or assignment.get("balloon_confidence", 0) < MIN_TRUSTED_BALLOON_CONFIDENCE
-                        or assignment.get("core_coverage", 0) < .85):
-                    continue
-                try:
-                    if instance_id in balloon_shapes:
-                        shape_masks[region.id] = balloon_shapes[instance_id]
-                        continue
-                    mask = load_balloon_mask(self.storage, page_directory, items[instance_id], image_shape=lab.shape[:2])
-                    x,y,w,h = cv2.boundingRect(mask)
-                    if not w or not h:
-                        continue
-                    roi = np.s_[y:y+h,x:x+w]
-                    distance = cv2.distanceTransform(np.pad((mask[roi]>0).astype(np.uint8),1), cv2.DIST_L2,5)[1:-1,1:-1]
-                    mask[roi][outline_guard(lab[roi], distance, 2)>0] = 0
-                    shape_masks[region.id] = mask
-                    balloon_shapes[instance_id] = mask
-                except (ValueError, OSError, cv2.error):
-                    continue
-        result = provider.render(background, page.regions, output, text_layer,
-                                 **({"shape_masks": shape_masks} if isinstance(provider, PillowRenderer) else {}))
+        for region in page.regions:
+            self._initialize_text_rotation(region)
+        # Typography fits the visible target geometry. Segmentation is used by
+        # detection/repair, not a second hidden inset during each text render.
+        result = provider.render(background, page.regions, output, text_layer)
         for region in page.regions:
             if region.id in result["layouts"]:
                 layout = result["layouts"][region.id]

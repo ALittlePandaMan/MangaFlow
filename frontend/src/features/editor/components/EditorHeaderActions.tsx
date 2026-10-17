@@ -4,7 +4,7 @@ import {useCompactLayout} from '../../../hooks/useCompactLayout'
 import {buttonClass, cn} from '../../../ui'
 
 export function EditorHeaderActions({children}: {children: ReactNode}) {
-  const compact = useCompactLayout(1100)
+  const compact = useCompactLayout(1600)
   const [open, setOpen] = useState(false)
   const root = useRef<HTMLDivElement>(null)
   const trigger = useRef<HTMLButtonElement>(null)

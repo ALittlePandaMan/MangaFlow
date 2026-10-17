@@ -100,6 +100,14 @@ class DetectionResult:
     balloon_mask_id: str | None = None
     balloon_mask_parent_id: str | None = None
     balloon_mask_confidence: float | None = None
+    # Transient alternatives for a verified nested duplicate. If an existing
+    # manual/locked frame overlaps the enclosing detection, the pipeline can
+    # fall back to its separate columns without losing the untouched column.
+    duplicate_members: list[DetectionResult] = field(default_factory=list, repr=False, compare=False)
+    # Transient lettering evidence for safe filtering around manual frames.
+    # Never serialize these arrays into region metadata or API responses.
+    text_mask: Any | None = field(default=None, repr=False, compare=False)
+    text_mask_origin: tuple[int, int] | None = None
 
 
 class TextDetector(ModelProvider[list[DetectionResult]], ABC):

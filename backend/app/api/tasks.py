@@ -9,12 +9,27 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.api.helpers import require_project, require_task
 from app.core.database import SessionLocal, get_db
-from app.models import ImagePage, ProcessingTask
+from app.models import ImagePage, ProcessingTask, TextRegion
 from app.models.enums import PageStatus, TaskStatus
 from app.schemas.domain import BatchProcessRequest, TaskRead
 from app.tasks import task_manager
 
 router = APIRouter(tags=["tasks"])
+
+
+def _task_read(task: ProcessingTask) -> TaskRead:
+    result = TaskRead.model_validate(task)
+    error = task_manager.terminal_error(task.id)
+    if error and task.status in {TaskStatus.RUNNING.value, TaskStatus.CANCELLING.value}:
+        # A worker is known to have exited. DB recovery may still be waiting for
+        # a writer lock; do not mutate/flush the request's ORM entity to report it.
+        return result.model_copy(update={
+            "status": TaskStatus.FAILED.value,
+            "current_stage": None,
+            "message": "任务已停止，正在恢复保存状态",
+            "error_message": error,
+        })
+    return result
 
 OCR_COMPLETE_STATUSES = {
     PageStatus.OCR_DONE.value,
@@ -36,7 +51,7 @@ def list_tasks(
     image_id: str | None = None,
     status: str | None = None,
     db: Session = Depends(get_db),
-) -> list[ProcessingTask]:
+) -> list[TaskRead]:
     query = select(ProcessingTask)
     if project_id:
         query = query.where(ProcessingTask.project_id == project_id)
@@ -44,12 +59,12 @@ def list_tasks(
         query = query.where(ProcessingTask.image_id == image_id)
     if status:
         query = query.where(ProcessingTask.status == status.upper())
-    return list(db.scalars(query.order_by(ProcessingTask.created_at.desc()).limit(500)).all())
+    return [_task_read(task) for task in db.scalars(query.order_by(ProcessingTask.created_at.desc()).limit(500)).all()]
 
 
 @router.get("/tasks/{task_id}", response_model=TaskRead)
-def get_task(task_id: str, db: Session = Depends(get_db)) -> ProcessingTask:
-    return require_task(db, task_id)
+def get_task(task_id: str, db: Session = Depends(get_db)) -> TaskRead:
+    return _task_read(require_task(db, task_id))
 
 
 @router.post("/tasks/{task_id}/pause", response_model=TaskRead)
@@ -127,13 +142,15 @@ def cancel_task(task_id: str, db: Session = Depends(get_db)) -> ProcessingTask:
 @router.post("/projects/{project_id}/batch-process", response_model=list[TaskRead], status_code=202)
 def batch_process(project_id: str, payload: BatchProcessRequest, db: Session = Depends(get_db)) -> list[ProcessingTask]:
     require_project(db, project_id)
-    query = select(ImagePage).where(ImagePage.project_id == project_id).options(selectinload(ImagePage.regions))
+    query = select(ImagePage).where(ImagePage.project_id == project_id)
+    if payload.only_unrecognized:
+        query = query.options(selectinload(ImagePage.regions))
     if payload.image_ids is not None:
         query = query.where(ImagePage.id.in_(payload.image_ids))
     pages = list(db.scalars(query.order_by(ImagePage.order_index)).all())
     if payload.image_ids is not None and len(pages) != len(set(payload.image_ids)):
         raise HTTPException(404, "One or more selected pages were not found in this project")
-    if payload.only_unrecognized:
+    if payload.only_unrecognized or payload.only_with_regions:
         active_image_ids = set(
             db.scalars(
                 select(ProcessingTask.image_id).where(
@@ -147,9 +164,18 @@ def batch_process(project_id: str, payload: BatchProcessRequest, db: Session = D
                 )
             ).all()
         )
-        pages = [page for page in pages if page.id not in active_image_ids and _page_needs_ocr(page)]
+        pages = [page for page in pages if page.id not in active_image_ids]
+    if payload.only_unrecognized:
+        pages = [page for page in pages if _page_needs_ocr(page)]
+    if payload.only_with_regions:
+        # Eligibility needs IDs only, not every page's polygons, masks and text.
+        with_regions = set(db.scalars(
+            select(TextRegion.image_id).join(ImagePage, ImagePage.id == TextRegion.image_id)
+            .where(ImagePage.project_id == project_id).distinct()
+        ).all())
+        pages = [page for page in pages if page.id in with_regions]
     tasks: list[ProcessingTask] = []
-    task_payload = payload.model_dump(mode="json", exclude={"image_ids", "only_unrecognized"})
+    task_payload = payload.model_dump(mode="json", exclude={"image_ids", "only_unrecognized", "only_with_regions"})
     for page in pages:
         task = ProcessingTask(
             project_id=project_id,
@@ -192,6 +218,7 @@ async def task_updates(websocket: WebSocket, task_id: str) -> None:
                     await websocket.send_json({"error": "Task not found"})
                     await websocket.close(code=4404)
                     return
+                task = _task_read(task)
                 version = (
                     task.status,
                     task.progress,

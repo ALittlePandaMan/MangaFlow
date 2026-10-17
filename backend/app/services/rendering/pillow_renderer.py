@@ -10,13 +10,14 @@ from app.core.config import get_settings
 from app.services.base import ProviderCapabilities, Renderer
 from app.services.layout import FontResolver, MangaLayoutEngine
 from app.services.layout.font_sizing import uses_automatic_font_size
-from app.services.layout.shape import inscribed_text_box
+from app.services.layout.text_frame import aligned_text_frame
+from app.services.layout.text_rotation import effective_text_rotation
 from app.services.rendering.snapshot import render_input
 from app.utils.geometry import order_quadrilateral, perspective_coefficients
 from app.utils.image_metadata import load_rgb_with_metadata, save_png_with_metadata
 from PIL import Image, ImageChops, ImageColor, ImageDraw
 
-RENDER_OUTPUT_VERSION = 6
+RENDER_OUTPUT_VERSION = 9
 
 
 def _serialize_renderer(method):
@@ -69,28 +70,15 @@ class PillowRenderer(Renderer):
             translated_bbox = getattr(region, "translated_bbox", None) or region.bbox
             translated_polygon = getattr(region, "translated_polygon", None) or region.polygon
             auto_fit = uses_automatic_font_size(region)
-            shape_applied = False
-            shape_warning = False
-            use_shape = (auto_fit and shape_masks and region.id in shape_masks
-                         and not getattr(region, "rotation", 0)
-                         and not getattr(region, "perspective_warp", False)
-                         and translated_bbox == region.bbox
-                         and translated_polygon == region.polygon)
-            if use_shape:
-                safe_box = inscribed_text_box(shape_masks[region.id], translated_bbox,
-                                              margin=max(2, int(np.ceil(region.stroke_width)) + 2))
-                if safe_box:
-                    translated_bbox = safe_box
-                    translated_polygon = [[safe_box[0],safe_box[1]], [safe_box[0]+safe_box[2],safe_box[1]],
-                                          [safe_box[0]+safe_box[2],safe_box[1]+safe_box[3]], [safe_box[0],safe_box[1]+safe_box[3]]]
-                    shape_applied = True
-                else:
-                    shape_warning = True
+            # Size against the visible translation frame. A segmentation mask
+            # must not introduce a second, invisible text frame (or hide text
+            # entirely when the bubble segmentation is missing).
             warp_quad = (
                 order_quadrilateral(translated_polygon) if getattr(region, "perspective_warp", False) else None
             )
             tile_size = self._rectified_size(warp_quad) if warp_quad else None
-            layout_bbox = [0.0, 0.0, tile_size[0], tile_size[1]] if tile_size else translated_bbox
+            text_frame = aligned_text_frame(translated_polygon, region.rotation) if not getattr(region, "perspective_warp", False) else None
+            layout_bbox = [0.0, 0.0, tile_size[0], tile_size[1]] if tile_size else text_frame or translated_bbox
             layout = self.layout_engine.layout(
                 region.translated_text,
                 layout_bbox,
@@ -104,15 +92,13 @@ class PillowRenderer(Renderer):
                 font_weight=region.font_weight,
                 # Perspective mode lays text out in the normal rectangular
                 # bbox first; the complete transparent tile is warped below.
-                polygon=None if warp_quad else translated_polygon,
+                polygon=None if warp_quad or text_frame else translated_polygon,
                 auto_fit=auto_fit,
                 stroke_width=region.stroke_width,
-                rotation=region.rotation,
+                rotation=0.0 if text_frame else effective_text_rotation(region, perspective=bool(warp_quad)),
             )
-            if shape_warning or (auto_fit and layout.overflow):
+            if auto_fit and layout.overflow:
                 layout.overflow = True
-                if shape_warning:
-                    layout.warnings.append("balloon_has_no_safe_text_area")
                 region_layouts[region.id] = {
                     **layout.to_dict(), "auto_font_size": auto_fit, "render_output_version": RENDER_OUTPUT_VERSION,
                     "shape_layout_applied": False, "render_skipped": True,
@@ -124,9 +110,10 @@ class PillowRenderer(Renderer):
                 background,
                 region,
                 layout,
-                translated_bbox,
+                text_frame or translated_bbox,
                 translated_polygon=translated_polygon,
                 tile_size=tile_size,
+                rotate_frame=text_frame is not None,
             )
             region_layouts[region.id] = {
                 **layout.to_dict(),
@@ -134,10 +121,10 @@ class PillowRenderer(Renderer):
                 "render_output_version": RENDER_OUTPUT_VERSION,
                 "perspective_warp_applied": render_style["perspective_warp_applied"],
                 "render_style": render_style,
-                "shape_layout_applied": shape_applied,
+                "shape_layout_applied": False,
                 "effective_text_bbox": translated_bbox,
                 "render_skipped": False,
-                "shape_layout_source": {"bbox": region.bbox, "polygon": region.polygon} if shape_applied else None,
+                "shape_layout_source": None,
             }
         composite = Image.alpha_composite(background, layer)
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -160,6 +147,7 @@ class PillowRenderer(Renderer):
         *,
         translated_polygon: list[list[float]] | None = None,
         tile_size: tuple[float, float] | None = None,
+        rotate_frame: bool = False,
     ) -> dict[str, Any]:
         x, y, target_width, target_height = bbox or getattr(region, "translated_bbox", None) or region.bbox
         width, height = tile_size or (target_width, target_height)
@@ -186,10 +174,16 @@ class PillowRenderer(Renderer):
             # allocate the actual glyph extent instead of clipping to it.
             margin = max(2, float(region.stroke_width) + 2)
             for placement in layout.placements:
-                font = MangaLayoutEngine._font(Path(placement.font_path), placement.font_size)
-                ink = font.getbbox(placement.text, anchor="lt")
-                glyph_width = max(placement.font_size, ink[2] - min(0, ink[0]))
-                glyph_height = max(placement.font_size, ink[3])
+                if placement.ink_box is not None:
+                    ink = placement.ink_box
+                    glyph_width, glyph_height = ink[2]-ink[0], ink[3]-ink[1]
+                    if placement.rotate:
+                        glyph_width, glyph_height = glyph_height, glyph_width
+                else:
+                    font = MangaLayoutEngine._font(Path(placement.font_path), placement.font_size)
+                    ink = font.getbbox(placement.text, anchor="lt")
+                    glyph_width = max(placement.font_size, ink[2] - min(0, ink[0]))
+                    glyph_height = max(placement.font_size, ink[3])
                 origin_x = min(origin_x, placement.x + offset_x - margin)
                 origin_y = min(origin_y, placement.y + offset_y - margin)
                 right = max(right, placement.x + offset_x + glyph_width + margin)
@@ -222,7 +216,22 @@ class PillowRenderer(Renderer):
                 (placement.x + offset_x - origin_x) * raster_scale,
                 (placement.y + offset_y - origin_y) * raster_scale,
             )
-            if placement.rotate:
+            if placement.ink_box is not None:
+                ink = MangaLayoutEngine._ink_bounds(Path(placement.font_path),
+                    max(1, round(placement.font_size * raster_scale)), placement.text)
+                if placement.rotate:
+                    # Rotate actual ink, keeping its fitted corner fixed.
+                    margin = stroke_width + 1
+                    glyph = Image.new("RGBA", (max(1, ink[2]-ink[0]+2*margin),
+                                                max(1, ink[3]-ink[1]+2*margin)))
+                    ImageDraw.Draw(glyph).text((margin-ink[0], margin-ink[1]), placement.text,
+                        font=font, fill=fill, stroke_width=stroke_width, stroke_fill=stroke_fill, anchor="ls")
+                    glyph = glyph.transpose(Image.Transpose.ROTATE_270)
+                    tile.alpha_composite(glyph, (round(position[0]-margin), round(position[1]-margin)))
+                else:
+                    draw.text((position[0]-ink[0], position[1]-ink[1]), placement.text,
+                        font=font, fill=fill, stroke_width=stroke_width, stroke_fill=stroke_fill, anchor="ls")
+            elif placement.rotate:
                 glyph_box = max(round(placement.font_size * 2 * raster_scale), 8)
                 glyph = Image.new("RGBA", (glyph_box, glyph_box), (0, 0, 0, 0))
                 ImageDraw.Draw(glyph).text(
@@ -246,18 +255,21 @@ class PillowRenderer(Renderer):
                     stroke_fill=stroke_fill,
                     anchor="lt",
                 )
-        if abs(region.rotation) > 0.01:
+        rotation = effective_text_rotation(region, perspective=bool(warp_quad))
+        if abs(rotation) > 0.01:
             center_x = origin_x + tile.width / raster_scale / 2 - width / 2
             center_y = origin_y + tile.height / raster_scale / 2 - height / 2
             tile = PillowRenderer._unpremultiply_rgba(
                 PillowRenderer._premultiply_rgba(tile).rotate(
-                    -region.rotation,
-                    expand=not auto_fit,
+                    -rotation,
+                    # Fitted slanted text is contained by the rotated frame,
+                    # not by the smaller unrotated raster tile's dimensions.
+                    expand=rotate_frame or not auto_fit,
                     resample=Image.Resampling.BICUBIC,
                 )
             )
-            if not auto_fit:
-                angle = radians(region.rotation)
+            if rotate_frame or not auto_fit:
+                angle = radians(rotation)
                 origin_x = width/2 + center_x*cos(angle) - center_y*sin(angle) - tile.width/raster_scale/2
                 origin_y = height/2 + center_x*sin(angle) + center_y*cos(angle) - tile.height/raster_scale/2
         if warp_quad and not auto_fit:

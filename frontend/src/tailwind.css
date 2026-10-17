@@ -151,6 +151,9 @@ button, a, summary, input, textarea { scroll-margin: 12px; }
 .app-header .app-header-icon { width: 40px; height: 40px; min-height: 40px; padding: 0; border-radius: 10px; flex-shrink: 0; }
 .editor-header-actions { position: relative; }
 .editor-project-actions { display: flex; align-items: center; gap: 8px; }
+.immersive-reader { position: fixed; inset: 0; z-index: 300; width: 100%; height: 100dvh; overflow: hidden; background: #101114; color: #fff; outline: none; cursor: pointer; overscroll-behavior: none; touch-action: none; user-select: none; }
+.immersive-reader:fullscreen { width: 100%; height: 100%; }
+.immersive-reader-message { position: absolute; inset: 0; display: grid; place-content: center; padding: 24px; background: rgb(16 17 20 / 75%); text-align: center; font-size: 14px; }
 .editor-toolbar { position: relative; display: flex; min-width: 0; min-height: 48px; align-items: center; gap: 12px; padding: 6px 12px; flex-wrap: wrap; }
 .editor-tools, .editor-view-tabs { flex-shrink: 0; }
 .editor-view-tabs { margin-left: auto; }
@@ -162,17 +165,25 @@ button, a, summary, input, textarea { scroll-margin: 12px; }
 .editor-workflow { margin-left: auto; }
 .editor-workflow button { white-space: nowrap; }
 .workflow-reset { margin-left: 6px; border-left-color: var(--color-line) !important; }
-.editor-workspace { position: relative; display: grid; min-height: 0; min-width: 0; grid-template-columns: 200px minmax(0, 1fr) clamp(320px, 26vw, 420px); }
-.editor-skeleton { grid-template-columns: 200px minmax(0, 1fr) clamp(320px, 26vw, 420px); }
+.editor-workspace, .editor-skeleton { --editor-sidebar-width: clamp(240px, 26vw, 320px); grid-template-columns: var(--editor-sidebar-width) minmax(0, 1fr) var(--editor-sidebar-width); }
+.editor-workspace { position: relative; display: grid; min-height: 0; min-width: 0; }
 .editor-pages, .editor-properties, .editor-canvas { min-height: 0; min-width: 0; }
+.editor-properties { container: editor-properties / size; }
 .editor-pages > aside, .editor-properties > aside, .editor-canvas > main { height: 100%; }
+/* Measure the navigation pair accurately without laying out the whole list. */
+.editor-pages [data-page-id][aria-current='page'], .editor-pages [data-page-id][aria-current='page'] + [data-page-id] { content-visibility: visible; }
 .editor-canvas { overflow: hidden; }
 .editor-sheet-heading, .editor-dock { display: none; }
 .canvas-touch-hint { display: none; }
-.region-inspector { display: flex; flex-direction: column; min-height: 0; overflow: hidden; border-left: 1px solid var(--color-line-subtle); background: var(--color-panel); color: var(--color-ink); }
-.inspector-section-heading { display: flex; align-items: center; gap: 8px; min-height: 40px; flex-shrink: 0; margin: 0; padding: 0 12px; border-bottom: 1px solid var(--color-line-subtle); font-size: 13px; font-weight: 600; }
-.inspector-section-heading > svg { color: var(--color-accent); }
-.inspector-section-heading > small { margin-left: 2px; font-size: 11px; font-weight: 400; color: var(--color-muted); }
+.region-inspector { display: flex; flex-direction: column; min-height: 0; overflow: hidden; overscroll-behavior: contain; border-left: 1px solid var(--color-line-subtle); background: var(--color-panel); color: var(--color-ink); }
+.inspector-section-heading { flex-shrink: 0; margin: 0; border-bottom: 1px solid var(--color-line-subtle); font-size: 13px; font-weight: 600; }
+.inspector-section-toggle { display: flex; width: 100%; min-height: 40px; align-items: center; gap: 8px; padding: 0 12px; color: inherit; text-align: left; cursor: pointer; }
+.inspector-section-toggle:hover { background: var(--color-hover); }
+.inspector-section-toggle:focus-visible { outline: 2px solid var(--color-accent); outline-offset: -2px; }
+.inspector-section-toggle > svg:first-child { flex-shrink: 0; color: var(--color-accent); }
+.inspector-section-toggle > small { margin-left: 2px; font-size: 11px; font-weight: 400; color: var(--color-muted); }
+.inspector-section-chevron { margin-left: auto; flex-shrink: 0; color: var(--color-muted); transition: transform 150ms ease; }
+.inspector-section-toggle[aria-expanded='false'] > .inspector-section-chevron { transform: rotate(-90deg); }
 .inspector-typesetting { flex-shrink: 0; }
 .inspector-typesetting-fields { display: grid; min-width: 0; gap: 8px; margin: 0; border: 0; padding: 12px; }
 .inspector-typesetting-fields label, .inspector-text-details > label, .inspector-coordinate-fields label { display: block; min-width: 0; font-size: 11px; line-height: 16px; color: var(--color-secondary); }
@@ -229,6 +240,16 @@ button, a, summary, input, textarea { scroll-margin: 12px; }
 .inspector-region-note { margin: 0; font-size: 11px; line-height: 1.6; color: var(--color-secondary); }
 .inspector-text-details textarea { width: 100%; padding: 8px; background: var(--color-panel); }
 .inspector-empty { margin: 0; padding: 16px 8px; font-size: 12px; line-height: 1.7; color: var(--color-muted); }
+/* Use the actual sidebar size, including desktop sidebars narrower than 300px. */
+@container editor-properties (width < 300px) {
+  .inspector-size-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .inspector-size-row > label:first-child { grid-column: 1 / -1; }
+}
+/* Leave room to reach the text rows when the pinned typesetting section is too tall. */
+@container editor-properties (height < 600px) {
+  .region-inspector { display: block; overflow: auto; }
+  .inspector-layer-list { overflow: visible; }
+}
 @media (width < 960px) {
   .region-inspector { display: block; overflow: auto; }
   .inspector-layer-list { overflow: visible; }
@@ -242,11 +263,6 @@ button, a, summary, input, textarea { scroll-margin: 12px; }
   .inspector-stroke-width .number-control { grid-template-columns: 36px minmax(0, 1fr) 36px; }
   .inspector-stroke-width .number-control > span > button { height: 44px; }
 }
-@media (960px <= width < 1200px) {
-  /* Preserve the desktop workbench before switching to bottom sheets. */
-  .editor-workspace, .editor-skeleton { grid-template-columns: 180px minmax(0, 1fr) 320px; }
-}
-
 /* Mask editing uses the same inspector and paper surface as the workbench. */
 .mask-inspector-host { height: 100%; min-height: 0; border-left: 1px solid var(--color-line-subtle); background: var(--color-panel); }
 .mask-inspector { display: flex; flex-direction: column; height: 100%; min-height: 0; color: var(--color-secondary); }
@@ -331,6 +347,9 @@ button, a, summary, input, textarea { scroll-margin: 12px; }
   .brand-subtitle { display: none; }
   .app-header-slot { margin-left: 0; }
   .page-context-menu [role="menuitem"] { min-height: 44px; }
+}
+/* Five project actions need room beside the independently centered navigation. */
+@media (width < 1600px) {
   .editor-project-actions { position: absolute; right: 0; top: calc(100% + 12px); width: 252px; padding: 8px; border: 1px solid var(--color-line); border-radius: 14px; background: var(--color-panel); box-shadow: var(--shadow-panel); flex-direction: column; align-items: stretch; }
   .editor-project-actions > button, .editor-project-actions > div > button { width: 100%; justify-content: flex-start; }
   .editor-project-actions [role="menu"] { position: static; width: 100%; margin-top: 6px; box-shadow: none; }

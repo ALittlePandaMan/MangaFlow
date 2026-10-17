@@ -14,7 +14,7 @@ function context(regions:TextRegion[]):PageWorkflowContext {
     refreshAfterTask:vi.fn(async ()=>null),syncTaskProgress:vi.fn()}
 }
 
-describe('unified layout page migration',()=>{
+describe('whole-page redetection and OCR',()=>{
   beforeEach(()=>{
     vi.restoreAllMocks()
     vi.spyOn(api.models,'list').mockResolvedValue({available:[],configured:[{kind:'detection',provider:'rfdetr',enabled:true,is_default:true,config} as unknown as ModelConfiguration]})
@@ -24,17 +24,19 @@ describe('unified layout page migration',()=>{
   it('asks before replacing old automatic boxes and leaves them intact when declined',async()=>{
     const ctx=context([region])
     await createPageWorkflowCommands(ctx).processPageStage('ocr')
-    expect(ctx.confirmDialog).toHaveBeenCalledWith(expect.objectContaining({title:'使用 RF-DETR 重新检测？',message:expect.stringContaining('手工区域和锁定区域保留')}))
+    expect(ctx.confirmDialog).toHaveBeenCalledWith(expect.objectContaining({title:'重新检测？',message:expect.stringContaining('手工区域和锁定区域保留')}))
     expect(api.images.process).not.toHaveBeenCalled()
     expect(ctx.flushPendingRegions).not.toHaveBeenCalled()
   })
 
-  it('reruns OCR only on up-to-date RF-DETR frames rather than regenerating their text and geometry',async()=>{
-    const current={...region,layout_data:{detection:{detector:'rfdetr',layout_version:2,layout_settings:config,balloon_assignment:{status:'unassigned'}}}}
+  it('redetects even when RF-DETR frames already use the current version and settings',async()=>{
+    const current={...region,layout_data:{detection:{detector:'rfdetr',layout_version:9,layout_settings:config,balloon_assignment:{status:'unassigned'}}}}
     const ctx=context([current])
+    vi.mocked(ctx.confirmDialog).mockResolvedValue(true)
     await createPageWorkflowCommands(ctx).processPageStage('ocr')
-    expect(ctx.confirmDialog).not.toHaveBeenCalled()
-    expect(api.images.process).toHaveBeenCalledWith(page.id,expect.objectContaining({start_stage:'ocr',end_stage:'ocr'}))
+    expect(ctx.confirmDialog).toHaveBeenCalledOnce()
+    expect(api.models.list).not.toHaveBeenCalled()
+    expect(api.images.process).toHaveBeenCalledWith(page.id,expect.objectContaining({start_stage:'detection',end_stage:'ocr'}))
   })
 
   it('preserves old locked frames while migrating the unlocked frames',async()=>{
@@ -43,17 +45,18 @@ describe('unified layout page migration',()=>{
     vi.mocked(ctx.confirmDialog).mockResolvedValue(true)
     vi.mocked(ctx.refreshAfterTask).mockResolvedValue({task:{status:'COMPLETED'} as ProcessingTask,regions:[locked]})
     await createPageWorkflowCommands(ctx).processPageStage('ocr')
-    expect(ctx.confirmDialog).toHaveBeenCalledWith(expect.objectContaining({title:'使用 RF-DETR 重新检测？'}))
+    expect(ctx.confirmDialog).toHaveBeenCalledWith(expect.objectContaining({title:'重新检测？'}))
     expect(api.images.process).toHaveBeenCalledWith(page.id,expect.objectContaining({start_stage:'detection',end_stage:'ocr'}))
     expect(ctx.setError).not.toHaveBeenCalledWith(expect.stringMatching(/解锁|气泡合并未执行/))
     expect(locked.locked).toBe(true)
   })
 
-  it('allows OCR-only reruns on a page containing only old locked frames',async()=>{
+  it('keeps the detection stage when existing frames are locked',async()=>{
     const ctx=context([{...region,locked:true,layout_data:{detection:{balloon_grouping_version:2}}}])
+    vi.mocked(ctx.confirmDialog).mockResolvedValue(true)
     await createPageWorkflowCommands(ctx).processPageStage('ocr')
-    expect(ctx.confirmDialog).not.toHaveBeenCalled()
-    expect(api.images.process).toHaveBeenCalledWith(page.id,expect.objectContaining({start_stage:'ocr'}))
+    expect(ctx.confirmDialog).toHaveBeenCalledOnce()
+    expect(api.images.process).toHaveBeenCalledWith(page.id,expect.objectContaining({start_stage:'detection'}))
   })
 
   it('offers migration from RF-DETR v1 without changing the page when declined',async()=>{
@@ -61,5 +64,12 @@ describe('unified layout page migration',()=>{
     await createPageWorkflowCommands(ctx).processPageStage('ocr')
     expect(ctx.confirmDialog).toHaveBeenCalledOnce()
     expect(api.images.process).not.toHaveBeenCalled()
+  })
+
+  it('detects empty pages without a replacement confirmation',async()=>{
+    const ctx=context([])
+    await createPageWorkflowCommands(ctx).processPageStage('ocr')
+    expect(ctx.confirmDialog).not.toHaveBeenCalled()
+    expect(api.images.process).toHaveBeenCalledWith(page.id,expect.objectContaining({start_stage:'detection',end_stage:'ocr'}))
   })
 })
