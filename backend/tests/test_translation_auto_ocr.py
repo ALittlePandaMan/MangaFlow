@@ -217,7 +217,8 @@ def test_auto_ocr_reports_translation_substep_and_honors_cancellation(client, pr
     try:
         assert started.wait(timeout=3)
         running = client.get(f"/api/tasks/{task_id}").json()
-        assert running["current_stage"] == "translation"
+        from app.core.config import get_settings
+        assert running["current_stage"] == ("ocr" if get_settings().checkpoint_pipeline_enabled else "translation")
         assert running["message"].startswith("翻译前自动识别")
         assert running["progress"] < 1
         cancelled = client.post(f"/api/tasks/{task_id}/cancel")

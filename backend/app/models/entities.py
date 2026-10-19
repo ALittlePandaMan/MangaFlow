@@ -30,6 +30,9 @@ class Project(TimestampMixin, Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid4_str)
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     description: Mapped[str] = mapped_column(Text, default="")
+    # Retain the legacy cover reference during cross-database transfers and
+    # rollback; current API cover selection still comes from ordered pages.
+    cover_path: Mapped[str | None] = mapped_column(Text)
     source_language: Mapped[str] = mapped_column(String(32), default="ja")
     target_language: Mapped[str] = mapped_column(String(32), default="zh-CN")
     translation_context: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
@@ -60,7 +63,8 @@ class ImagePage(TimestampMixin, Base):
 
     project: Mapped[Project] = relationship(back_populates="pages")
     regions: Mapped[list[TextRegion]] = relationship(
-        back_populates="page", cascade="all, delete-orphan", order_by="TextRegion.reading_order"
+        back_populates="page", cascade="all, delete-orphan",
+        order_by="(TextRegion.reading_order, TextRegion.created_at, TextRegion.id)",
     )
     tasks: Mapped[list[ProcessingTask]] = relationship(back_populates="page", cascade="all, delete-orphan")
 
@@ -146,6 +150,17 @@ class ModelConfig(TimestampMixin, Base):
     encrypted_api_key: Mapped[str | None] = mapped_column(Text)
 
 
+class ProcessingBatch(TimestampMixin, Base):
+    """Private, immutable request policy shared by a batch, never in TaskRead."""
+
+    __tablename__ = "processing_batches"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid4_str)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    context_mode: Mapped[str] = mapped_column(String(24), default="snapshot")
+    policy: Mapped[dict[str, Any]] = mapped_column(JSON)
+    contexts: Mapped[dict[str, Any]] = mapped_column(JSON)
+
+
 class ProcessingTask(TimestampMixin, Base):
     __tablename__ = "processing_tasks"
 
@@ -163,9 +178,64 @@ class ProcessingTask(TimestampMixin, Base):
     pause_requested: Mapped[bool] = mapped_column(Boolean, default=False)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    execution_generation: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    batch_id: Mapped[str | None] = mapped_column(ForeignKey("processing_batches.id"), index=True)
+    dependency_task_id: Mapped[str | None] = mapped_column(String(36), index=True)
+    dependency_context: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    waiting_reason: Mapped[str | None] = mapped_column(String(64))
+    error_kind: Mapped[str | None] = mapped_column(String(64))
+    active_stages: Mapped[list[str]] = mapped_column(JSON, default=list, server_default="[]")
 
     project: Mapped[Project | None] = relationship(back_populates="tasks")
     page: Mapped[ImagePage | None] = relationship(back_populates="tasks")
+
+
+class TaskWorkflow(TimestampMixin, Base):
+    """Frozen input and retry lineage for one version of a page request."""
+
+    __tablename__ = "task_workflows"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid4_str)
+    task_id: Mapped[str] = mapped_column(ForeignKey("processing_tasks.id", ondelete="CASCADE"), index=True)
+    generation: Mapped[int] = mapped_column(Integer)
+    input_fingerprint: Mapped[str] = mapped_column(String(64))
+    request_fingerprint: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(24), default="RUNNING")
+    input_state: Mapped[dict[str, Any]] = mapped_column(JSON)
+    policy: Mapped[dict[str, Any]] = mapped_column(JSON)
+
+
+class StageCheckpoint(TimestampMixin, Base):
+    """An immutable successful result; retries append a new stage attempt."""
+
+    __tablename__ = "stage_checkpoints"
+    __table_args__ = (UniqueConstraint("workflow_id", "stage", "attempt", name="uq_workflow_stage_attempt"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid4_str)
+    workflow_id: Mapped[str] = mapped_column(ForeignKey("task_workflows.id", ondelete="CASCADE"), index=True)
+    stage: Mapped[str] = mapped_column(String(32))
+    attempt: Mapped[int] = mapped_column(Integer)
+    generation: Mapped[int] = mapped_column(Integer)
+    input_fingerprint: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(24), default="RUNNING")
+    cloud_request: Mapped[bool] = mapped_column(Boolean, default=False)
+    result: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    artifacts: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    error_kind: Mapped[str | None] = mapped_column(String(48))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class TaskExecutionRun(Base):
+    """One admitted attempt; independent of the task's mutable retry state."""
+
+    __tablename__ = "task_execution_runs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid4_str)
+    task_id: Mapped[str] = mapped_column(ForeignKey("processing_tasks.id", ondelete="CASCADE"), index=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    status: Mapped[str] = mapped_column(String(24), default="RUNNING")
+    queue_seconds: Mapped[float] = mapped_column(Float, default=0.0)
+    wall_seconds: Mapped[float] = mapped_column(Float, default=0.0)
+    timings: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
 
 
 class RegionRevision(Base):

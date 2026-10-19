@@ -12,7 +12,6 @@ from app.models import ImagePage, TextRegion
 from app.pipeline.processor import PipelineProcessor
 from app.services.base import DetectionResult
 from app.services.detection.layout import build_layout_regions
-from app.services.detection.preserved_text import preserved_free_text_angles
 from app.services.detection.text_roles import LayoutPrediction
 from app.services.layout.text_rotation import (
     TEXT_ROTATION_KEY,
@@ -155,17 +154,6 @@ def test_native_role_does_not_treat_failed_bubble_assignment_as_free(kind):
     assert (free_text_angle(result.metadata, result.bubble_id) is not None) == (kind == "free")
 
 
-def test_preserved_frame_requires_a_unique_complete_lettering_match():
-    region, result = frame(), candidate()
-    assert list(preserved_free_text_angles([region], [result])) == [(region, result.metadata)]
-    assert list(preserved_free_text_angles([region, frame()], [result])) == []
-    assert list(preserved_free_text_angles([region], [result, candidate([90, 20, 20, 30])])) == []
-    assert list(preserved_free_text_angles([region], [candidate([0, 0, 160, 100])])) == []
-    assert list(preserved_free_text_angles([region], [candidate(metadata=evidence(role="dialogue"))])) == []
-    assert list(preserved_free_text_angles([region], [candidate(orientation="vertical")])) == []
-    assert list(preserved_free_text_angles([region], [candidate(text_mask=None)])) == []
-
-
 def setup(client):
     project = client.post("/api/projects", json={"name": "free-text-angle-regression"}).json()
     source = BytesIO()
@@ -179,8 +167,8 @@ def setup(client):
     return project, page, region
 
 
-@pytest.mark.parametrize("protection", [None, "zero", "dialogue", "perspective", "legacy_reset"])
-def test_redetection_recovers_only_free_typography_without_rebuilding_frames(client, monkeypatch, protection):
+@pytest.mark.parametrize("protection", [None, "zero", "dialogue", "perspective", "legacy_reset", "locked"])
+def test_redetection_rebuilds_typography_from_fresh_evidence_for_every_frame(client, monkeypatch, protection):
     _, page, row = setup(client)
     result = candidate()
     provider = SimpleNamespace(detect=Mock(return_value=[result]),
@@ -198,26 +186,28 @@ def test_redetection_recovers_only_free_typography_without_rebuilding_frames(cli
             region.layout_data = {**region.layout_data, "detection": evidence(role="dialogue")}
         elif protection == "perspective":
             region.perspective_warp = True
+        elif protection == "locked":
+            region.locked = True
         elif protection == "legacy_reset":
             region.rotation = 17.
             save_revision(db, region, "updated")
             region.rotation = 0.
         db.commit()
-        before = {key: deepcopy(getattr(region, key)) for key in (
-            "id", "polygon", "bbox", "translated_polygon", "translated_bbox", "source_text", "translated_text",
-            "font_size", "pixel_mask_path", "inpainted_path", "perspective_warp",
-        )}
         processor = PipelineProcessor(db)
         processor.detect(stored, None, force=True)
         db.commit()
         assert len(stored.regions) == 1
-        assert stored.regions[0].id == region.id
-        assert region.rotation == (-28. if protection is None else 0.)
-        for key, value in before.items():
-            assert getattr(region, key) == value
+        rebuilt = stored.regions[0]
+        assert rebuilt.id != row['id']
+        assert rebuilt.rotation == -28.
+        assert not rebuilt.locked and not rebuilt.perspective_warp
+        assert rebuilt.source_text == rebuilt.translated_text == ''
+        assert rebuilt.pixel_mask_path is None and rebuilt.inpainted_path is None
         result.metadata = evidence(-12.)
         processor.detect(stored, None, force=True)
-        assert region.rotation == (-28. if protection is None else 0.)
+        db.commit()
+        assert stored.regions[0].id != rebuilt.id
+        assert stored.regions[0].rotation == -12.
 
 
 def test_zero_angle_intent_survives_undo_redo(client):

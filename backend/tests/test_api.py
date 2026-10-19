@@ -316,6 +316,15 @@ def test_processing_does_not_block_api_event_loop(client, monkeypatch) -> None:
         release.wait(timeout=3)
 
     monkeypatch.setattr(PipelineProcessor, "execute", blocking_model_work)
+    # The checkpoint dispatcher bypasses the legacy coroutine. Gate its real
+    # stage boundary too; this scheduling test must not load RF-DETR weights.
+    from app.pipeline import workflow
+    from app.services.workflow_state import delta
+    def blocking_stage(*args,**kwargs):
+        started.set()
+        release.wait(timeout=3)
+        return {"changes":delta(args[1],args[1]),"ocr_attempted_ids":[]}
+    monkeypatch.setattr(workflow,"run_stage",blocking_stage)
     try:
         submitted_at = time.perf_counter()
         response = client.post(f"/api/images/{page['id']}/process", json={})

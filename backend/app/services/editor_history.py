@@ -9,6 +9,8 @@ from pathlib import Path
 from stat import S_ISREG
 from uuid import uuid4
 
+from app.core.timing import measured
+from app.core.transactions import has_pending_writes, retry_write
 from app.models import EditorHistoryEntry, ImagePage, ProcessingTask, Project, TextRegion
 from app.services.regions import SNAPSHOT_FIELDS, region_snapshot, save_revision
 from app.storage import get_storage
@@ -110,28 +112,20 @@ class _SnapshotArchive:
         return archived
 
 
+@measured("history.archive")
 def _archive_paths(value, page_directory: Path, assets: Path):
     return _SnapshotArchive(page_directory, assets)(value)
 
 
-def capture_page_state(
-    db: Session, page: ImagePage, *, editing: bool = False, region_ids: list[str] | None = None
-) -> dict:
-    if editing:
-        # Serialize read-modify-write history transactions, including multiple
-        # browser tabs. Refresh ORM identities only after taking the write lock.
-        db.execute(update(ImagePage).where(ImagePage.id == page.id).values(updated_at=ImagePage.updated_at))
-        db.refresh(page)
-        ensure_page_idle(db, page)
+def _page_state(db: Session, page: ImagePage, *, region_ids: list[str] | None = None) -> dict:
+    """DB-only snapshot, kept separate from hashing/copying image assets."""
     db.flush()
     query = select(TextRegion).where(TextRegion.image_id == page.id)
     if region_ids is not None:
         query = query.where(TextRegion.id.in_(region_ids))
     regions = db.scalars(
-        query.order_by(TextRegion.reading_order, TextRegion.id).execution_options(populate_existing=True)
+        query.order_by(TextRegion.reading_order, TextRegion.created_at, TextRegion.id).execution_options(populate_existing=True)
     ).all()
-    if editing and region_ids is not None and {region.id for region in regions} != set(region_ids):
-        raise HTTPException(409, "区域列表已变化，请刷新后重试")
     state = {
         "page": {field: deepcopy(getattr(page, field)) for field in PAGE_FIELDS},
         "regions": [
@@ -140,8 +134,36 @@ def capture_page_state(
     }
     if region_ids is not None:
         state["_partial_region_ids"] = sorted(set(region_ids))
-    directory = get_storage().project_dir(page.project_id)
-    return _archive_paths(state, directory, directory / "history" / "assets")
+    return state
+
+
+class _HistorySnapshotChanged(Exception):
+    pass
+
+
+def _prepare_task_snapshot(db: Session, image_id: str | None) -> tuple[dict | None, dict | None]:
+    """The task/pending journal protects assets while no DB writer is held.
+
+    Release even the read transaction before filesystem I/O. The short publish
+    transaction verifies the raw snapshot again, so a stale capture is never
+    silently committed. Interactive edit transactions retain their old path.
+    """
+    page = db.get(ImagePage, image_id) if image_id else None
+    raw = _page_state(db, page) if page else None
+    project_id = page.project_id if page else None
+    db.rollback()
+    if raw is None:
+        return None, None
+    directory = get_storage().project_dir(project_id)
+    return raw, _archive_paths(raw, directory, directory / "history" / "assets")
+
+
+def _verify_task_snapshot(db: Session, image_id: str | None, expected: dict | None) -> ImagePage | None:
+    page = db.get(ImagePage, image_id) if image_id else None
+    actual = _page_state(db, page) if page else None
+    if actual != expected:
+        raise _HistorySnapshotChanged("Page changed while preparing task history")
+    return page
 
 
 def _invalidate_state_cache(db: Session, project_id: str) -> None:
@@ -232,36 +254,39 @@ def _finish_entry(db: Session, entry: EditorHistoryEntry, after: dict) -> None:
     _invalidate_state_cache(db, entry.project_id)
 
 
-def record_page_edit(
-    db: Session, page: ImagePage, before: dict, action: str, region_ids: list[str] | None = None
-) -> EditorHistoryEntry | None:
-    after = capture_page_state(db, page, region_ids=before.get("_partial_region_ids"))
-    if before == after:
-        return None
-    entry = EditorHistoryEntry(
-        project_id=page.project_id,
-        image_id=page.id,
-        action=action,
-        before=before,
-        after=after,
-        region_ids=region_ids or [],
-    )
-    db.add(entry)
-    db.flush()
-    _finish_entry(db, entry, after)
-    return entry
-
-
+@measured("history.begin")
 def begin_task_history(db: Session, task: ProcessingTask) -> int | None:
-    if not task.page:
+    task_id, image_id, project_id = task.id, task.image_id, task.project_id
+    if not image_id:
         return None
-    # Serialize only journal transactions, not whole inference tasks. Pages
-    # remain independent; entry IDs preserve dispatch/start order for undo.
-    db.execute(update(Project).where(Project.id == task.project_id).values(updated_at=Project.updated_at))
+    if has_pending_writes(db):
+        raise ValueError("Task history requires committed page changes")
+    for attempt in range(3):
+        raw, before = _prepare_task_snapshot(db, image_id)
+        try:
+            def save(raw=raw, before=before):
+                # Lock order stays project -> page/journal. No filesystem I/O
+                # may run inside this replayable transaction.
+                db.execute(update(Project).where(Project.id == project_id).values(updated_at=Project.updated_at))
+                current = db.get(ProcessingTask, task_id)
+                if current is None or _verify_task_snapshot(db, image_id, raw) is None:
+                    return None
+                return _begin_task_history(db, current, before)
+
+            result = retry_write(db, save)
+            _invalidate_state_cache(db, project_id)
+            return result
+        except _HistorySnapshotChanged:
+            if attempt == 2:
+                raise
+    return None
+
+
+def _begin_task_history(db: Session, task: ProcessingTask, before: dict) -> int:
+    """DB-only journal mutation; caller owns transaction and snapshot validation."""
     existing = db.scalar(select(EditorHistoryEntry).where(EditorHistoryEntry.task_id == task.id))
     if existing:
         existing.pending = True
-        db.commit()
         return existing.id
     linked_id = (task.payload or {}).get("options", {}).get("_editor_history_entry_id")
     linked = db.get(EditorHistoryEntry, linked_id) if isinstance(linked_id, int) else None
@@ -275,17 +300,14 @@ def begin_task_history(db: Session, task: ProcessingTask) -> int | None:
         # Expand its sparse baseline before linking, preserving the edited
         # region's original values and all other regions' current values.
         if "_partial_region_ids" in linked.before:
-            baseline = capture_page_state(db, task.page)
+            baseline = deepcopy(before)
             originals = {item["id"]: item for item in linked.before["regions"]}
             baseline["regions"] = [originals.get(item["id"], item) for item in baseline["regions"]]
             baseline["page"] = linked.before["page"]
             linked.before = baseline
         linked.task_id = task.id
         linked.pending = True
-        db.commit()
-        _invalidate_state_cache(db, task.project_id)
         return linked.id
-    before = capture_page_state(db, task.page)
     stage = (task.payload or {}).get("start_stage") or task.task_type
     label = {
         "detection": "检测文字区域",
@@ -307,29 +329,69 @@ def begin_task_history(db: Session, task: ProcessingTask) -> int | None:
         pending=True,
     )
     db.add(entry)
-    db.commit()
-    _invalidate_state_cache(db, task.project_id)
+    db.flush()
     return entry.id
 
 
+@measured("history.finish")
 def finish_task_history(db: Session, task_id: str, entry_id: int | None) -> None:
     if entry_id is None:
         return
     db.rollback()
-    project_id = db.scalar(select(EditorHistoryEntry.project_id).where(EditorHistoryEntry.id == entry_id))
-    if project_id:
-        db.execute(update(Project).where(Project.id == project_id).values(updated_at=Project.updated_at))
-    entry = db.get(EditorHistoryEntry, entry_id)
-    task = db.get(ProcessingTask, task_id)
-    if not entry:
+    from app.models import TaskWorkflow
+    workflow = db.scalar(select(TaskWorkflow).where(TaskWorkflow.task_id == task_id).order_by(
+        TaskWorkflow.created_at.desc(),
+    ).limit(1))
+    entry = db.get(EditorHistoryEntry,entry_id)
+    geometry_prepared = bool(entry and (entry.after or {}).get("_prepared_target_geometry"))
+    if workflow is not None and workflow.status != "PUBLISHED" and not geometry_prepared:
+        # A staged workflow never changed the published page. Do not capture
+        # an unrelated edit as this failed/paused task's undo operation.
+        entry = db.get(EditorHistoryEntry, entry_id)
+        if entry is None:
+            return
+        project_id = entry.project_id
+
+        def discard_unpublished():
+            db.execute(update(Project).where(Project.id == project_id).values(updated_at=Project.updated_at))
+            current = db.get(EditorHistoryEntry, entry_id)
+            task = db.get(ProcessingTask, task_id)
+            if current is None or not current.pending or current.task_id != task_id:
+                return
+            linked = (task.payload or {}).get("options", {}).get("_editor_history_entry_id") if task else None
+            if linked == current.id:
+                current.pending, current.task_id = False, None
+            else:
+                db.delete(current)
+
+        retry_write(db, discard_unpublished)
+        _invalidate_state_cache(db, project_id)
         return
-    page = task.page if task else db.get(ImagePage, entry.image_id)
-    if page:
-        _finish_entry(db, entry, capture_page_state(db, page))
-    else:
-        db.delete(entry)
-        _invalidate_state_cache(db, entry.project_id)
-    db.commit()
+    for attempt in range(3):
+        entry = db.get(EditorHistoryEntry, entry_id)
+        if not entry:
+            return
+        project_id, image_id = entry.project_id, entry.image_id
+        raw, after = _prepare_task_snapshot(db, image_id)
+
+        def save(project_id=project_id, image_id=image_id, raw=raw, after=after):
+            db.execute(update(Project).where(Project.id == project_id).values(updated_at=Project.updated_at))
+            current = db.get(EditorHistoryEntry, entry_id)
+            if current is None:
+                return
+            page = _verify_task_snapshot(db, image_id, raw)
+            if page:
+                _finish_entry(db, current, {**after,"_prepared_target_geometry":True} if geometry_prepared else after)
+            else:
+                db.delete(current)
+
+        try:
+            retry_write(db, save)
+            _invalidate_state_cache(db, project_id)
+            return
+        except _HistorySnapshotChanged:
+            if attempt == 2:
+                raise
 
 
 def recover_task_history(db: Session) -> None:
@@ -344,8 +406,11 @@ def recover_task_history(db: Session) -> None:
         finish_task_history(db, entry.task_id, entry.id)
 
 
-def restore_page_state(db: Session, page: ImagePage, state: dict) -> None:
-    directory = get_storage().relative(get_storage().project_dir(page.project_id) / "history" / "assets") + "/"
+def _prepare_restore_page(project_id: str, state: dict, current: dict) -> dict:
+    """Verify assets and compare archived content with no application writer."""
+    project_directory = get_storage().project_dir(project_id)
+    assets = project_directory/"history"/"assets"
+    directory = get_storage().relative(assets)+"/"
     verified: set[str] = set()
 
     def verify(value):
@@ -363,27 +428,22 @@ def restore_page_state(db: Session, page: ImagePage, state: dict) -> None:
     # Sparse previews and retry bookkeeping are disposable accelerators, not
     # the authoritative mask/page assets required to restore this command.
     verify({key: value for key, value in state.items() if key not in {"_mask_delta", "_history_commands"}})
+    archive = _SnapshotArchive(project_directory, assets)
+    snapshots = {identifier:{**row,"archived":archive(row["snapshot"])} for identifier,row in current.items()}
+    changed = [item["id"] for item in state["regions"] if item["id"] not in snapshots
+        or snapshots[item["id"]]["region_key"]!=item["region_key"]
+        or any(snapshots[item["id"]]["archived"][field]!=item[field] for field in SNAPSHOT_FIELDS)]
+    return {"changed":changed}
+
+
+def restore_page_state(db: Session, page: ImagePage, state: dict, prepared: dict) -> None:
+    """DB-only replay of an asset-verified restoration plan."""
     query = select(TextRegion).where(TextRegion.image_id == page.id)
     if "_partial_region_ids" in state:
         query = query.where(TextRegion.id.in_(state["_partial_region_ids"]))
     existing = {region.id: region for region in db.scalars(query).all()}
     wanted = {item["id"] for item in state["regions"]}
-    project_directory = get_storage().project_dir(page.project_id)
-    assets = project_directory / "history" / "assets"
-    archive = _SnapshotArchive(project_directory, assets)
-    changed = []
-    for item in state["regions"]:
-        current = existing.get(item["id"])
-        # Live masks and archived masks can have different paths but identical
-        # content. Use the existing bounded, stat-keyed archive cache so a
-        # single-box undo does not rewrite every unrelated region/revision.
-        snapshot = archive(region_snapshot(current)) if current else None
-        if (
-            current is None
-            or current.region_key != item["region_key"]
-            or any(snapshot[field] != item[field] for field in SNAPSHOT_FIELDS)
-        ):
-            changed.append(item)
+    changed = [item for item in state["regions"] if item["id"] in prepared["changed"]]
     changed_keys = {
         item["id"]
         for item in changed
@@ -429,45 +489,7 @@ def ensure_project_idle(db: Session, project_id: str) -> None:
         raise HTTPException(409, "请等待项目任务完成或取消后再撤销、重做或调整图片列表")
 
 
-def capture_project_state(db: Session, project_id: str, page_ids: list[str], *, editing: bool = False) -> dict:
-    if editing:
-        db.execute(update(Project).where(Project.id == project_id).values(updated_at=Project.updated_at))
-        ensure_project_idle(db, project_id)
-    db.flush()
-    pages = db.scalars(
-        select(ImagePage).where(ImagePage.project_id == project_id).order_by(ImagePage.order_index)
-    ).all()
-    return {
-        "pages": [capture_page_state(db, page) for page in pages if page.id in page_ids],
-        "tracked_page_ids": page_ids,
-        "order": [{"id": page.id, "order_index": page.order_index} for page in pages],
-    }
-
-
-def record_project_edit(
-    db: Session, project_id: str, before: dict, action: str, page_ids: list[str], focus_id: str | None = None
-) -> None:
-    # Imports learn their new IDs after validation; the before snapshot tracks
-    # those IDs too so undo removes the entire import as one transaction.
-    before = {**before, "tracked_page_ids": page_ids}
-    after = capture_project_state(db, project_id, page_ids)
-    if before == after:
-        return
-    entry = EditorHistoryEntry(
-        project_id=project_id,
-        image_id=focus_id,
-        scope="project",
-        action=action,
-        before=before,
-        after=after,
-        region_ids=[],
-    )
-    db.add(entry)
-    db.flush()
-    _finish_entry(db, entry, after)
-
-
-def restore_project_state(db: Session, project_id: str, state: dict) -> None:
+def restore_project_state(db: Session, project_id: str, state: dict, prepared: dict) -> None:
     current = {page.id: page for page in db.scalars(select(ImagePage).where(ImagePage.project_id == project_id)).all()}
     wanted = {item["page"]["id"] for item in state["pages"]}
     temporary = max((page.order_index for page in current.values()), default=0) + len(current) + len(state["pages"]) + 1
@@ -494,7 +516,7 @@ def restore_project_state(db: Session, project_id: str, state: dict) -> None:
             db.add(page)
             db.flush()
         # All real ordering is assigned together after restoring page contents.
-        restore_page_state(db, page, {**item, "page": {**attributes, "order_index": page.order_index}})
+        restore_page_state(db, page, {**item, "page": {**attributes, "order_index": page.order_index}},prepared[attributes["id"]])
     db.flush()
     current = {page.id: page for page in db.scalars(select(ImagePage).where(ImagePage.project_id == project_id)).all()}
     for position in state["order"]:
@@ -503,9 +525,52 @@ def restore_project_state(db: Session, project_id: str, state: dict) -> None:
     db.flush()
 
 
+def _prepare_history_restore(db,project_id,direction,expected_entry_id,operation_id):
+    from app.services.workflow_state import current_page_version, fingerprint, record
+
+    if has_pending_writes(db):
+        raise ValueError("History restoration requires committed input")
+    ensure_project_idle(db,project_id)
+    entry = db.get(EditorHistoryEntry,expected_entry_id)
+    if entry is None or entry.project_id!=project_id:
+        raise HTTPException(409,"没有可撤销或重做的操作")
+    if operation_id and any(item.get("id")==operation_id for item in (entry.after or {}).get("_history_commands",[])):
+        db.rollback()
+        return None  # The locked idempotency check below returns or rejects it.
+    _invalidate_state_cache(db,project_id)
+    state = project_history_state(db,project_id)
+    if state["undo_id" if direction=="undo" else "redo_id"]!=expected_entry_id:
+        raise HTTPException(409,"编辑历史已变化，请重试撤销或重做")
+    proof = fingerprint(record(entry))
+    snapshot = deepcopy(entry.before if direction=="undo" else entry.after)
+    pages = snapshot["pages"] if entry.scope=="project" else [snapshot]
+    order = list(db.execute(select(ImagePage.id,ImagePage.order_index).where(ImagePage.project_id==project_id)))
+    versions,current = {},{}
+    for value in pages:
+        identifier = value["page"]["id"]
+        page = db.get(ImagePage,identifier)
+        versions[identifier] = current_page_version(db,identifier) if page else None
+        query = select(TextRegion).where(TextRegion.image_id==identifier)
+        if "_partial_region_ids" in value:
+            query = query.where(TextRegion.id.in_(value["_partial_region_ids"]))
+        current[identifier] = {region.id:{"region_key":region.region_key,"snapshot":region_snapshot(region)}
+                               for region in db.scalars(query)}
+    db.rollback()
+    prepared = {value["page"]["id"]:_prepare_restore_page(project_id,value,current[value["page"]["id"]]) for value in pages}
+    return {"proof":proof,"versions":versions,"order":sorted(order),"pages":prepared}
+
+
 def apply_project_history(
     db: Session, project_id: str, direction: str, expected_entry_id: int, *, operation_id: str | None = None
 ) -> EditorHistoryEntry:
+    prepared = _prepare_history_restore(db,project_id,direction,expected_entry_id,operation_id)
+    # Only the DB-only portion is replayed after a known transaction abort.
+    return retry_write(db,lambda: _apply_project_history(db,project_id,direction,expected_entry_id,operation_id,prepared))
+
+
+def _apply_project_history(db,project_id,direction,expected_entry_id,operation_id,prepared):
+    from app.services.workflow_state import current_page_version, fingerprint, record
+
     db.execute(update(Project).where(Project.id == project_id).values(updated_at=Project.updated_at))
     ensure_project_idle(db, project_id)
     _invalidate_state_cache(db, project_id)
@@ -529,14 +594,24 @@ def apply_project_history(
     entry = db.get(EditorHistoryEntry, wanted)
     if entry is None:
         raise HTTPException(409, "没有可撤销或重做的操作")
+    if prepared is None or fingerprint(record(entry))!=prepared["proof"]:
+        raise HTTPException(409,"编辑历史在文件预检期间发生变化，请重试")
+    order = sorted(db.execute(select(ImagePage.id,ImagePage.order_index).where(ImagePage.project_id==project_id)))
+    if order!=prepared["order"]:
+        raise HTTPException(409,"图片列表在文件预检期间发生变化，请重试")
+    # Lock targeted pages in stable order, after taking the project lock.
+    for identifier,version in sorted(prepared["versions"].items()):
+        page = db.scalar(select(ImagePage).where(ImagePage.id==identifier).with_for_update())
+        if (current_page_version(db,identifier) if page else None)!=version:
+            raise HTTPException(409,"页面在文件预检期间发生变化，请重试撤销或重做")
     snapshot = entry.before if direction == "undo" else entry.after
     if entry.scope == "project":
-        restore_project_state(db, project_id, snapshot)
+        restore_project_state(db, project_id, snapshot,prepared["pages"])
     else:
         page = db.get(ImagePage, entry.image_id)
         if page is None:
             raise HTTPException(409, "请先撤销图片删除，再恢复文字编辑")
-        restore_page_state(db, page, snapshot)
+        restore_page_state(db, page, snapshot,prepared["pages"][page.id])
     entry.applied = direction == "redo"
     if operation_id:
         db.flush()
@@ -552,6 +627,5 @@ def apply_project_history(
             }
         )
         entry.after = {**entry.after, "_history_commands": commands[-100:]}
-    db.commit()
     _invalidate_state_cache(db, project_id)
     return entry

@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import cv2
 import numpy as np
 import pytest
-from app.pipeline.processor import PipelineProcessor, _exclude_preserved_geometry
+from app.pipeline.processor import PipelineProcessor
 from app.services.base import DetectionResult, OCRResult
 from app.services.inpainting.providers import SimpleLaMaInpainter
 from PIL import Image, ImageChops, ImageDraw
@@ -120,7 +120,7 @@ class RecordingColorInpainter:
         return output_path
 
 
-def test_forced_detection_preserves_manual_regions_and_replaces_detector_output(client, monkeypatch) -> None:
+def test_forced_detection_replaces_manual_regions_and_detector_output(client, monkeypatch) -> None:
     class ChangingDetector:
         calls = 0
 
@@ -136,30 +136,16 @@ def test_forced_detection_preserves_manual_regions_and_replaces_detector_output(
                         metadata={"pass": self.calls},
                     )
                 ]
-            source_boxes = [[100, 70, 50, 70], [220, 70, 50, 70]]
             return [
                 DetectionResult(
-                    polygon=[[100, 70], [270, 70], [270, 140], [100, 140]],
-                    bbox=[100, 70, 170, 70],
+                    polygon=[[x, 70], [x + 50, 70], [x + 50, 140], [x, 140]],
+                    bbox=[x, 70, 50, 70],
                     confidence=0.95,
                     bubble_id="bubble-stable",
-                    metadata={
-                        "pass": self.calls,
-                        "line_grouping": {
-                            "method": "balloon_instance",
-                            "source_count": 2,
-                            "source_boxes": source_boxes,
-                            "source_polygons": [
-                                [[x, y], [x + width, y], [x + width, y + height], [x, y + height]]
-                                for x, y, width, height in source_boxes
-                            ],
-                            "source_confidences": [0.92, 0.95],
-                            "source_orientations": ["horizontal", "vertical"],
-                            "member_order": [0, 1],
-                        },
-                    },
-                    orientation="horizontal",
+                    metadata={"pass": self.calls},
+                    orientation="horizontal" if x == 100 else "vertical",
                 )
+                for x in [100, 220]
             ]
 
     detector = ChangingDetector()
@@ -203,18 +189,15 @@ def test_forced_detection_preserves_manual_regions_and_replaces_detector_output(
     assert second_task["status"] == "COMPLETED", second_task
     regions = client.get(f"/api/images/{page['id']}/regions").json()
 
-    assert manual["id"] in {region["id"] for region in regions}
+    assert manual["id"] not in {region["id"] for region in regions}
     assert first_detected["id"] not in {region["id"] for region in regions}
     replacement = next(region for region in regions if "detection" in region["layout_data"])
-    assert replacement["bbox"][0] == 220
+    assert {region["bbox"][0] for region in regions} == {100, 220}
     assert replacement["bubble_id"] == "bubble-stable"
     assert replacement["layout_data"]["detection"]["pass"] == 2
     assert len(regions) == 2
-    grouping = replacement["layout_data"]["detection"]["line_grouping"]
-    assert grouping["source_count"] == 1
-    assert grouping["source_boxes"] == [[220.0, 70.0, 50.0, 70.0]]
-    assert grouping["source_orientations"] == ["vertical"]
-    assert replacement["orientation"] == "vertical"
+    assert "line_grouping" not in replacement["layout_data"]["detection"]
+    assert replacement["orientation"] == ("horizontal" if replacement["bbox"][0] == 100 else "vertical")
 
 
 def test_failed_forced_detection_keeps_last_good_regions_masks_and_clean_page(client, monkeypatch) -> None:
@@ -291,31 +274,7 @@ def test_failed_forced_detection_keeps_last_good_regions_masks_and_clean_page(cl
     assert after_region["mask_url"] == before_region["mask_url"]
 
 
-def test_trimming_legacy_grouping_without_source_orientations_keeps_aggregate_orientation() -> None:
-    result = DetectionResult(
-        polygon=[[100, 70], [270, 70], [270, 140], [100, 140]],
-        bbox=[100, 70, 170, 70],
-        confidence=0.9,
-        orientation="horizontal",
-        metadata={
-            "line_grouping": {
-                "method": "balloon_instance",
-                "source_count": 2,
-                "source_boxes": [[100, 70, 50, 70], [220, 70, 50, 70]],
-                "source_confidences": [0.9, 0.8],
-                "member_order": [0, 1],
-            },
-        },
-    )
-
-    trimmed = _exclude_preserved_geometry(result, [SimpleNamespace(bbox=[100, 70, 50, 70])])
-
-    assert trimmed is not None
-    assert trimmed.orientation == "horizontal"
-    assert "source_orientations" not in trimmed.metadata["line_grouping"]
-
-
-def test_source_geometry_edit_becomes_manual_and_survives_forced_detection(client, monkeypatch) -> None:
+def test_source_geometry_edit_becomes_manual_and_is_replaced_by_forced_detection(client, monkeypatch) -> None:
     class MovingDetector:
         calls = 0
 
@@ -368,7 +327,8 @@ def test_source_geometry_edit_becomes_manual_and_survives_forced_detection(clien
     ).json()
     assert wait_for_task(client, second_task["id"])["status"] == "COMPLETED"
     regions = client.get(f"/api/images/{page['id']}/regions").json()
-    assert edited["id"] in {region["id"] for region in regions}
+    assert edited["id"] not in {region["id"] for region in regions}
+    assert len(regions) == 1
     assert any(region["bbox"][0] == 220 for region in regions)
 
 
@@ -620,7 +580,7 @@ def test_manual_frame_still_uses_learned_text_segmentation(client, monkeypatch, 
     probability = np.zeros((100, 180), np.float32)
     probability[25:65, 40:46] = 1.0
     monkeypatch.setattr(
-        processor_module, "text_probability", lambda *_args: (probability, {"status": "ready", "model": "test"})
+        processor_module, "text_probability", lambda *_args, **_kwargs: (probability, {"status": "ready", "model": "test"})
     )
     monkeypatch.setattr(
         processor_module, "refine_probability", lambda *_args, **_kwargs: (probability, {"status": "ready"})
@@ -830,7 +790,9 @@ def test_ocr_commits_incremental_region_progress(client, monkeypatch) -> None:
         assert partial_task["message"] == "OCR 1/2"
         assert partial_task["progress"] == 0.5
         partial_regions = client.get(f"/api/images/{page['id']}/regions").json()
-        assert [region["source_text"] for region in partial_regions] == ["recognized-1", ""]
+        from app.core.config import get_settings
+        expected = ["",""] if get_settings().checkpoint_pipeline_enabled else ["recognized-1", ""]
+        assert [region["source_text"] for region in partial_regions] == expected
     finally:
         release_second_region.set()
 
@@ -905,12 +867,16 @@ def test_cancelling_ocr_stops_before_the_next_region(client, monkeypatch) -> Non
     regions = client.get(f"/api/images/{page['id']}/regions").json()
     assert cancelled_task["status"] == "CANCELLED"
     assert fake_ocr.calls == 3
-    assert [region["source_text"] for region in regions] == [
-        "recognized-1",
-        "recognized-2",
-        "recognized-3",
-        "",
-    ]
+    from app.core.config import get_settings
+    if get_settings().checkpoint_pipeline_enabled:
+        from app.storage import get_storage
+        assert [region["source_text"] for region in regions]==["","","",""]
+        # Completed crops are durable but remain PRIVATE until the OCR step
+        # can be atomically published; cancellation must not discard them.
+        directory = get_storage().page_dir(project["id"],page["id"])
+        assert len(list(directory.glob("workflows/*/.requests/ocr/*/*.json")))==3
+    else:
+        assert [region["source_text"] for region in regions]==["recognized-1","recognized-2","recognized-3",""]
     assert updated_page["status"] == "UPLOADED"
 
 

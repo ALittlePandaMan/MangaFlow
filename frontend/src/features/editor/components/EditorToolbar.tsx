@@ -1,7 +1,6 @@
 import { BoxSelect, Eraser, Focus, Hand, LassoSelect, MousePointer2, Paintbrush, PenTool, Redo2, Undo2, ZoomIn, ZoomOut } from 'lucide-react'
 import type { Tool, ViewMode } from '../../../types'
 import {cn} from '../../../ui'
-import {usePhoneLayout} from '../../../hooks/usePhoneLayout'
 import {formatShortcut, shortcutToAria, type ShortcutId, useShortcutStore} from '../../shortcuts/store'
 import { useEditorStore } from '../store'
 
@@ -28,8 +27,7 @@ const views: {id: ViewMode, label: string, shortcutId?: ShortcutId, title?: stri
   {id: 'mask', label: '蒙版', title: '只显示修复蒙版，在画布上绘制或擦除'},
 ]
 
-export function EditorToolbar({ onUndo, onRedo, canUndo, canRedo, disabled = false, centerContent, rightActions, mobileActions, onViewChange }: {onUndo: () => void, onRedo: () => void, canUndo: boolean, canRedo: boolean, disabled?: boolean, centerContent?: React.ReactNode, rightActions?: React.ReactNode, mobileActions?: React.ReactNode, onViewChange?: (view: ViewMode) => void}) {
-  const phone = usePhoneLayout()
+export function EditorToolbar({ onUndo, onRedo, canUndo, canRedo, disabled = false, readOnly = false, centerContent, onViewChange }: {onUndo: () => void, onRedo: () => void, canUndo: boolean, canRedo: boolean, disabled?: boolean, readOnly?: boolean, centerContent?: React.ReactNode, onViewChange?: (view: ViewMode) => void}) {
   const tool = useEditorStore(state => state.tool)
   const setTool = useEditorStore(state => state.setTool)
   const maskOperation = useEditorStore(state => state.maskOperation)
@@ -43,17 +41,16 @@ export function EditorToolbar({ onUndo, onRedo, canUndo, canRedo, disabled = fal
     {view === 'mask' ? <div className="flex gap-1.5" aria-label="修复蒙版工具">{maskTools.map(item => {
       const painting = item.id === 'brush' || item.id === 'eraser'
       const active = painting ? tool !== 'pan' && tool !== 'select' && maskOperation === item.id : tool === item.id
-      return <button key={item.id} className={cn(toolButton, active && '!border-accent-line !bg-accent-soft !text-accent-soft-ink')} disabled={disabled} aria-label={item.title} aria-pressed={active} title={item.title} onClick={() => painting ? setMaskOperation(item.id as 'brush' | 'eraser') : setTool(item.id)}>{item.icon}</button>
+      return <button key={item.id} className={cn(toolButton, active && '!border-accent-line !bg-accent-soft !text-accent-soft-ink')} disabled={disabled || readOnly && item.id !== 'pan'} aria-label={item.title} aria-pressed={active} title={item.title} onClick={() => painting ? setMaskOperation(item.id as 'brush' | 'eraser') : setTool(item.id)}>{item.icon}</button>
     })}</div>
-      : <div className="flex gap-1.5" aria-label="普通编辑工具">{tools.map(item => <button disabled={disabled} key={item.id} className={cn(toolButton, tool === item.id && '!border-accent-line !bg-accent-soft !text-accent-soft-ink hover:!bg-accent-soft-hover')} title={`${item.title} (${formatShortcut(shortcuts[item.shortcutId])})`} aria-label={item.title} aria-keyshortcuts={shortcutToAria(shortcuts[item.shortcutId])} aria-pressed={tool === item.id} onClick={() => setTool(item.id)}>{item.icon}</button>)}</div>}
+      : <div className="flex gap-1.5" aria-label="普通编辑工具">{tools.map(item => <button disabled={disabled || readOnly && item.id !== 'pan'} key={item.id} className={cn(toolButton, tool === item.id && '!border-accent-line !bg-accent-soft !text-accent-soft-ink hover:!bg-accent-soft-hover')} title={`${item.title} (${formatShortcut(shortcuts[item.shortcutId])})`} aria-label={item.title} aria-keyshortcuts={shortcutToAria(shortcuts[item.shortcutId])} aria-pressed={tool === item.id} onClick={() => setTool(item.id)}>{item.icon}</button>)}</div>}
     <span className="mx-3 h-5 border-l border-line" />
-    <div className="flex gap-1.5"><button className={toolButton} disabled={disabled || !canUndo} onClick={onUndo} title={`撤销 (${formatShortcut(shortcuts['edit.undo'])})`} aria-label="撤销" aria-keyshortcuts={shortcutToAria(shortcuts['edit.undo'])}><Undo2 size={17}/></button><button className={toolButton} disabled={disabled || !canRedo} onClick={onRedo} title={`重做 (${formatShortcut(shortcuts['edit.redo'])})`} aria-label="重做" aria-keyshortcuts={shortcutToAria(shortcuts['edit.redo'])}><Redo2 size={17}/></button></div>
+    <div className="flex gap-1.5"><button className={toolButton} disabled={disabled || readOnly || !canUndo} onClick={onUndo} title={`撤销 (${formatShortcut(shortcuts['edit.undo'])})`} aria-label="撤销" aria-keyshortcuts={shortcutToAria(shortcuts['edit.undo'])}><Undo2 size={17}/></button><button className={toolButton} disabled={disabled || readOnly || !canRedo} onClick={onRedo} title={`重做 (${formatShortcut(shortcuts['edit.redo'])})`} aria-label="重做" aria-keyshortcuts={shortcutToAria(shortcuts['edit.redo'])}><Redo2 size={17}/></button></div>
     </div>
     <div className="editor-feedback flex min-w-0 items-center justify-center">
       {centerContent}
     </div>
-    <div className="editor-view-tabs flex overflow-hidden rounded-lg border border-line bg-panel">{views.map(item => <button disabled={disabled} className={cn('h-8 min-h-8 cursor-pointer border-0 bg-panel px-3.5 text-[11px] text-muted outline-none transition-colors hover:bg-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/25 disabled:cursor-not-allowed disabled:opacity-30', view === item.id && '!bg-accent-soft font-semibold !text-accent-soft-ink hover:!bg-accent-soft-hover')} key={item.id} title={`${item.title || item.label}${item.shortcutId ? ` (${formatShortcut(shortcuts[item.shortcutId])})` : ''}`} aria-keyshortcuts={item.shortcutId ? shortcutToAria(shortcuts[item.shortcutId]) : undefined} aria-pressed={view === item.id} onClick={() => (onViewChange || setView)(item.id)}>{item.label}</button>)}</div>
-    {rightActions && view !== 'mask' && <div className="editor-workflow flex shrink-0 items-center">{phone && mobileActions ? mobileActions : rightActions}</div>}
+    <div className="editor-view-tabs flex overflow-hidden rounded-lg border border-line bg-panel">{views.map(item => <button disabled={disabled || readOnly && item.id === 'mask'} className={cn('h-8 min-h-8 cursor-pointer border-0 bg-panel px-3.5 text-[11px] text-muted outline-none transition-colors hover:bg-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/25 disabled:cursor-not-allowed disabled:opacity-30', view === item.id && '!bg-accent-soft font-semibold !text-accent-soft-ink hover:!bg-accent-soft-hover')} key={item.id} title={`${item.title || item.label}${item.shortcutId ? ` (${formatShortcut(shortcuts[item.shortcutId])})` : ''}`} aria-keyshortcuts={item.shortcutId ? shortcutToAria(shortcuts[item.shortcutId]) : undefined} aria-pressed={view === item.id} onClick={() => (onViewChange || setView)(item.id)}>{item.label}</button>)}</div>
   </div>
 }
 

@@ -31,6 +31,10 @@ package-dir = {"" = "backend"}
 
 [tool.setuptools.packages.find]
 where = ["backend"]
+include = ["app", "app.*"]
+
+[tool.setuptools.package-data]
+app = ["migrations/*.py", "migrations/versions/*.py"]
 
 [tool.setuptools.dynamic]
 version = {attr = "app.version.APP_VERSION"}

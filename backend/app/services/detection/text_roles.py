@@ -20,6 +20,22 @@ class LayoutPrediction:
     mask_origin: tuple[int, int]
 
 
+def is_confirmed_free_text(metadata: Any, bubble_id: str | None = None) -> bool:
+    """Unassigned alone means unknown; require authoritative role provenance."""
+    if bubble_id or not isinstance(metadata, dict) or metadata.get("detector") != "rfdetr":
+        return False
+    role = metadata.get("text_role", {})
+    classification = metadata.get("text_classification", {})
+    assignment = metadata.get("balloon_assignment", {})
+    return (
+        isinstance(role, dict) and role.get("label") == "free_text"
+        and isinstance(classification, dict) and classification.get("status") == "classified"
+        and classification.get("label") == "text" and classification.get("excluded") is False
+        and isinstance(assignment, dict) and assignment.get("status") == "unassigned"
+        and assignment.get("bubble_id") is None and assignment.get("method") == "text_mask_containment"
+    )
+
+
 def excluded_as_sfx(region: Any) -> bool:
     data = region.metadata.get("text_classification", {})
     return (

@@ -25,7 +25,9 @@ def export_project(project: Project, formats: Iterable[str], storage: StorageMan
     requested = set(formats)
     portable_project = "project" in requested
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    output = storage.root / "exports" / f"{project.id}-{timestamp}.zip"
+    # A prior FileResponse may still be streaming when another export starts.
+    # Never reopen that download, even for the same project in the same second.
+    output = storage.root / "exports" / f"{project.id}-{timestamp}-{uuid.uuid4().hex}.zip"
     output.parent.mkdir(parents=True, exist_ok=True)
     manifest: dict[str, Any] = {
         "schema_version": PROJECT_ARCHIVE_SCHEMA_VERSION,
@@ -41,7 +43,7 @@ def export_project(project: Project, formats: Iterable[str], storage: StorageMan
         "fonts": [],
         "pages": [],
     }
-    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+    with zipfile.ZipFile(output, "x", compression=zipfile.ZIP_DEFLATED) as archive:
         if portable_project:
             _export_project_fonts(archive, project, manifest, storage)
         ordered_pages = sorted(project.pages, key=lambda item: item.order_index)
@@ -161,6 +163,7 @@ def import_project_archive(
     maximum_uncompressed_bytes: int,
 ) -> Project:
     project: Project | None = None
+    commit_attempted = False
     try:
         with zipfile.ZipFile(stream) as archive:
             _validate_archive(archive, maximum_uncompressed_bytes)
@@ -192,22 +195,26 @@ def import_project_archive(
                 if not isinstance(page_data, dict):
                     raise StorageError("项目包包含无效的页面数据")
                 _import_page(archive, project, page_data, fallback_order, db, storage)
+            # A broken connection at COMMIT has an unknown outcome. Retain
+            # the uploaded files even if the acknowledgement (or refresh)
+            # fails: the database may already reference this new project.
+            commit_attempted = True
             db.commit()
             db.refresh(project)
             return project
     except StorageError:
         db.rollback()
-        if project is not None:
+        if project is not None and not commit_attempted:
             storage.remove_project(project.id)
         raise
     except (zipfile.BadZipFile, OSError, ValueError, TypeError) as exc:
         db.rollback()
-        if project is not None:
+        if project is not None and not commit_attempted:
             storage.remove_project(project.id)
         raise StorageError(f"无法导入项目包：{exc}") from exc
     except Exception:
         db.rollback()
-        if project is not None:
+        if project is not None and not commit_attempted:
             storage.remove_project(project.id)
         raise
 

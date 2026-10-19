@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import shutil
-
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.helpers import image_read, require_page
@@ -13,9 +11,9 @@ from app.core.database import get_db
 from app.models import ImagePage, ProcessingTask
 from app.models.enums import PageStatus, TaskStatus
 from app.schemas.domain import ImageRead, ProcessRequest, TaskRead
-from app.services.editor_history import capture_page_state, capture_project_state, record_page_edit, record_project_edit
 from app.services.image_previews import PreviewKind, image_preview, preview_source
-from app.storage import get_storage
+from app.services.page_edits import apply_page_order, prepare_project_edit, publish_project_edit
+from app.services.region_edits import apply_page_edit
 from app.tasks import task_manager
 
 router = APIRouter(tags=["images"])
@@ -43,19 +41,17 @@ def get_image(image_id: str, db: Session = Depends(get_db)) -> ImageRead:
 @router.delete("/images/{image_id}", status_code=204)
 def delete_image(image_id: str, db: Session = Depends(get_db)) -> None:
     page = require_page(db, image_id)
-    directory = get_storage().page_dir(page.project_id, page.id)
     project_id = page.project_id
-    before = capture_project_state(db, project_id, [page.id], editing=True)
-    db.delete(page)
-    record_project_edit(db, project_id, before, "删除图片", [image_id], image_id)
-    db.commit()
-    if directory.exists():
-        shutil.rmtree(directory)
+    prepared = prepare_project_edit(db, project_id, [image_id])
+    before = prepared["before"]
+    after = {**before, "pages": [], "order": [item for item in before["order"] if item["id"] != image_id]}
+    publish_project_edit(db, prepared, after, lambda writer: writer.delete(writer.get(ImagePage, image_id)),
+                         "删除图片", image_id)
 
 
 @router.post("/images/{image_id}/reset", response_model=ImageRead)
 def reset_image(image_id: str, db: Session = Depends(get_db)) -> ImageRead:
-    page = require_page(db, image_id)
+    require_page(db, image_id)
     active_task = db.scalar(
         select(ProcessingTask.id).where(
             ProcessingTask.image_id == image_id,
@@ -71,33 +67,23 @@ def reset_image(image_id: str, db: Session = Depends(get_db)) -> ImageRead:
     )
     if active_task:
         raise HTTPException(409, "Wait for the current processing task to finish before resetting the page")
-    before = capture_page_state(db, page, editing=True)
-
-    for region in list(page.regions):
-        db.delete(region)
-    page.clean_path = None
-    page.rendered_path = None
-    page.text_layer_path = None
-    page.status = PageStatus.UPLOADED.value
-    page.current_stage = None
-    page.error_message = None
-    page.metadata_json = {}
-    record_page_edit(db, page, before, "重置当前页", [region["id"] for region in before["regions"]])
-    db.commit()
-
-    page_directory = get_storage().page_dir(page.project_id, page.id)
-    for name in ("masks", "bubbles", "clean", "rendered", "layers", "versions"):
-        directory = page_directory / name
-        if directory.exists():
-            shutil.rmtree(directory)
-        directory.mkdir(parents=True, exist_ok=True)
-    db.refresh(page)
-    return image_read(page)
+    def reset(private, current):
+        identifiers = [region.id for region in current.regions]
+        for region in list(current.regions):
+            private.delete(region)
+        current.clean_path = current.rendered_path = current.text_layer_path = None
+        current.status, current.current_stage, current.error_message = PageStatus.UPLOADED.value, None, None
+        current.metadata_json = {}
+        return {"region_ids": identifiers}
+    apply_page_edit(db, image_id, reset, "重置当前页")
+    # Old immutable files remain available to undo. Do not race a newly
+    # admitted task by deleting its page directories after releasing the lock.
+    return image_read(require_page(db, image_id))
 
 
 @router.patch("/images/{image_id}/ocr-exempt", response_model=ImageRead)
 def set_image_ocr_exempt(image_id: str, exempt: bool, db: Session = Depends(get_db)) -> ImageRead:
-    page = require_page(db, image_id)
+    require_page(db, image_id)
     active_task = db.scalar(
         select(ProcessingTask.id).where(
             ProcessingTask.image_id == image_id,
@@ -111,17 +97,16 @@ def set_image_ocr_exempt(image_id: str, exempt: bool, db: Session = Depends(get_
     )
     if active_task:
         raise HTTPException(409, "Wait for the current processing task to finish before changing OCR status")
-    before = capture_page_state(db, page, editing=True)
-    metadata = dict(page.metadata_json or {})
-    if exempt:
-        metadata["ocr_exempt"] = True
-    else:
-        metadata.pop("ocr_exempt", None)
-    page.metadata_json = metadata
-    record_page_edit(db, page, before, "修改页面翻译状态")
-    db.commit()
-    db.refresh(page)
-    return image_read(page)
+    def change(_private, current):
+        metadata = dict(current.metadata_json or {})
+        if exempt:
+            metadata["ocr_exempt"] = True
+        else:
+            metadata.pop("ocr_exempt", None)
+        current.metadata_json = metadata
+        return {"region_ids": []}
+    apply_page_edit(db, image_id, change, "修改页面翻译状态", scope=[])
+    return image_read(require_page(db, image_id))
 
 
 @router.patch("/images/{image_id}/order", response_model=ImageRead)
@@ -129,30 +114,18 @@ def reorder_image(image_id: str, order_index: int, db: Session = Depends(get_db)
     page = require_page(db, image_id)
     if order_index < 0:
         raise HTTPException(422, "order_index cannot be negative")
-    before = capture_project_state(db, page.project_id, [], editing=True)
-    other = db.scalar(
-        select(ImagePage).where(
-            ImagePage.project_id == page.project_id,
-            ImagePage.order_index == order_index,
-            ImagePage.id != page.id,
-        )
-    )
-    if other:
-        previous_index = page.order_index
-        temporary_index = (db.scalar(
-            select(func.max(ImagePage.order_index)).where(ImagePage.project_id == page.project_id)
-        ) or 0) + 1
-        other.order_index = temporary_index
-        db.flush()
-        page.order_index = order_index
-        db.flush()
-        other.order_index = previous_index
-    else:
-        page.order_index = order_index
-    record_project_edit(db, page.project_id, before, "调整图片顺序", [], page.id)
-    db.commit()
-    db.refresh(page)
-    return image_read(page)
+    project_id = page.project_id
+    prepared = prepare_project_edit(db, project_id, [])
+    before = prepared["before"]
+    previous_index = next((item["order_index"] for item in before["order"] if item["id"] == image_id), None)
+    if previous_index is None:
+        raise HTTPException(409, "图片列表已变化，请刷新后重试")
+    order = [{**item, "order_index": order_index if item["id"] == image_id else
+              previous_index if item["order_index"] == order_index else item["order_index"]}
+             for item in before["order"]]
+    publish_project_edit(db, prepared, {**before, "order": order},
+        lambda writer: apply_page_order(writer, project_id, order), "调整图片顺序", image_id)
+    return image_read(require_page(db, image_id))
 
 
 @router.post("/images/{image_id}/process", response_model=TaskRead, status_code=202)

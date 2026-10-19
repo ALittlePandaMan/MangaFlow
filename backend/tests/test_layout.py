@@ -305,9 +305,8 @@ def test_vertical_perspective_render_is_identical_for_every_corner_order(tmp_pat
                 np.testing.assert_array_equal(np.asarray(layer), expected)
 
 
-@pytest.mark.parametrize("empty", [False, True])
-def test_renderer_uses_visible_target_frame_instead_of_hidden_balloon_inset(tmp_path, empty):
-    import cv2
+@pytest.mark.parametrize("legacy", [{}, {"shape_layout_applied": True, "effective_text_bbox": [20, 20, 60, 90], "render_skipped": True}])
+def test_renderer_uses_visible_target_frame_instead_of_hidden_balloon_inset(tmp_path, legacy):
     font = available_font()
     background, output, layer = [tmp_path / name for name in ("bg.png", "out.png", "layer.png")]
     Image.new("RGB", (180, 200), "white").save(background)
@@ -317,13 +316,10 @@ def test_renderer_uses_visible_target_frame_instead_of_hidden_balloon_inset(tmp_
         polygon=[[5, 5], [175, 5], [175, 195], [5, 195]],
         orientation="horizontal", font_family=font.stem, font_weight=400,
         font_size=26, line_spacing=1.15, character_spacing=0, alignment="center",
-        layout_data={"custom_font_path": str(font)}, text_color="#111111",
+        layout_data={"custom_font_path": str(font), **legacy}, text_color="#111111",
         stroke_color="#ffffff", stroke_width=1, rotation=0, opacity=1,
     )
-    mask = np.zeros((200, 180), np.uint8)
-    if not empty:
-        cv2.ellipse(mask, (90, 100), (75, 95), 0, 0, 360, 255, -1)
-    result = PillowRenderer().render(background, [region], output, layer, shape_masks={region.id: mask})
+    result = PillowRenderer().render(background, [region], output, layer)
     alpha = np.asarray(Image.open(layer))[:, :, 3]
     layout = result["layouts"][region.id]
     assert not layout["render_skipped"] and not layout["overflow"]
@@ -332,8 +328,9 @@ def test_renderer_uses_visible_target_frame_instead_of_hidden_balloon_inset(tmp_
     ys, xs = np.nonzero(alpha)
     assert 5 <= xs.min() <= xs.max() < 175
     assert 5 <= ys.min() <= ys.max() < 195
-    without_mask = PillowRenderer().render(background, [region], output, layer)["layouts"][region.id]
-    assert layout["font_size"] == without_mask["font_size"]
+    region.layout_data = {"custom_font_path": str(font)}
+    without_legacy = PillowRenderer().render(background, [region], output, layer)["layouts"][region.id]
+    assert layout["font_size"] == without_legacy["font_size"]
     np.testing.assert_array_equal(alpha, np.asarray(Image.open(layer))[:, :, 3])
 
 
@@ -364,20 +361,17 @@ def test_horizontal_alignment_is_applied_exactly_once(tmp_path):
     assert boxes[2][2] > 190
 
 
-def test_locking_region_preserves_shape_layout_pixels(tmp_path):
-    import cv2
+def test_locking_region_preserves_visible_frame_pixels(tmp_path):
     bg, out, layer = [tmp_path/name for name in ("bg.png", "out.png", "layer.png")]
     Image.new("RGB", (240,100), "white").save(bg)
     region = simple_render_region()
-    mask = np.zeros((100,240), np.uint8)
-    cv2.ellipse(mask,(110,50),(95,45),0,0,360,255,-1)
     renderer = PillowRenderer()
-    first = renderer.render(bg,[region],out,layer,shape_masks={region.id:mask})
+    first = renderer.render(bg,[region],out,layer)
     pixels = np.asarray(Image.open(layer)).copy()
     region.font_size = first["layouts"][region.id]["font_size"]
     region.layout_data.update(first["layouts"][region.id])
     region.locked = True
-    second = renderer.render(bg,[region],out,layer,shape_masks={region.id:mask})
+    second = renderer.render(bg,[region],out,layer)
     assert np.array_equal(pixels,np.asarray(Image.open(layer)))
     assert first["layouts"][region.id]["effective_text_bbox"] == second["layouts"][region.id]["effective_text_bbox"]
     assert "locked" not in second["inputs"][region.id]

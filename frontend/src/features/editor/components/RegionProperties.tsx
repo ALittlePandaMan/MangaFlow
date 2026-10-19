@@ -19,7 +19,7 @@ interface Props {
   busyAction?:string | null
   onUpdate:(id:string,patch:Partial<TextRegion>) => void
   onUpdateMany?:(changes:Array<{id:string;patch:Partial<TextRegion>}>) => void
-  onAction:(action:string,options?:Record<string,unknown>) => void
+  onAction:(action:'delete') => void
 }
 
 export function RegionProperties({page,regions,region,selectedRegions,selectedCount,fontOptions,busyAction,onUpdate,onUpdateMany,onAction}:Props) {

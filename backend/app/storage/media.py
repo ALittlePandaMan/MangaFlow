@@ -9,6 +9,7 @@ from starlette.types import Scope
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
 FONT_SUFFIXES = {".ttf", ".otf", ".ttc", ".otc", ".woff", ".woff2"}
 PAGE_ASSETS = {"original", "masks", "bubbles", "clean", "rendered", "layers", "versions", "previews"}
+WORKFLOW_ASSETS = {"masks", "bubbles", "clean", "rendered", "layers"}
 
 
 def public_media_path(path: str) -> bool:
@@ -24,7 +25,28 @@ def public_media_path(path: str) -> bool:
         return suffix in FONT_SUFFIXES
     if len(parts) == 5 and parts[2:4] == ("history", "assets"):
         return suffix in IMAGE_SUFFIXES | FONT_SUFFIXES
+    if len(parts) == 9 and parts[2] == "pages" and parts[4] == "workflows":
+        return parts[7] in WORKFLOW_ASSETS and suffix in IMAGE_SUFFIXES
     return len(parts) == 6 and parts[2] == "pages" and parts[4] in PAGE_ASSETS and suffix in IMAGE_SUFFIXES
+
+
+def published_workflow_asset(path: str) -> bool:
+    """Only completed, published stage assets are public; staging stays private."""
+    parts = PurePosixPath(path).parts
+    if len(parts) != 9 or parts[4] != "workflows":
+        return True
+    from sqlalchemy import select
+
+    from app.core.database import SessionLocal
+    from app.models import ProcessingTask, StageCheckpoint, TaskWorkflow
+
+    with SessionLocal() as db:
+        artifacts = db.scalar(select(StageCheckpoint.artifacts).join(TaskWorkflow).join(ProcessingTask).where(
+            ProcessingTask.project_id == parts[1], ProcessingTask.image_id == parts[3],
+            TaskWorkflow.id == parts[5], TaskWorkflow.status == "PUBLISHED",
+            StageCheckpoint.id == parts[6], StageCheckpoint.status == "SUCCEEDED",
+        ).limit(1))
+        return artifacts is not None and path in artifacts
 
 
 class VersionedMediaFiles(StaticFiles):
@@ -37,7 +59,7 @@ class VersionedMediaFiles(StaticFiles):
         except ValueError:
             return "", None
         # Also validate symlink targets inside the data root, not just escapes.
-        return (full_path, stat) if public_media_path(resolved) else ("", None)
+        return (full_path, stat) if public_media_path(resolved) and published_workflow_asset(resolved) else ("", None)
 
     async def get_response(self, path: str, scope: Scope) -> Response:
         if not public_media_path(path):

@@ -1,9 +1,8 @@
 import type {TextRegion} from '../../../types'
 
 export type RegionChange = {id: string, patch: Partial<TextRegion>}
-export type BoxAlignment = 'left' | 'center' | 'right' | 'top' | 'middle' | 'bottom'
 
-export function geometryOf(region: TextRegion, translated: boolean) {
+function geometryOf(region: TextRegion, translated: boolean) {
   const bbox = translated && region.translated_bbox?.length === 4 ? region.translated_bbox : region.bbox
   const polygon = translated && region.translated_polygon?.length >= 3 ? region.translated_polygon : region.polygon
   return {bbox, polygon: polygon.length >= 3 ? polygon : [[bbox[0], bbox[1]], [bbox[0]+bbox[2], bbox[1]], [bbox[0]+bbox[2], bbox[1]+bbox[3]], [bbox[0], bbox[1]+bbox[3]]]}
@@ -27,20 +26,6 @@ export function constrainGroupMove(regions: TextRegion[], translated: boolean, d
   // Legacy out-of-page selections must still be able to move toward the page.
   return {x:Math.max(Math.min(0,-left),Math.min(Math.max(0,width-right),dx)),
     y:Math.max(Math.min(0,-top),Math.min(Math.max(0,height-bottom),dy))}
-}
-
-export function alignRegions(regions: TextRegion[], translated: boolean, alignment: BoxAlignment): RegionChange[] {
-  const editable = regions.filter(region => !region.locked)
-  if (editable.length < 2) return []
-  const boxes = editable.map(region => geometryOf(region, translated).bbox)
-  const left = Math.min(...boxes.map(box => box[0])), right = Math.max(...boxes.map(box => box[0]+box[2]))
-  const top = Math.min(...boxes.map(box => box[1])), bottom = Math.max(...boxes.map(box => box[1]+box[3]))
-  return editable.flatMap((region,index) => {
-    const [x,y,w,h] = boxes[index]
-    const dx = alignment === 'left' ? left-x : alignment === 'center' ? (left+right-w)/2-x : alignment === 'right' ? right-w-x : 0
-    const dy = alignment === 'top' ? top-y : alignment === 'middle' ? (top+bottom-h)/2-y : alignment === 'bottom' ? bottom-h-y : 0
-    return Math.abs(dx)+Math.abs(dy) < .001 ? [] : moveRegions([region],translated,dx,dy)
-  })
 }
 
 export function draftRegion(imageId: string, polygon: number[][], bbox: number[], regions: TextRegion[]): TextRegion {

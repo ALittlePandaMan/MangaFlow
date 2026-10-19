@@ -17,6 +17,7 @@ from app.services.ocr import (
     PaddleOCRProvider,
     TesseractOCRProvider,
 )
+from app.services.ocr.local import BaberuOCRProvider, HayaiOCRProvider, PaddleOCRVLProvider
 from app.services.rendering import PillowRenderer
 from app.services.translation import OpenAICompatibleTranslator, PassthroughTranslator
 
@@ -27,7 +28,10 @@ class ProviderRegistry:
     detectors: dict[str, type[TextDetector]] = {"opencv-fallback": OpenCVTextDetector, "rfdetr": RFDetrTextDetector}
     ocr: dict[str, type[OCRProvider]] = {
         "review-fallback": NullOCRProvider,
+        "paddleocr-vl-1.6": PaddleOCRVLProvider,
         "manga-ocr": MangaOCRProvider,
+        "baberu-ocr": BaberuOCRProvider,
+        "hayai-ocr": HayaiOCRProvider,
         "paddleocr": PaddleOCRProvider,
         "tesseract": TesseractOCRProvider,
         "cloud-multimodal": CloudMultimodalOCRProvider,
@@ -63,6 +67,7 @@ class ProviderRegistry:
     def __init__(self) -> None:
         self._instances: dict[tuple[str, str, str], Any] = {}
         self._layout_workers: dict[tuple[str, str], Any] = {}
+        self._ocr_workers: dict[tuple[str, str], Any] = {}
         self._lock = RLock()
 
     def create(self, kind: str, provider: str | None = None, config: dict[str, Any] | None = None) -> Any:
@@ -93,6 +98,9 @@ class ProviderRegistry:
                     # Threshold/filter changes are CPU postprocessing settings,
                     # not a reason to duplicate RF-DETR weights in VRAM.
                     instance._text_classifier = self._layout_workers.setdefault(worker_key, worker)
+                if kind == "ocr" and isinstance(instance, (PaddleOCRVLProvider, BaberuOCRProvider, HayaiOCRProvider)):
+                    worker = instance.worker
+                    instance.worker = self._ocr_workers.setdefault((name, worker.device), worker)
                 self._instances[key] = instance
             return instance
 
@@ -102,8 +110,12 @@ class ProviderRegistry:
                 instance.unload()
             self._instances.clear()
             self._layout_workers.clear()
+            self._ocr_workers.clear()
 
     def is_installed(self, kind: str, provider: str) -> bool:
+        if kind == "ocr" and provider in {"paddleocr-vl-1.6", "baberu-ocr", "hayai-ocr"}:
+            from app.services.ocr.local_catalog import local_ocr_python
+            return local_ocr_python().is_file()
         if (kind, provider) == ("detection", "rfdetr"):
             from app.core.config import get_settings
             from app.services.detection.classification import MODEL_RELATIVE_PATH, classifier_python

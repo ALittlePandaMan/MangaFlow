@@ -4,14 +4,18 @@ from __future__ import annotations
 
 import hashlib
 import os
+from datetime import datetime
 from uuid import uuid4
 
 from app.models import EditorHistoryEntry, TextRegion
 from app.services.editor_history import project_history_state
 from app.storage import get_storage
 from PIL import Image, ImageChops
+from pydantic import TypeAdapter
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+
+_datetime_json = TypeAdapter(datetime)
 
 
 def _mask(snapshot: dict, region_id: str, size: tuple[int, int]):
@@ -45,8 +49,11 @@ def checkpoint(entry: EditorHistoryEntry, region: TextRegion, bounds=None, befor
     assets = storage.project_dir(entry.project_id) / "history" / "assets"
     assets.mkdir(parents=True, exist_ok=True)
     paths = {}
+    # Prepared edits create their sparse files before a DB journal ID exists.
+    # The final journal stores these exact immutable paths after publication.
+    identity = entry.id if entry.id is not None else uuid4().hex
     for name, image in images.items():
-        path = assets / f"mask-step-{entry.id}-{digest}-{name}.png"
+        path = assets / f"mask-step-{identity}-{digest}-{name}.png"
         if not path.is_file():
             temporary = path.with_name(f".{uuid4().hex}.tmp")
             try:
@@ -60,7 +67,10 @@ def checkpoint(entry: EditorHistoryEntry, region: TextRegion, bounds=None, befor
 
 def mask_history_window(db: Session, region: TextRegion):
     state = project_history_state(db, region.page.project_id)
-    result = {"region_updated_at": region.updated_at.isoformat(), "history": state, "undo": [], "redo": []}
+    # Match RegionRead's Pydantic JSON encoding (UTC is Z, not +00:00).
+    # The client compares this optimistic-version token as an exact string.
+    result = {"region_updated_at": _datetime_json.dump_python(region.updated_at, mode="json"),
+              "history": state, "undo": [], "redo": []}
     if state["pending"]:
         return result
     # Never deserialize all page snapshots just to warm local undo. New mask

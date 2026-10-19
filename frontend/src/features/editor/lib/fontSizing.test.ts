@@ -2,7 +2,6 @@ import {describe,expect,it} from 'vitest'
 import type {TextRegion} from '../../../types'
 import {sizeText,usesAutomaticFontSize} from './fontSizing'
 import {extendedPerspectiveQuad} from './perspectiveText'
-import {shapePreviewRegion} from './shapeText'
 import {fitInk, type GlyphMetrics} from './inkLayout'
 import {hasCurrentComputedFont} from './fontSizing'
 import {PERSPECTIVE_RENDER_OUTPUT_VERSION} from './perspectiveText'
@@ -34,8 +33,11 @@ describe('initial font sizing and subsequent user adjustments',()=>{
     expect(usesAutomaticFontSize(fixture({auto_font_size:false,layout_data:{auto_font_size:true}}))).toBe(false)
   })
   it('does not clip a user-adjusted size to a previously generated safe box',()=>{
-    const region=fixture({auto_font_size:false,layout_data:{render_skipped:true,shape_layout_applied:true}})
-    expect(shapePreviewRegion(region)).toBe(region)
+    const region=fixture({auto_font_size:false,font_size:80,
+      layout_data:{render_skipped:true,shape_layout_applied:true,effective_text_bbox:[0,0,1,1]}})
+    const sized=sizeText(region,{width:20,height:30},measure)
+    expect(sized.fontSize).toBe(80)
+    expect(sized.overflow).toBe(true)
   })
   it('projects overflow with the original frame scale instead of shrinking it',()=>{
     const quad=[[100,100],[140,100],[140,160],[100,160]]

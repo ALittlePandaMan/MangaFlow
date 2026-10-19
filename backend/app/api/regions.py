@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from datetime import datetime
+from datetime import datetime, timezone
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
@@ -13,13 +13,14 @@ from sqlalchemy.orm import Session
 from app.api.helpers import image_read, region_read, require_page, require_region
 from app.application import enqueue_page_task
 from app.core.database import get_db
-from app.models import ImagePage, RegionRevision, TextRegion
+from app.models import EditorHistoryEntry, ImagePage, RegionRevision, TextRegion
 from app.schemas.domain import MaskOperation, ProcessRequest, RegionCreate, RegionRead, RegionUpdate, TaskRead
-from app.services.editor_history import capture_page_state, history_state, record_page_edit
+from app.services.editor_history import history_state
 from app.services.inpainting import process_mask
 from app.services.mask_history import checkpoint as mask_checkpoint
 from app.services.mask_history import mask_history_window
 from app.services.region_deletion import restore_deleted_pixels
+from app.services.region_edits import apply_page_edit, apply_region_edits
 from app.services.regions import (
     STALE_CLEAN_PATH_KEY,
     copy_region,
@@ -31,6 +32,7 @@ from app.services.regions import (
     split_region,
     update_region,
 )
+from app.services.workflow_state import decode, record
 from app.storage import get_storage
 
 router = APIRouter(tags=["regions"])
@@ -102,24 +104,25 @@ def _mark_manual_mask_edit(region: TextRegion) -> None:
 def list_regions(image_id: str, db: Session = Depends(get_db)) -> list[RegionRead]:
     require_page(db, image_id)
     regions = list(
-        db.scalars(select(TextRegion).where(TextRegion.image_id == image_id).order_by(TextRegion.reading_order)).all()
+        db.scalars(select(TextRegion).where(TextRegion.image_id == image_id).order_by(
+            TextRegion.reading_order, TextRegion.created_at, TextRegion.id,
+        )).all()
     )
     return [region_read(region) for region in regions]
 
 
 @router.post("/images/{image_id}/regions", response_model=RegionRead, status_code=201)
 def add_region(image_id: str, payload: RegionCreate, db: Session = Depends(get_db)) -> RegionRead:
-    page = require_page(db, image_id)
-    before = capture_page_state(db, page, editing=True)
+    require_page(db, image_id)
     if payload.id is not None and db.get(TextRegion, str(payload.id)) is not None:
         raise HTTPException(409, "Region ID already exists")
     try:
-        region = create_region(db, page, payload)
-        _invalidate_rendered_artifacts(page)
-        record_page_edit(db, page, before, "创建文字区域", [region.id])
-        db.commit()
-        db.refresh(region)
-        return region_read(region)
+        def create(private,page):
+            region = create_region(private,page,payload)
+            _invalidate_rendered_artifacts(page)
+            return {"region_ids":[region.id]}
+        metadata,_ = apply_page_edit(db,image_id,create,"创建文字区域")
+        return region_read(require_region(db,metadata["region_ids"][0]))
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
 
@@ -147,14 +150,10 @@ def _remove_live_mask(page: ImagePage, mask_path: str) -> None:
 @router.patch("/regions/{region_id}", response_model=RegionRead)
 def patch_region(region_id: str, payload: RegionUpdate, db: Session = Depends(get_db)) -> RegionRead:
     region = require_region(db, region_id)
-    page = require_page(db, region.image_id)
-    before = capture_page_state(db, page, editing=True, region_ids=[region_id])
     try:
-        _apply_region_patch(db, region, payload)
-        record_page_edit(db, page, before, "显示/隐藏文字区域" if "visible" in payload.model_fields_set else "编辑文字区域", [region.id])
-        db.commit()
-        db.refresh(region)
-        return region_read(region)
+        rows = apply_region_edits(db,region.image_id,[(region_id,payload)],
+            "显示/隐藏文字区域" if "visible" in payload.model_fields_set else "编辑文字区域",_apply_region_patch)
+        return region_read(rows[0])
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
 
@@ -174,46 +173,57 @@ def bulk_update_regions(changes: list[BulkRegionChange], db: Session = Depends(g
         raise HTTPException(404, "One or more regions were not found")
     if len({region.image_id for region in regions.values()}) != 1:
         raise HTTPException(422, "All regions must belong to the same page")
-    page = require_page(db, regions[ids[0]].image_id)
-    before = capture_page_state(db, page, editing=True, region_ids=ids)
-    for change in changes:
-        _apply_region_patch(db, regions[change.id], change.patch)
-    record_page_edit(db, page, before, "批量编辑文字区域", ids)
-    db.commit()
-    return [region_read(regions[id]) for id in ids]
+    try:
+        rows = apply_region_edits(db,regions[ids[0]].image_id,[(change.id,change.patch) for change in changes],
+                                 "批量编辑文字区域",_apply_region_patch)
+        return [region_read(row) for row in rows]
+    except ValueError as exc:
+        raise HTTPException(422,str(exc)) from exc
 
 
 @router.delete("/regions/{region_id}")
 def delete_region(region_id: str, db: Session = Depends(get_db)):
     region = require_region(db, region_id)
-    page = require_page(db, region.image_id)
-    before = capture_page_state(db, page, editing=True)
-    region_id_value = region.id
-    mask_path = region.pixel_mask_path
-    needs_rebuild = bool(page.clean_path or page.rendered_path or page.text_layer_path)
-    db.delete(region)
-    db.flush()
-    remaining=list(db.scalars(select(TextRegion).where(TextRegion.image_id == page.id)).all())
-    region_keys = renumber_region_keys(db, remaining)
-    fast=restore_deleted_pixels(page,[region],remaining)
-    if fast:
-        _invalidate_rendered_artifacts(page)
-    entry = record_page_edit(db, page, before, "删除文字区域", [region_id_value])
-    db.commit()
-    if mask_path:
-        _remove_live_mask(page, mask_path)
-    if fast or not needs_rebuild:
-        return {"region_id": region_id_value, "region_keys": region_keys, "rebuild_task": None, "page":image_read(page,include_history=True), "editor_history": history_state(db, page.id)}
+    image_id = region.image_id
+    metadata,entry_id = _prepare_delete(db,image_id,[region_id],"删除文字区域")
+    page = require_page(db,image_id)
+    if metadata["fast"] or not metadata["needs_rebuild"]:
+        return {"region_id": region_id, "region_keys": metadata["region_keys"], "rebuild_task": None, "page":image_read(page,include_history=True), "editor_history": history_state(db, page.id)}
     # The clean image is a page-level composite. Rebuild it from the immutable
     # original with only the remaining masks, then recreate the translated layer.
     task = enqueue_page_task(
         db,
         page,
         "rendering",
-        ProcessRequest(force=True, options={"_editor_history_entry_id": entry.id if entry else None}),
+        ProcessRequest(force=True, options={"_editor_history_entry_id": entry_id}),
         start_stage="inpainting",
     )
-    return {"region_id": region_id_value, "region_keys": region_keys, "rebuild_task": TaskRead.model_validate(task), "editor_history": history_state(db, page.id)}
+    return {"region_id": region_id, "region_keys": metadata["region_keys"], "rebuild_task": TaskRead.model_validate(task), "editor_history": history_state(db, page.id)}
+
+
+def _prepare_delete(db,image_id,identifiers,action):
+    def remove(private,page):
+        removed = [private.get(TextRegion,identifier) for identifier in identifiers]
+        if any(row is None for row in removed):
+            raise HTTPException(409,"区域列表已变化，请刷新后重试")
+        paths = [row.pixel_mask_path for row in removed if row.pixel_mask_path]
+        needs_rebuild = bool(page.clean_path or page.rendered_path or page.text_layer_path)
+        for row in removed:
+            private.delete(row)
+        private.flush()
+        remaining = list(private.scalars(select(TextRegion).where(TextRegion.image_id==page.id)))
+        names = renumber_region_keys(private,remaining)
+        fast = restore_deleted_pixels(page,removed,remaining)
+        if fast:
+            _invalidate_rendered_artifacts(page)
+        return {"region_ids":identifiers,"mask_paths":paths,"region_keys":names,"fast":fast,"needs_rebuild":needs_rebuild}
+    metadata,entry_id = apply_page_edit(db,image_id,remove,action)
+    page = require_page(db,image_id)
+    # Shared legacy mask paths may still belong to a retained region.
+    for path in metadata["mask_paths"]:
+        if db.scalar(select(TextRegion.id).where(TextRegion.pixel_mask_path==path).limit(1)) is None:
+            _remove_live_mask(page,path)
+    return metadata,entry_id
 
 
 @router.post("/regions/bulk-delete")
@@ -228,46 +238,30 @@ def bulk_delete_regions(region_ids: list[str], db: Session = Depends(get_db)):
     if len(image_ids) != 1:
         raise HTTPException(422, "All regions must belong to the same page")
 
-    page = require_page(db, regions[0].image_id)
-    before = capture_page_state(db, page, editing=True)
-    mask_paths = [region.pixel_mask_path for region in regions if region.pixel_mask_path]
-    needs_rebuild = bool(page.clean_path or page.rendered_path or page.text_layer_path)
-    for region in regions:
-        db.delete(region)
-    db.flush()
-    remaining=list(db.scalars(select(TextRegion).where(TextRegion.image_id == page.id)).all())
-    region_keys = renumber_region_keys(db, remaining)
-    fast=restore_deleted_pixels(page,regions,remaining)
-    if fast:
-        _invalidate_rendered_artifacts(page)
-    entry = record_page_edit(db, page, before, "批量删除文字区域", unique_ids)
-    db.commit()
-    for mask_path in mask_paths:
-        _remove_live_mask(page, mask_path)
-
-    if fast or not needs_rebuild:
-        return {"region_ids": unique_ids, "region_keys": region_keys, "rebuild_task": None, "page":image_read(page,include_history=True), "editor_history": history_state(db, page.id)}
+    image_id = regions[0].image_id
+    metadata,entry_id = _prepare_delete(db,image_id,unique_ids,"批量删除文字区域")
+    page = require_page(db,image_id)
+    if metadata["fast"] or not metadata["needs_rebuild"]:
+        return {"region_ids": unique_ids, "region_keys": metadata["region_keys"], "rebuild_task": None, "page":image_read(page,include_history=True), "editor_history": history_state(db, page.id)}
     task = enqueue_page_task(
         db,
         page,
         "rendering",
-        ProcessRequest(force=True, options={"_editor_history_entry_id": entry.id if entry else None}),
+        ProcessRequest(force=True, options={"_editor_history_entry_id": entry_id}),
         start_stage="inpainting",
     )
-    return {"region_ids": unique_ids, "region_keys": region_keys, "rebuild_task": TaskRead.model_validate(task), "editor_history": history_state(db, page.id)}
+    return {"region_ids": unique_ids, "region_keys": metadata["region_keys"], "rebuild_task": TaskRead.model_validate(task), "editor_history": history_state(db, page.id)}
 
 
 @router.post("/regions/{region_id}/copy", response_model=RegionRead, status_code=201)
 def duplicate_region(region_id: str, db: Session = Depends(get_db)) -> RegionRead:
     region = require_region(db, region_id)
-    page = require_page(db, region.image_id)
-    before = capture_page_state(db, page, editing=True)
-    duplicate = copy_region(db, region)
-    _invalidate_rendered_artifacts(page)
-    record_page_edit(db, page, before, "复制文字区域", [duplicate.id])
-    db.commit()
-    db.refresh(duplicate)
-    return region_read(duplicate)
+    def duplicate(private,page):
+        copy = copy_region(private,private.get(TextRegion,region_id))
+        _invalidate_rendered_artifacts(page)
+        return {"region_ids":[copy.id]}
+    metadata,_ = apply_page_edit(db,region.image_id,duplicate,"复制文字区域")
+    return region_read(require_region(db,metadata["region_ids"][0]))
 
 
 @router.post("/regions/merge")
@@ -277,22 +271,27 @@ def merge_region_list(region_ids: list[str], db: Session = Depends(get_db)):
     if len(regions) != len(unique_ids):
         raise HTTPException(404, "One or more regions were not found")
     try:
-        if not regions:
+        if len(regions)<2 or len({region.image_id for region in regions})!=1:
             raise ValueError("At least two regions from the same page are required")
-        page = require_page(db, regions[0].image_id)
-        before = capture_page_state(db, page, editing=True)
-        mask_paths = [region.pixel_mask_path for region in regions if region.pixel_mask_path]
-        needs_rebuild = bool(page.clean_path or page.rendered_path or page.text_layer_path)
-        merged = merge_regions(db, regions)
-        remaining = list(db.scalars(select(TextRegion).where(TextRegion.image_id == page.id)).all())
-        region_keys = renumber_region_keys(db, remaining)
-        entry = record_page_edit(db, page, before, "合并文字区域", unique_ids)
-        db.commit()
-        db.refresh(merged)
-        for mask_path in mask_paths:
-            _remove_live_mask(page, mask_path)
-        if not needs_rebuild:
-            return {"region": region_read(merged), "region_keys": region_keys, "rebuild_task": None}
+        image_id = regions[0].image_id
+        def merge(private,page):
+            rows = [private.get(TextRegion,identifier) for identifier in unique_ids]
+            if any(row is None for row in rows):
+                raise HTTPException(409,"区域列表已变化，请刷新后重试")
+            paths = [row.pixel_mask_path for row in rows if row.pixel_mask_path]
+            needs_rebuild = bool(page.clean_path or page.rendered_path or page.text_layer_path)
+            merged = merge_regions(private,rows)
+            remaining = list(private.scalars(select(TextRegion).where(TextRegion.image_id==page.id)))
+            return {"region_ids":unique_ids,"merged_id":merged.id,"mask_paths":paths,
+                    "region_keys":renumber_region_keys(private,remaining),"needs_rebuild":needs_rebuild}
+        metadata,entry_id = apply_page_edit(db,image_id,merge,"合并文字区域")
+        page = require_page(db,image_id)
+        merged = require_region(db,metadata["merged_id"])
+        for path in metadata["mask_paths"]:
+            if db.scalar(select(TextRegion.id).where(TextRegion.pixel_mask_path==path).limit(1)) is None:
+                _remove_live_mask(page,path)
+        if not metadata["needs_rebuild"]:
+            return {"region": region_read(merged), "region_keys": metadata["region_keys"], "rebuild_task": None}
         # Merging removes the source masks, so this structural operation must
         # rebuild the complete clean page rather than use selected-region
         # incremental repair semantics for the new merged region.
@@ -300,11 +299,11 @@ def merge_region_list(region_ids: list[str], db: Session = Depends(get_db)):
             db,
             page,
             "rendering",
-            ProcessRequest(force=True, options={"rebuild_clean": True, "_editor_history_entry_id": entry.id if entry else None}),
+            ProcessRequest(force=True, options={"rebuild_clean": True, "_editor_history_entry_id": entry_id}),
             region_id=merged.id,
             start_stage="mask",
         )
-        return {"region": region_read(merged), "region_keys": region_keys, "rebuild_task": TaskRead.model_validate(task)}
+        return {"region": region_read(merged), "region_keys": metadata["region_keys"], "rebuild_task": TaskRead.model_validate(task)}
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
 
@@ -313,13 +312,12 @@ def merge_region_list(region_ids: list[str], db: Session = Depends(get_db)):
 def split_region_endpoint(region_id: str, axis: str = "auto", db: Session = Depends(get_db)) -> list[RegionRead]:
     try:
         region = require_region(db, region_id)
-        page = require_page(db, region.image_id)
-        before = capture_page_state(db, page, editing=True)
-        regions = split_region(db, region, axis)
-        _invalidate_rendered_artifacts(page, clean=True)
-        record_page_edit(db, page, before, "拆分文字区域", [item.id for item in regions])
-        db.commit()
-        return [region_read(region) for region in regions]
+        def split(private,page):
+            regions = split_region(private,private.get(TextRegion,region_id),axis)
+            _invalidate_rendered_artifacts(page,clean=True)
+            return {"region_ids":[item.id for item in regions]}
+        metadata,_ = apply_page_edit(db,region.image_id,split,"拆分文字区域")
+        return [region_read(require_region(db,identifier)) for identifier in metadata["region_ids"]]
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
 
@@ -334,18 +332,22 @@ def upload_mask(
     db: Session = Depends(get_db),
 ) -> RegionRead:
     region = require_region(db, region_id)
-    page = require_page(db, region.image_id)
-    before = capture_page_state(db, page, editing=True, region_ids=[region_id])
-    if region.locked:
-        raise HTTPException(409, "请先解锁区域再编辑蒙版")
-    if expected_updated_at is not None:
-        try:
-            expected = datetime.fromisoformat(expected_updated_at.replace("Z", "+00:00"))
-        except ValueError as exc:
-            raise HTTPException(422, "Invalid region version") from exc
-        if expected.replace(tzinfo=None) != region.updated_at.replace(tzinfo=None):
-            raise HTTPException(409, "区域已发生变化，请关闭并重新打开蒙版编辑器")
-    try:
+    image_id = region.image_id
+    details = {}
+
+    def prepare(private,page):
+        region = private.get(TextRegion,region_id)
+        if region.locked:
+            raise HTTPException(409, "请先解锁区域再编辑蒙版")
+        if expected_updated_at is not None:
+            try:
+                expected = datetime.fromisoformat(expected_updated_at.replace("Z", "+00:00"))
+            except ValueError as exc:
+                raise HTTPException(422, "Invalid region version") from exc
+            def utc_naive(value: datetime) -> datetime:
+                return value.astimezone(timezone.utc).replace(tzinfo=None) if value.tzinfo else value
+            if utc_naive(expected) != utc_naive(region.updated_at):
+                raise HTTPException(409, "区域已发生变化，请关闭并重新打开蒙版编辑器")
         image = Image.open(file.file)
         partial = x is not None or y is not None
         if partial and (x is None or y is None or expected_updated_at is None):
@@ -373,20 +375,24 @@ def upload_mask(
         # Immutable assets keep revision snapshots valid and avoid stale image
         # caches when the same region's mask is edited repeatedly.
         output = get_storage().page_dir(page.project_id, page.id) / "masks" / f"{region.id}-{uuid4().hex}.png"
-        save_revision(db, region, "mask_edited")
+        save_revision(private, region, "mask_edited")
         mask.save(output, "PNG", compress_level=1)
         region.pixel_mask_path = get_storage().relative(output)
         _mark_manual_mask_edit(region)
         # Keep the last successful clean composite until the edited regions
         # have been repaired. Replacing a mask does not undo other repairs.
         _invalidate_rendered_artifacts(page)
-        entry=record_page_edit(db, page, before, "编辑蒙版", [region.id])
-        if entry:
-            delta=mask_checkpoint(entry,region,box if partial else None,before_patch if partial else None,mask)
-            entry.after={**entry.after,'_mask_delta':delta}
-        db.commit()
-        db.refresh(region)
-        return region_read(region)
+        details.update(bounds=box if partial else None,before=before_patch if partial else None,after=mask)
+        return {"region_ids":[region_id]}
+
+    def sparse_history(private,page,before,after,metadata):
+        entry = EditorHistoryEntry(project_id=page.project_id,image_id=page.id,before=before,after=after)
+        delta = mask_checkpoint(entry,private.get(TextRegion,region_id),details["bounds"],details["before"],details["after"])
+        return {"_mask_delta":delta}
+
+    try:
+        apply_page_edit(db,image_id,prepare,"编辑蒙版",scope=[region_id],prepare_extra=sparse_history)
+        return region_read(require_region(db,region_id))
     except HTTPException:
         raise
     except Exception as exc:
@@ -401,23 +407,27 @@ def get_mask_history(region_id:str,db:Session=Depends(get_db)):
 @router.post("/regions/{region_id}/mask/operation", response_model=RegionRead)
 def mask_operation(region_id: str, payload: MaskOperation, db: Session = Depends(get_db)) -> RegionRead:
     region = require_region(db, region_id)
-    page = require_page(db, region.image_id)
-    before = capture_page_state(db, page, editing=True)
-    if region.locked:
-        raise HTTPException(409, "请先解锁区域再编辑蒙版")
-    if not region.pixel_mask_path:
-        raise HTTPException(409, "Region does not have a mask")
-    path = get_storage().absolute(region.pixel_mask_path)
-    output = path.with_name(f"{region.id}-{uuid4().hex}.png")
-    save_revision(db, region, f"mask_{payload.operation}")
-    process_mask(path, output, payload.operation, payload.amount)
-    region.pixel_mask_path = get_storage().relative(output)
-    _mark_manual_mask_edit(region)
-    _invalidate_rendered_artifacts(page)
-    record_page_edit(db, page, before, "调整蒙版", [region.id])
-    db.commit()
-    db.refresh(region)
-    return region_read(region)
+    def prepare(private,page):
+        region = private.get(TextRegion,region_id)
+        if region.locked:
+            raise HTTPException(409, "请先解锁区域再编辑蒙版")
+        if not region.pixel_mask_path:
+            raise HTTPException(409, "Region does not have a mask")
+        path = get_storage().absolute(region.pixel_mask_path)
+        output = get_storage().page_dir(page.project_id,page.id)/"masks"/f"{region.id}-{uuid4().hex}.png"
+        save_revision(private, region, f"mask_{payload.operation}")
+        process_mask(path, output, payload.operation, payload.amount)
+        region.pixel_mask_path = get_storage().relative(output)
+        _mark_manual_mask_edit(region)
+        _invalidate_rendered_artifacts(page)
+        return {"region_ids":[region_id]}
+
+    def sparse_history(private,page,before,after,metadata):
+        entry = EditorHistoryEntry(project_id=page.project_id,image_id=page.id,before=before,after=after)
+        return {"_mask_delta":mask_checkpoint(entry,private.get(TextRegion,region_id))}
+
+    apply_page_edit(db,region.image_id,prepare,"调整蒙版",scope=[region_id],prepare_extra=sparse_history)
+    return region_read(require_region(db,region_id))
 
 
 def _region_stage(stage: str, start_stage: str | None = None):
@@ -469,13 +479,18 @@ def restore(region_id: str, revision_id: str, db: Session = Depends(get_db)) -> 
     revision = db.get(RegionRevision, revision_id)
     if revision is None:
         raise HTTPException(404, "Revision not found")
+    if revision.region_id!=region_id:
+        raise HTTPException(422,"Revision does not belong to this region")
+    frozen = record(revision)
     try:
-        page = require_page(db, region.image_id)
-        before = capture_page_state(db, page, editing=True)
-        restore_revision(db, region, revision)
-        record_page_edit(db, page, before, "恢复区域版本", [region.id])
-        db.commit()
-        db.refresh(region)
-        return region_read(region)
+        def restore(private,page):
+            current = private.get(TextRegion,region_id)
+            original = (deepcopy(current.bbox),deepcopy(current.polygon))
+            restore_revision(private,current,RegionRevision(**decode(RegionRevision,frozen)))
+            source_changed = original!=(current.bbox,current.polygon)
+            _invalidate_rendered_artifacts(page,clean=source_changed)
+            return {"region_ids":[region_id]}
+        apply_page_edit(db,region.image_id,restore,"恢复区域版本",scope=[region_id])
+        return region_read(require_region(db,region_id))
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc

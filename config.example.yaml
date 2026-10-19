@@ -6,7 +6,7 @@ stages:
   detection:
     name: 推荐漫画版面检测（RF-DETR）
     provider: rfdetr
-    device: recommended
+    device: auto
     config:
       text_threshold: 0.25
       bubble_threshold: 0.5
@@ -21,13 +21,13 @@ stages:
   inpainting:
     name: 推荐复杂修复（LaMa）
     provider: lama
-    device: recommended
+    device: auto
     config: {}
 
   ocr:
     name: 推荐漫画识别（MangaOCR）
     provider: manga-ocr
-    device: recommended
+    device: auto
     config:
       model: kha-white/manga-ocr-base
 
@@ -92,11 +92,9 @@ preferences:
     region.ocr: Alt+Digit1
     region.translate: Alt+Digit2
     region.inpaint: Alt+Digit3
-    region.render: Alt+Digit4
     page.workflowOcr: Mod+Shift+Digit1
     page.workflowTranslate: Mod+Shift+Digit2
     page.workflowInpaint: Mod+Shift+Digit3
-    page.workflowRender: Mod+Shift+Digit4
     page.import: Mod+KeyO
     page.context: Mod+Shift+KeyC
     page.export: Mod+Shift+KeyE

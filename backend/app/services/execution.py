@@ -15,6 +15,7 @@ from collections import deque
 from collections.abc import Callable
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from contextlib import contextmanager
+from contextvars import copy_context
 from functools import lru_cache, wraps
 from pathlib import Path
 from typing import Literal
@@ -22,6 +23,8 @@ from uuid import uuid4
 
 import psutil
 from app.core.config import get_settings
+from app.core.timing import measured, record_timing
+from app.services.concurrency_window import ConcurrencyWindow
 from app.services.gpu_metrics import GpuProbe
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -35,6 +38,8 @@ class ExecutionPolicy(BaseModel):
     max_pages: int = Field(default=4, ge=1, le=8)
     cpu_workers: int = Field(default=4, ge=1, le=8)
     memory_reserve_mb: int = Field(default=1024, ge=256, le=16384)
+    gpu_max_concurrency: int = Field(default=1, ge=1, le=2)
+    gpu_memory_reserve_mb: int = Field(default=2048, ge=2048, le=16384)
 
 
 class ResourceProbe:
@@ -102,8 +107,7 @@ class AdaptiveLimiter:
         self.name, self.probe = name, probe
         self.lock = threading.RLock()
         self.active = self.reserved = self.peak = 0
-        self.samples: dict[str, list[float]] = {}
-        self.baselines: dict[str, tuple[int, float]] = {}
+        self.window = ConcurrencyWindow()
         self.cooldown = 0.0
         self.configure(maximum, mode, reserve)
 
@@ -111,8 +115,7 @@ class AdaptiveLimiter:
         with self.lock:
             self.maximum, self.mode, self.reserve = maximum, mode, reserve
             self.limit = 1 if mode == "serial" else maximum if mode == "fixed" else min(2, maximum)
-            self.samples.clear()
-            self.baselines.clear()
+            self.window.reset()
             self.reason = "串行模式" if mode == "serial" else "固定上限" if mode == "fixed" else "保守起步"
 
     def try_acquire(self, estimate: int = 0) -> bool:
@@ -130,9 +133,9 @@ class AdaptiveLimiter:
             if cap < self.limit and self.mode == "auto":
                 self.limit = cap
                 self.cooldown = time.monotonic() + 15
-                self.samples.clear()
-                self.baselines.clear()
+                self.window.reset(cooldown=30)
             if self.active >= cap:
+                self.window.blocked()
                 return False
             self.active += 1
             self.reserved += estimate
@@ -140,39 +143,28 @@ class AdaptiveLimiter:
             return True
 
     def release(
-        self, elapsed: float, estimate: int = 0, *, kind: str = "default", units: float = 1, failed: bool = False
+        self, elapsed: float, estimate: int = 0, *, kind: str = "default", units: float = 1, failed: bool = False, pressure: bool = False
     ):
         with self.lock:
             self.active -= 1
             self.reserved -= estimate
             if failed:
-                if self.mode == "auto":
+                if self.window.baseline:
+                    self.limit = min(self.limit,self.window.baseline[1])
+                self.window.reset(cooldown=30)
+                if self.mode == "auto" and pressure:
                     self.limit = max(1, self.limit // 2)
                     self.cooldown = time.monotonic() + 30
-                    self.samples.clear()
-                    self.baselines.clear()
-                    self.reason = "任务异常，暂时降低并发"
+                    self.reason = "本地资源不足，暂时降低并发"
                 return
             if self.mode != "auto" or time.monotonic() < self.cooldown:
                 return
-            values = self.samples.setdefault(kind, [])
-            values.append(max(0.001, elapsed) / max(0.1, units))
-            if len(values) < max(4, self.limit * 2):
-                return
-            # Compare like stages, normalized by workload; never compare OCR
-            # latency to translation latency. This is a probe, not a speed promise.
-            throughput = self.limit / (sum(values) / len(values))
-            values.clear()
-            baseline = self.baselines.get(kind)
-            if baseline and self.limit > baseline[0] and throughput < baseline[1] * 1.05:
-                self.limit = baseline[0]
-                self.cooldown = time.monotonic() + 30
-                self.baselines.clear()
-                self.reason = "增加并发无明显收益，回退"
-            elif self.limit < self.maximum:
-                self.baselines[kind] = (self.limit, throughput)
-                self.limit += 1
-                self.reason = "小幅增加并发，观察吞吐量"
+            maximum = self.maximum
+            if self.name == "cpu":
+                maximum = min(maximum,max(1,self.probe.sample().get("cpu_cores",1)//get_settings().native_threads))
+            self.limit,reason = self.window.observe(elapsed,units,kind,self.limit,maximum)
+            if reason:
+                self.reason = reason
 
     def snapshot(self):
         with self.lock:
@@ -194,6 +186,8 @@ class ExecutionRuntime:
             max_pages=settings.task_concurrency,
             cpu_workers=settings.cpu_workers,
             memory_reserve_mb=settings.memory_reserve_mb,
+            gpu_max_concurrency=settings.gpu_max_concurrency,
+            gpu_memory_reserve_mb=settings.gpu_memory_reserve_mb,
         )
         if self.policy_path.is_file():
             try:
@@ -217,6 +211,10 @@ class ExecutionRuntime:
         self.model_calls = 0
         self.model_wait_seconds = 0.0
         self.model_run_seconds = 0.0
+        # Latest actual provider state only. Reading status never loads a model
+        # or waits for the inference lock, and must not expose model configs.
+        self.inference_lock = threading.Lock()
+        self.inference: dict[tuple[str, str], dict] = {}
         self.recent = deque(maxlen=100)
         self.native_threads = settings.native_threads
 
@@ -248,6 +246,8 @@ class ExecutionRuntime:
                 self.model_depth.depth = depth
                 if not depth:
                     self.model_active = 0
+                    record_timing("model.wait", started - waiting)
+                    record_timing("model.compute", time.monotonic() - started)
                     with self.model_metrics_lock:
                         self.model_calls += 1
                         self.model_wait_seconds += started - waiting
@@ -264,22 +264,27 @@ class ExecutionRuntime:
         next_job = next(iterator, None)
         index = 0
 
+        @measured("cpu.compute")
         def perform(job):
             started = time.monotonic()
             failed = True
+            pressure = False
             try:
                 result = job()
                 failed = False
                 return result
+            except MemoryError:
+                pressure = True
+                raise
             finally:
-                self.cpu.release(time.monotonic() - started, estimate, kind=kind, units=units, failed=failed)
+                self.cpu.release(time.monotonic() - started, estimate, kind=kind, units=units, failed=failed, pressure=pressure)
 
         try:
             while next_job is not None or pending:
                 check()
                 if next_job is not None and self.cpu.try_acquire(estimate):
                     try:
-                        future = self.cpu_pool.submit(perform, next_job)
+                        future = self.cpu_pool.submit(copy_context().run, perform, next_job)
                     except BaseException:
                         self.cpu.release(0, estimate, failed=True)
                         raise
@@ -305,11 +310,34 @@ class ExecutionRuntime:
         with self.policy_lock:
             self.recent.append({"task_id": task_id, "stage": stage, "seconds": round(seconds, 3)})
 
+    def report_inference(self, *, kind: str, name: str, backend: str, device: str | None,
+                         state: str, fallback_reason: str | None = None):
+        with self.inference_lock:
+            self.inference[(kind, name)] = {
+                "kind": kind, "name": name, "backend": backend, "device": device,
+                "state": state, "fallback_reason": fallback_reason,
+            }
+
+    def report_provider(self, provider):
+        capability = provider.capabilities
+        backend = getattr(capability, "extra", {}).get("backend") or {"manga-ocr": "torch", "lama": "torch", "hybrid": "torch", "paddleocr": "paddle"}.get(capability.name)
+        if backend is None:
+            return  # RF-DETR reports its worker's actual handshake separately.
+        actual = getattr(provider, "_lama", provider)
+        device = getattr(actual, "_device", None) if provider.state == "ready" else None
+        reason = getattr(actual, "_fallback_reason", None)
+        if device == "cpu" and actual.config.get("device", "auto") != "cpu" and not reason:
+            reason = "accelerator_unavailable"
+        self.report_inference(kind=capability.provider_type, name=capability.name, backend=backend,
+                              device=device, state=str(provider.state), fallback_reason=reason)
+
     def snapshot(self):
         # Optional driver probing must not hold the policy lock or block inference.
         gpu = self.gpu_probe.sample()
         with self.model_metrics_lock:
             model_metrics = {"calls": self.model_calls, "wait_seconds": round(self.model_wait_seconds, 3), "run_seconds": round(self.model_run_seconds, 3)}
+        with self.inference_lock:
+            inference = [dict(value) for _, value in sorted(self.inference.items())]
         with self.policy_lock:
             timings: dict[str, list[float]] = {}
             for sample in self.recent:
@@ -320,7 +348,11 @@ class ExecutionRuntime:
                 "policy": self.policy.model_dump(),
                 "pages": self.pages.snapshot(),
                 "cpu": self.cpu.snapshot(),
-                "models": {"active": self.model_active, "limit": 1, **model_metrics},
+                "models": {"active": self.model_active, "limit": 1,
+                           "maximum": self.policy.gpu_max_concurrency,
+                           "reason": "单实例安全限制；独立双实例须通过吞吐、P95 和显存验收后才能启用",
+                           **model_metrics},
+                "inference": inference,
                 "gpu": gpu,
                 "stage_timings": stage_timings,
                 "resources": self.probe.sample(),
@@ -332,6 +364,11 @@ class ExecutionRuntime:
 @lru_cache(maxsize=1)
 def execution_runtime() -> ExecutionRuntime:
     return ExecutionRuntime()
+
+
+def gpu_reserve_bytes(total: int) -> int:
+    # A user may increase the reserve but can never remove the safety floor.
+    return max(execution_runtime().policy.gpu_memory_reserve_mb * MiB, int(total * .15))
 
 
 def configure_native_threads():
@@ -349,7 +386,11 @@ def configure_native_threads():
 def serialized_model_call(method):
     @wraps(method)
     def call(self, *args, **kwargs):
-        with execution_runtime().model_slot(), self._load_lock:
-            return method(self, *args, **kwargs)
+        runtime = execution_runtime()
+        with runtime.model_slot(), self._load_lock:
+            try:
+                return method(self, *args, **kwargs)
+            finally:
+                runtime.report_provider(self)
 
     return call

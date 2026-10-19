@@ -122,7 +122,8 @@ def test_ocr_save_contention_does_not_repeat_inference_or_lose_history(client, m
     def fail_once(connection, cursor, statement, parameters, context, executemany):
         if injected:
             return
-        result = failure_at == "result" and statement.startswith("UPDATE text_regions SET") and "recognized-1" in parameters
+        values = parameters if executemany else [parameters]
+        result = failure_at == "result" and statement.startswith("UPDATE text_regions SET") and any("recognized-1" in row for row in values)
         progress = failure_at == "progress" and statement.startswith("UPDATE processing_tasks SET") and "OCR 1/3" in parameters
         if result or progress:
             injected.append(1)
@@ -165,6 +166,10 @@ def test_failure_save_can_also_fail_without_leaving_fake_running_task(client, mo
         return original(task_id, error)
 
     monkeypatch.setattr(PipelineProcessor, "execute", fail)
+    from app.pipeline.workflow import PageWorkflow
+    def fail_workflow(self):
+        raise ValueError("inference failed")
+    monkeypatch.setattr(PageWorkflow,"execute",fail_workflow)
     monkeypatch.setattr(TaskManager, "_persist_failure", staticmethod(save_failure))
     task = client.post(f"/api/images/{page['id']}/process", json={
         "start_stage": "ocr", "end_stage": "ocr",

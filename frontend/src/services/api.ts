@@ -1,4 +1,4 @@
-import type { DeviceProfile, FontResource, ImagePage, ModelBootstrapEntry, ModelConfiguration, ModelDescriptor, ProcessingTask, Project, QualityIssue, SetupStatus, TextRegion } from '../types'
+import type { DeviceProfile, FontResource, ImagePage, ModelBootstrapEntry, ModelConfiguration, ModelDescriptor, ProcessingTask, Project, RegionStageAction, SetupStatus, TextRegion } from '../types'
 import type {EditorHistoryResult, EditorHistoryState} from '../types'
 import type {ExecutionPolicy, ExecutionStatus} from '../types'
 import {uploadImagesInBatches, type ImageUploadProgress} from './imageUpload'
@@ -66,13 +66,7 @@ export const api = {
       return request<Project>('/projects/import', {method: 'POST', body: form})
     },
     fonts: (id: string) => request<FontResource[]>(`/projects/${id}/fonts`),
-    uploadFont: async (id: string, file: File) => {
-      const form = new FormData(); form.append('file', file)
-      return request<FontResource>(`/projects/${id}/fonts`, {method: 'POST', body: form})
-    },
     batch: (id: string, payload: typeof defaultProcess & {image_ids?: string[], only_unrecognized?: boolean, only_with_regions?: boolean} = defaultProcess) => request<ProcessingTask[]>(`/projects/${id}/batch-process`, { method: 'POST', body: json(payload) }),
-    review: (id: string) => request<QualityIssue[]>(`/projects/${id}/review`),
-    exportUrl: (id: string) => `/api/projects/${id}/export`,
     export: async (id: string, formats: string[], fallbackFilename = 'mangaflow-export.zip') => {
       const response = await fetch(`/api/projects/${id}/export`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: json({ formats }),
@@ -97,13 +91,9 @@ export const api = {
     get: (id: string) => request<ImagePage>(`/images/${id}`),
     regions: (id: string) => request<TextRegion[]>(`/images/${id}/regions`),
     remove: (id: string) => request<void>(`/images/${id}`, {method: 'DELETE'}),
-    reorder: (id: string, orderIndex: number) => request<ImagePage>(`/images/${id}/order?order_index=${orderIndex}`, {method: 'PATCH'}),
     reset: (id: string) => request<ImagePage>(`/images/${id}/reset`, {method: 'POST'}),
     setOcrExempt: (id: string, exempt: boolean) => request<ImagePage>(`/images/${id}/ocr-exempt?exempt=${exempt}`, {method: 'PATCH'}),
     process: (id: string, payload = defaultProcess) => request<ProcessingTask>(`/images/${id}/process`, { method: 'POST', body: json(payload) }),
-    stage: (id: string, stage: string, options: Record<string, unknown> = {}) => request<ProcessingTask>(`/images/${id}/${stage}`, {
-      method: 'POST', body: json({ ...defaultProcess, options }),
-    }),
   },
   regions: {
     maskHistory:(id:string) => request<{region_updated_at:string,history:EditorHistoryState,
@@ -114,10 +104,8 @@ export const api = {
     update: (id: string, payload: Partial<TextRegion>) => request<TextRegion>(`/regions/${id}`, { method: 'PATCH', body: json(payload) }),
     remove: (id: string) => request<{region_id: string, region_keys?:Record<string,string>, rebuild_task: ProcessingTask | null, page?: ImagePage,editor_history?:EditorHistoryState}>(`/regions/${id}`, { method: 'DELETE' }),
     removeMany: (ids: string[]) => request<{region_ids: string[], region_keys?:Record<string,string>, rebuild_task: ProcessingTask | null, page?: ImagePage,editor_history?:EditorHistoryState}>('/regions/bulk-delete', { method: 'POST', body: json(ids) }),
-    copy: (id: string) => request<TextRegion>(`/regions/${id}/copy`, { method: 'POST' }),
-    split: (id: string, axis = 'auto') => request<TextRegion[]>(`/regions/${id}/split?axis=${axis}`, { method: 'POST' }),
     merge: (ids: string[]) => request<{region: TextRegion, region_keys?:Record<string,string>, rebuild_task: ProcessingTask | null}>('/regions/merge', { method: 'POST', body: json(ids) }),
-    stage: (id: string, stage: string, options: Record<string, unknown> = {}) => request<ProcessingTask>(`/regions/${id}/${stage}`, {
+    stage: (id: string, stage: RegionStageAction, options: Record<string, unknown> = {}) => request<ProcessingTask>(`/regions/${id}/${stage}`, {
       method: 'POST', body: json({ ...defaultProcess, provider: options.provider || null, options, force: true }),
     }),
     mask: async (id: string, blob: Blob, expectedUpdatedAt?: string, bounds?: {x:number,y:number}) => {
@@ -127,20 +115,20 @@ export const api = {
       if (bounds) {form.append('x',String(bounds.x));form.append('y',String(bounds.y))}
       return request<TextRegion>(`/regions/${id}/mask`, { method: 'PUT', body: form })
     },
-    maskOperation: (id: string, operation: string, amount: number) => request<TextRegion>(`/regions/${id}/mask/operation`, {
-      method: 'POST', body: json({ operation, amount }),
-    }),
   },
   tasks: {
-    list: (projectId?: string, imageId?: string) => {
+    cancel: (id: string) => request<ProcessingTask>(`/tasks/${id}/cancel`, {method:'POST'}),
+    statuses: (ids: string[]) => request<ProcessingTask[]>('/tasks/status', {method:'POST',body:json(ids)}),
+    list: (projectId?: string, imageId?: string, page?: {limit: number, offset: number, activeFirst?: boolean}) => {
       const query = new URLSearchParams()
       if (projectId) query.set('project_id', projectId)
       if (imageId) query.set('image_id', imageId)
+      if (page) {query.set('limit', String(page.limit)); query.set('offset', String(page.offset))}
+      if (page?.activeFirst) query.set('active_first', 'true')
       const suffix = query.size ? `?${query.toString()}` : ''
       return request<ProcessingTask[]>(`/tasks${suffix}`)
     },
     get: (id: string) => request<ProcessingTask>(`/tasks/${id}`),
-    action: (id: string, action: 'pause' | 'resume' | 'retry' | 'cancel') => request<ProcessingTask>(`/tasks/${id}/${action}`, { method: 'POST' }),
   },
   models: {
     retryClassification: (id: string) => request<{status:string}>(`/models/config/${id}/classification/retry`, {method:'POST'}),
@@ -152,7 +140,6 @@ export const api = {
     create: (payload: Record<string, unknown>) => request<ModelConfiguration>('/models/config', { method: 'POST', body: json(payload) }),
     update: (id: string, payload: Record<string, unknown>) => request<ModelConfiguration>(`/models/config/${id}`, { method: 'PATCH', body: json(payload) }),
     bootstrap: (payload: {preload?: boolean, upgrade_fallbacks?: boolean, stages?: string[], selections?: Array<{kind: string, provider: string, device?: string, config?: Record<string, unknown>, api_key?: string}>} = {preload: true, upgrade_fallbacks: true}) => request<{ok: boolean, models: ModelBootstrapEntry[]}>('/models/bootstrap', { method: 'POST', body: json(payload) }),
-    remove: (id: string) => request<void>(`/models/config/${id}`, { method: 'DELETE' }),
   },
   fonts: {
     list: () => request<FontResource[]>('/fonts'),

@@ -11,7 +11,6 @@ import yaml
 from app.core.secrets import get_secret_store
 from app.models import ModelConfig
 from app.services.infra.detection_migration import unified_detection_config
-from app.services.infra.device import paddle_cuda_available, torch_cuda_available
 from app.services.registry import registry
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 from sqlalchemy import select, update
@@ -41,7 +40,7 @@ class ManifestStage(BaseModel):
 
     provider: str = Field(min_length=1)
     name: str | None = Field(default=None, min_length=1, max_length=100)
-    device: Literal["recommended", "cpu", "cuda:0"] | None = None
+    device: Literal["auto", "recommended", "cpu", "cuda:0"] | None = None
     config: dict[str, Any] = Field(default_factory=dict)
     api_key_env: str | None = None
 
@@ -178,7 +177,7 @@ def persist_model_settings(
         config = _without_sensitive_values(dict(item.config or {}))
         descriptor = descriptors.get((kind, item.provider), {})
         devices = {str(device).lower() for device in descriptor.get("devices", [])}
-        device: Literal["recommended", "cpu", "cuda:0"] | None = None
+        device: Literal["auto", "recommended", "cpu", "cuda:0"] | None = None
         if devices != {"remote"} and kind != "translation":
             device = _portable_device(config.pop("device", None), devices)
         stages[kind] = ManifestStage(
@@ -390,15 +389,15 @@ def _without_sensitive_values(value: Any) -> Any:
     return value
 
 
-def _portable_device(value: Any, devices: set[str]) -> Literal["recommended", "cpu", "cuda:0"]:
+def _portable_device(value: Any, devices: set[str]) -> Literal["auto", "cpu", "cuda:0"]:
     normalized = str(value or "").strip().lower()
     if normalized in {"cuda", "gpu", "gpu:0", "cuda:0"}:
         return "cuda:0"
-    if normalized == "recommended":
-        return "recommended"
+    if normalized in {"auto", "recommended", ""}:
+        return "auto" if "cuda" in devices else "cpu"
     if normalized == "cpu":
         return "cpu"
-    return "cpu" if "cpu" in devices else "recommended"
+    return "auto" if "cuda" in devices else "cpu"
 
 
 def _persist_environment_value(path: Path, key: str, value: str) -> None:
@@ -466,21 +465,18 @@ def _resolved_stage_config(kind: str, stage: ManifestStage, descriptor: dict[str
             raise ModelManifestError(f"Stage {kind!r} uses a remote provider and cannot declare a device")
         return config
     if requested is None:
-        requested = "recommended" if "cuda" in devices else "cpu"
-    if requested not in {"recommended", "cpu", "cuda:0"}:
+        requested = "auto" if "cuda" in devices else "cpu"
+    if requested not in {"auto", "recommended", "cpu", "cuda:0"}:
         raise ModelManifestError(
-            f"Unsupported device {requested!r} for stage {kind!r}; use recommended, cpu, or cuda:0"
+            f"Unsupported device {requested!r} for stage {kind!r}; use auto, cpu, or cuda:0"
         )
-    if requested == "recommended":
-        if "cuda" not in devices:
-            resolved_device = "cpu"
-        elif stage.provider == "paddleocr":
-            resolved_device = "cuda:0" if paddle_cuda_available() else "cpu"
-        else:
-            resolved_device = "cuda:0" if torch_cuda_available() else "cpu"
+    if requested in {"auto", "recommended"}:
+        # Keep the policy portable; resolving it to today's CPU/GPU here would
+        # freeze that hardware choice in the database and manifest forever.
+        resolved_device = "auto" if "cuda" in devices else "cpu"
     else:
         resolved_device = requested
-    capability = "cuda" if resolved_device.startswith("cuda") else resolved_device
+    capability = "cuda" if resolved_device == "auto" or resolved_device.startswith("cuda") else resolved_device
     if capability not in devices:
         raise ModelManifestError(
             f"Provider {stage.provider!r} for stage {kind!r} does not support device {resolved_device!r}"

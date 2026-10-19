@@ -235,6 +235,28 @@ def test_sparse_history_warmup_survives_refresh_and_preserves_real_redo_branch(c
     assert client.get(f"/api/regions/{region['id']}/mask-history").json()["redo"] == []
 
 
+def test_mask_version_compares_instants_not_offset_wall_times(client):
+    from datetime import datetime, timedelta, timezone
+
+    _, regions = setup_page(client)
+    region = regions[0]
+    value = datetime.fromisoformat(region["updated_at"].replace("Z", "+00:00"))
+    instant = value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
+    offset = timezone(timedelta(hours=8))
+
+    def submit(version):
+        return client.put(f"/api/regions/{region['id']}/mask",
+                          files={"file": ("patch.png", encoded(Image.new("L", (1, 1), 255)), "image/png")},
+                          data={"x": 0, "y": 0, "expected_updated_at": version})
+
+    # Same wall time with another offset is stale, not an equivalent token.
+    assert submit(instant.replace(tzinfo=offset).isoformat()).status_code == 409
+    response = submit(instant.astimezone(offset).isoformat())
+    assert response.status_code == 200, response.text
+    window = client.get(f"/api/regions/{region['id']}/mask-history").json()
+    assert window["region_updated_at"] == response.json()["updated_at"]
+
+
 def test_background_history_retry_is_idempotent_and_cannot_repeat_an_old_command_after_other_edits(client):
     page, regions = setup_page(client)
     region = regions[0]

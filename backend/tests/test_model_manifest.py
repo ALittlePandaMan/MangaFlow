@@ -90,8 +90,6 @@ def test_apply_manifest_resolves_recommended_devices_encrypts_secret_and_is_idem
 ) -> None:
     secret_store = SecretStore(Fernet.generate_key())
     monkeypatch.setattr(manifests, "get_secret_store", lambda: secret_store)
-    monkeypatch.setattr(manifests, "paddle_cuda_available", lambda: True)
-    monkeypatch.setattr(manifests, "torch_cuda_available", lambda: False)
     monkeypatch.setenv("MANGAFLOW_TRANSLATION_API_KEY", "portable-secret")
     manifest = manifests.ModelManifest.model_validate(manifest_payload())
 
@@ -103,9 +101,9 @@ def test_apply_manifest_resolves_recommended_devices_encrypts_secret_and_is_idem
 
     assert len(first_report) == 6
     assert set(configured) == set(manifests.MODEL_STAGES)
-    assert configured["detection"].config["device"] == "cpu"
-    assert configured["ocr"].config["device"] == "cpu"
-    assert configured["inpainting"].config["device"] == "cpu"
+    assert configured["detection"].config["device"] == "auto"
+    assert configured["ocr"].config["device"] == "auto"
+    assert configured["inpainting"].config["device"] == "auto"
     assert configured["rendering"].config["device"] == "cpu"
     assert "device" not in configured["translation"].config
     ciphertext = configured["translation"].encrypted_api_key
@@ -124,8 +122,6 @@ def test_apply_manifest_resolves_recommended_devices_encrypts_secret_and_is_idem
 
 
 def test_apply_manifest_only_fills_missing_default_and_preserves_existing_choice(db: Session, monkeypatch) -> None:
-    monkeypatch.setattr(manifests, "paddle_cuda_available", lambda: True)
-    monkeypatch.setattr(manifests, "torch_cuda_available", lambda: True)
     existing = ModelConfig(
         kind="detection",
         name="用户选择的检测器",
@@ -180,10 +176,10 @@ def test_apply_manifest_does_not_clear_existing_secret_when_environment_is_missi
 def test_manifest_rejects_nonportable_or_unsupported_device() -> None:
     invalid = manifest_payload()
     invalid["stages"]["detection"].pop("device")
-    invalid["stages"]["detection"]["config"]["device"] = "auto"
+    invalid["stages"]["detection"]["config"]["device"] = "cuda:99"
     manifest = manifests.ModelManifest.model_validate(invalid)
 
-    with pytest.raises(manifests.ModelManifestError, match="Unsupported device 'auto'"):
+    with pytest.raises(manifests.ModelManifestError, match="Unsupported device 'cuda:99'"):
         manifests.apply_model_manifest(Session(create_engine("sqlite:///:memory:")), manifest)
 
     incompatible = manifest_payload(lightweight=True)
@@ -256,8 +252,6 @@ def test_persist_model_settings_writes_yaml_and_keeps_secret_only_in_env(
 ) -> None:
     secret_store = SecretStore(Fernet.generate_key())
     monkeypatch.setattr(manifests, "get_secret_store", lambda: secret_store)
-    monkeypatch.setattr(manifests, "paddle_cuda_available", lambda: False)
-    monkeypatch.setattr(manifests, "torch_cuda_available", lambda: False)
     monkeypatch.setenv("MANGAFLOW_TRANSLATION_API_KEY", "portable-secret")
     manifests.apply_model_manifest(db, manifests.ModelManifest.model_validate(manifest_payload()))
     translation = db.scalar(select(ModelConfig).where(ModelConfig.kind == "translation"))
@@ -283,11 +277,36 @@ def test_persist_model_settings_writes_yaml_and_keeps_secret_only_in_env(
     assert "portable-secret" not in yaml_text
     assert "must-not-leak" not in yaml_text
     reloaded = manifests.load_model_manifest(manifest_path)
+    for kind in ("detection", "ocr", "inpainting"):
+        assert reloaded.stages[kind].device == "auto"
+        assert manifests._resolved_manifest_configs(reloaded)[kind]["device"] == "auto"
     assert reloaded.stages["translation"].config["base_url"] == "https://translation.example.com/v1"
     assert reloaded.stages["translation"].api_key_env == "MANGAFLOW_TRANSLATION_API_KEY"
     environment_text = environment_path.read_text(encoding="utf-8")
     assert 'MANGAFLOW_TRANSLATION_API_KEY="portable-secret"' in environment_text
     assert "MANGAFLOW_DEBUG=false" in environment_text
+
+
+def test_auto_manifest_keeps_policy_and_does_not_probe_hardware(monkeypatch):
+    from app.services.infra import device
+
+    monkeypatch.setattr(device, "torch_cuda_available", lambda: pytest.fail("manifest must not probe hardware"))
+    monkeypatch.setattr(device, "paddle_cuda_available", lambda: pytest.fail("manifest must not probe hardware"))
+    payload = manifest_payload()
+    for kind in ("detection", "ocr", "inpainting"):
+        payload["stages"][kind]["device"] = "auto"
+    resolved = manifests._resolved_manifest_configs(manifests.ModelManifest.model_validate(payload))
+    assert all(resolved[kind]["device"] == "auto" for kind in ("detection", "ocr", "inpainting"))
+    assert manifests._portable_device(None, {"cpu", "cuda"}) == "auto"
+    assert manifests._portable_device("cpu", {"cpu", "cuda"}) == "cpu"
+    payload = manifest_payload(lightweight=True)
+    for kind in ("detection", "ocr", "inpainting"):
+        payload["stages"][kind]["device"] = "auto"
+    resolved = manifests._resolved_manifest_configs(manifests.ModelManifest.model_validate(payload))
+    assert all(resolved[kind]["device"] == "cpu" for kind in ("detection", "ocr", "inpainting"))
+    payload["stages"]["translation"]["device"] = "auto"
+    with pytest.raises(ValueError, match="translation.device"):
+        manifests._resolved_manifest_configs(manifests.ModelManifest.model_validate(payload))
 
 
 def test_persist_shortcut_preferences_preserves_model_stages(tmp_path) -> None:

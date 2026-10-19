@@ -119,11 +119,12 @@ def test_pipeline_does_not_create_regions_for_filtered_sfx(client, monkeypatch):
     assert len(recovered) == 2
     assert sfx.bbox in [region["bbox"] for region in recovered]
 
-    # User-authored boxes are never removed just because a classifier would
-    # reject the same position on subsequent automatic detection.
+    # Explicit redetection replaces user-authored/locked boxes too, and applies
+    # the current classification policy to the fresh model results.
     manual = client.post(
         f"/api/images/{page['id']}/regions", json={"polygon": sfx.polygon, "source_text": "手工原文", "locked": True}
     ).json()
     sfx.metadata["text_classification"]["excluded"] = True
-    preserved = redetect()
-    assert any(region["id"] == manual["id"] and region["source_text"] == "手工原文" for region in preserved)
+    replaced = redetect()
+    assert all(region['id'] != manual['id'] for region in replaced)
+    assert len(replaced) == 1 and replaced[0]['bbox'] == normal.bbox

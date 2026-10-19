@@ -39,7 +39,7 @@ flowchart LR
   MASK --> INPAINT[Inpainting]
   INPAINT --> LAYOUT[Layout]
   LAYOUT --> RENDER[Rendering]
-  API --> DB[(SQLite)]
+  API --> DB[(SQLite / PostgreSQL)]
   API --> STORE[Project storage]
 ```
 
@@ -47,18 +47,18 @@ flowchart LR
 
 ## 数据所有权
 
-- SQLite 保存 Project、ImagePage、TextRegion、任务和 Provider 配置元数据。
+- SQLite 或 PostgreSQL 保存 Project、ImagePage、TextRegion、任务、检查点和 Provider 配置元数据。
 - `data/projects/` 保存用户原图与派生文件，`data/exports/` 保存导出结果。
 - `models/` 保存可重新下载的本地模型缓存。
 - `config.yaml` 保存六项生效配置；`.env` 保存密钥和环境覆盖项。
 
-数据库 schema 当前仍由启动兼容逻辑维护。需要复杂迁移或多人协作部署前，应优先引入 Alembic，再拆分 ORM 实体。
+数据库 schema 由 Alembic 版本迁移维护；已提供可选 PostgreSQL Compose 和停写状态下的双向离线复制、资源核验工具。切库步骤见[配置与迁移](configuration.md)，不能直接改 URL 后忽略原数据和密钥。
 
 ## 前端加载策略
 
 项目与设置页面使用轻量共享组件。编辑器及 Konva 画布通过路由级 `React.lazy` 独立加载，因此访问项目首页不会提前下载完整图像编辑器。feature 内部使用直接模块导入，避免大范围 barrel import 破坏分包。
 
-页面卡片、工具栏反馈、页面状态展示、区域快照协调、任务轮询和单页处理命令分别位于编辑器 feature 内独立模块。页面切换会让旧轮询响应失效；拆分保持原有 UI，不为每次鼠标移动增加 React 状态或网络请求。
+页面卡片、工具栏反馈、页面状态展示、区域快照协调、任务轮询和单页处理命令分别位于编辑器 feature 内独立模块。任务监控按项目持续运行，切换漫画页不会放弃任务；迟到结果不会覆盖正在阅读的另一页。画布“活动”卡片只展示本次操作，不回放历史终态记录。
 
 ## 运行和维护边界
 

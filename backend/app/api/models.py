@@ -209,6 +209,12 @@ def _reuse_translation_connection(payload: ModelConfigCreate, db: Session) -> Mo
 
 
 def _validate_cloud_ocr(payload: ModelConfigCreate, existing: ModelConfig | None = None) -> None:
+    from app.services.ocr.local_catalog import LOCAL_OCR_MODELS, validate_local_config
+    if payload.kind == "ocr" and payload.provider in LOCAL_OCR_MODELS:
+        try:
+            validate_local_config(payload.provider, payload.config)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
     if payload.kind != "ocr" or payload.provider not in {"cloud-multimodal", "cloud-ocr"}:
         return
     try:

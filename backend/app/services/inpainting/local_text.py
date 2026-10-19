@@ -76,7 +76,7 @@ def focus_windows(shape: tuple[int, int], boxes: Iterable, *, limit: int = 6) ->
 
 def refine_probability(
     source: Path, model_dir: Path, probability: np.ndarray | None, boxes: list,
-    cache_dir: Path | None = None, *, check: Callable[[], None] = lambda: None,
+    cache_dir: Path | None = None, *, check: Callable[[], None] = lambda: None, backend: str | None = None,
 ) -> tuple[np.ndarray | None, dict]:
     if probability is None:
         return None, {"status": "unavailable", "windows": 0}
@@ -96,7 +96,7 @@ def refine_probability(
     used = 0
     for window in windows:
         check()
-        local, _ = text_probability(source, model_dir, cache_dir, window=window)
+        local, _ = text_probability(source, model_dir, cache_dir, window=window, backend=backend)
         if local is None:
             continue
         x, y, w, h = window
@@ -113,8 +113,9 @@ class LocalResidualConfirmer:
     never proof that the first result is clean. Crop limits remain visible.
     """
     def __init__(self, source: Path, model_dir: Path, cache_dir: Path | None = None,
-                 check: Callable[[], None] = lambda: None):
+                 check: Callable[[], None] = lambda: None, *, backend: str | None = None):
         self.source, self.model_dir, self.cache_dir, self.check = source, model_dir, cache_dir, check
+        self.backend = backend
         self.windows: list[Window] | None = None
         self.before: dict[Window, np.ndarray | None] = {}
 
@@ -126,9 +127,9 @@ class LocalResidualConfirmer:
         for window in self.windows:
             self.check()
             if window not in self.before:
-                self.before[window] = text_probability(self.source, self.model_dir, self.cache_dir, window=window)[0]
+                self.before[window] = text_probability(self.source, self.model_dir, self.cache_dir, window=window, backend=self.backend)[0]
             before = self.before[window]
-            after, _ = text_probability(output, self.model_dir, self.cache_dir, window=window)
+            after, _ = text_probability(output, self.model_dir, self.cache_dir, window=window, backend=self.backend)
             if before is None or after is None:
                 continue
             x, y, w, h = window

@@ -140,7 +140,7 @@ def test_focus_windows_are_bounded_coalesced_and_clipped():
 def test_refinement_maps_crops_to_page_and_never_adds_evidence_outside_text_boxes(monkeypatch):
     calls = []
 
-    def local(path, model, cache, *, window):
+    def local(path, model, cache, *, window, backend=None):
         calls.append(window)
         return np.ones((window[3], window[2]), np.float32), {}
 
@@ -157,7 +157,7 @@ def test_refinement_maps_crops_to_page_and_never_adds_evidence_outside_text_boxe
 
 def test_local_confirmation_reuses_fixed_windows_and_original_maps(monkeypatch):
     calls = []
-    def local(path, model, cache, *, window):
+    def local(path, model, cache, *, window, backend=None):
         calls.append((path, window))
         return np.ones((window[3], window[2]), np.float32), {}
     monkeypatch.setattr(local_text, "text_probability", local)

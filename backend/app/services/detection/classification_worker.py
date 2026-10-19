@@ -22,6 +22,17 @@ def _send(value: dict) -> None:
     print(json.dumps({"protocol": PROTOCOL, **value}, ensure_ascii=False, allow_nan=False), flush=True)
 
 
+def load_layout_image(path: str) -> Image.Image:
+    with Image.open(path) as source:
+        if source.width * source.height > MAX_PAGE_PIXELS:
+            raise ValueError("layout_image_too_large")
+        rgba = source.convert("RGBA")
+        image = Image.new("RGBA", rgba.size, "white")
+        image.alpha_composite(rgba)
+        image = image.convert("RGB")
+    return image
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--weights", type=Path, required=True)
@@ -57,13 +68,7 @@ def main() -> None:
 
     @lru_cache(maxsize=2)
     def predict(path: str, mtime_ns: int, size: int, thresholds: tuple[float, ...]) -> tuple[int, int, list[LayoutPrediction]]:
-        with Image.open(path) as source:
-            if source.width * source.height > MAX_PAGE_PIXELS:
-                raise ValueError("layout_image_too_large")
-            rgba = source.convert("RGBA")
-            image = Image.new("RGBA", rgba.size, "white")
-            image.alpha_composite(rgba)
-            image = image.convert("RGB")
+        image = load_layout_image(path)
         with contextlib.redirect_stdout(sys.stderr), torch.inference_mode():
             predictions = predict_layout(model, image, thresholds)
         return image.width, image.height, predictions

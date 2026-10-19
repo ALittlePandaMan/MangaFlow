@@ -11,13 +11,14 @@ from app.services.base import ProviderCapabilities, Renderer
 from app.services.layout import FontResolver, MangaLayoutEngine
 from app.services.layout.font_sizing import uses_automatic_font_size
 from app.services.layout.text_frame import aligned_text_frame
+from app.services.layout.text_paint import auto_paint, uses_auto_paint
 from app.services.layout.text_rotation import effective_text_rotation
 from app.services.rendering.snapshot import render_input
 from app.utils.geometry import order_quadrilateral, perspective_coefficients
 from app.utils.image_metadata import load_rgb_with_metadata, save_png_with_metadata
 from PIL import Image, ImageChops, ImageColor, ImageDraw
 
-RENDER_OUTPUT_VERSION = 9
+RENDER_OUTPUT_VERSION = 11
 
 
 def _serialize_renderer(method):
@@ -56,8 +57,6 @@ class PillowRenderer(Renderer):
         regions: list[Any],
         output_path: Path,
         text_layer_path: Path,
-        *,
-        shape_masks: dict[str, np.ndarray] | None = None,
     ) -> dict[str, Any]:
         self.ensure_loaded()
         background_rgb, metadata = load_rgb_with_metadata(background_path)
@@ -79,6 +78,11 @@ class PillowRenderer(Renderer):
             tile_size = self._rectified_size(warp_quad) if warp_quad else None
             text_frame = aligned_text_frame(translated_polygon, region.rotation) if not getattr(region, "perspective_warp", False) else None
             layout_bbox = [0.0, 0.0, tile_size[0], tile_size[1]] if tile_size else text_frame or translated_bbox
+            paint = self._resolve_render_style(background, region, region.font_size, translated_bbox)
+            # Auto outlines are computed from the FINAL fitted font below.
+            # Reserve their bounded maximum once so re-exporting a fitted
+            # region cannot slowly change its font/outline on each render.
+            fit_stroke = 3 if auto_fit and paint.get("auto_contrast") and paint["stroke_width"] else paint["stroke_width"]
             layout = self.layout_engine.layout(
                 region.translated_text,
                 layout_bbox,
@@ -94,7 +98,7 @@ class PillowRenderer(Renderer):
                 # bbox first; the complete transparent tile is warped below.
                 polygon=None if warp_quad or text_frame else translated_polygon,
                 auto_fit=auto_fit,
-                stroke_width=region.stroke_width,
+                stroke_width=fit_stroke,
                 rotation=0.0 if text_frame else effective_text_rotation(region, perspective=bool(warp_quad)),
             )
             if auto_fit and layout.overflow:
@@ -114,6 +118,7 @@ class PillowRenderer(Renderer):
                 translated_polygon=translated_polygon,
                 tile_size=tile_size,
                 rotate_frame=text_frame is not None,
+                paint=paint,
             )
             region_layouts[region.id] = {
                 **layout.to_dict(),
@@ -135,6 +140,10 @@ class PillowRenderer(Renderer):
         save_png_with_metadata(composite.convert("RGB"), output_path, metadata, compress_level=3)
         inputs = {region.id: render_input(region, font_size=region_layouts.get(region.id, {}).get("font_size"))
                   for region in regions}
+        for identifier, layout in region_layouts.items():
+            style = layout.get("render_style") or {}
+            if style.get("auto_contrast"):
+                inputs[identifier].update({key: style[key] for key in ("text_color", "stroke_color", "stroke_width")})
         return {"layouts": region_layouts, "inputs": inputs, "output_path": output_path, "text_layer_path": text_layer_path}
 
     @staticmethod
@@ -148,6 +157,7 @@ class PillowRenderer(Renderer):
         translated_polygon: list[list[float]] | None = None,
         tile_size: tuple[float, float] | None = None,
         rotate_frame: bool = False,
+        paint: dict | None = None,
     ) -> dict[str, Any]:
         x, y, target_width, target_height = bbox or getattr(region, "translated_bbox", None) or region.bbox
         width, height = tile_size or (target_width, target_height)
@@ -172,7 +182,7 @@ class PillowRenderer(Renderer):
         if not auto_fit:
             # Keep the original frame as the layout coordinate system, but
             # allocate the actual glyph extent instead of clipping to it.
-            margin = max(2, float(region.stroke_width) + 2)
+            margin = max(2, float(paint["stroke_width"] if paint is not None else region.stroke_width) + 2)
             for placement in layout.placements:
                 if placement.ink_box is not None:
                     ink = placement.ink_box
@@ -198,12 +208,14 @@ class PillowRenderer(Renderer):
         tile_height = max(1, round((bottom - origin_y) * raster_scale))
         tile = Image.new("RGBA", (tile_width, tile_height), (0, 0, 0, 0))
         draw = ImageDraw.Draw(tile)
-        render_style = PillowRenderer._resolve_render_style(
+        render_style = dict(paint) if paint is not None else PillowRenderer._resolve_render_style(
             background,
             region,
             layout.font_size,
             [x, y, target_width, target_height],
         )
+        if render_style.get("auto_contrast") and render_style["stroke_width"]:
+            render_style["stroke_width"] = max(1, min(3, round(layout.font_size*.06)))
         fill = ImageColor.getrgb(render_style["text_color"]) + (round(255 * region.opacity),)
         stroke_fill = ImageColor.getrgb(render_style["stroke_color"]) + (round(255 * region.opacity),)
         stroke_width = max(0, round(float(render_style["stroke_width"]) * raster_scale))
@@ -428,6 +440,8 @@ class PillowRenderer(Renderer):
         font_size: int,
         bbox: list[float] | None = None,
     ) -> dict[str, Any]:
+        if uses_auto_paint(region):
+            return auto_paint(background, region, font_size, bbox or getattr(region, "translated_bbox", None) or region.bbox)
         text_color = str(region.text_color)
         stroke_color = str(region.stroke_color)
         stroke_width = max(0, round(float(region.stroke_width)))

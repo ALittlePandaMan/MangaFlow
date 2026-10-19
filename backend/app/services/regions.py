@@ -163,6 +163,8 @@ def renumber_region_keys(db: Session, regions: list[TextRegion]) -> dict[str, st
 
 
 def create_region(db: Session, page: ImagePage, data: RegionCreate) -> TextRegion:
+    from app.services.layout.text_paint import PAINT_FIELDS
+
     values = data.model_dump(exclude={"region_key", "id", "auto_font_size"}, mode="json")
     auto_size = data.auto_font_size if "auto_font_size" in data.model_fields_set else "font_size" not in data.model_fields_set
     if data.id is not None:
@@ -180,7 +182,8 @@ def create_region(db: Session, page: ImagePage, data: RegionCreate) -> TextRegio
     region = TextRegion(
         image_id=page.id,
         region_key=data.region_key or next_region_key(db, page.id),
-        layout_data={"manual": True, "auto_font_size": auto_size},
+        layout_data={"manual": True, "auto_font_size": auto_size,
+                     "text_paint": {"version": 1, "mode": "manual" if PAINT_FIELDS & data.model_fields_set else "auto"}},
         **values,
     )
     if "rotation" in data.model_fields_set:
@@ -192,6 +195,8 @@ def create_region(db: Session, page: ImagePage, data: RegionCreate) -> TextRegio
 
 
 def update_region(db: Session, region: TextRegion, data: RegionUpdate, action: str = "updated") -> TextRegion:
+    from app.services.layout.text_paint import PAINT_FIELDS
+
     if region.locked and data.locked is not False:
         # Manual editing remains possible, but pipeline callers enforce locks before reaching this service.
         pass
@@ -202,6 +207,9 @@ def update_region(db: Session, region: TextRegion, data: RegionUpdate, action: s
     }
     source_text_before = region.source_text
     changes = data.model_dump(exclude_unset=True, mode="json")
+    if PAINT_FIELDS & changes.keys():
+        region.layout_data = {**(region.layout_data or {}), "text_paint": {
+            **((region.layout_data or {}).get("text_paint") or {}), "version": 1, "mode": "manual"}}
     auto_size = changes.pop("auto_font_size", None)
     if auto_size is not None or ("font_size" in changes and changes["font_size"] != region.font_size):
         region.layout_data = {**(region.layout_data or {}), "auto_font_size": auto_size if auto_size is not None else False}

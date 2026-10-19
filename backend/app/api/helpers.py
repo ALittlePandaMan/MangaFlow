@@ -38,30 +38,34 @@ def require_task(db: Session, task_id: str) -> ProcessingTask:
     return task
 
 
-def project_read(project: Project) -> ProjectRead:
+def project_read(project: Project, *, page_count: int | None = None, cover_page: ImagePage | None = None) -> ProjectRead:
     result = ProjectRead.model_validate(project)
-    cover_page = min(project.pages, key=lambda page: page.order_index, default=None)
+    if page_count is None:
+        page_count = len(project.pages)
+        cover_page = min(project.pages, key=lambda page: page.order_index, default=None)
     cover_url = get_storage().media_url(cover_page.original_path) if cover_page else None
     if cover_url and cover_page:
         cover_url = f"{cover_url}?v={int(cover_page.created_at.timestamp() * 1000)}"
-    return result.model_copy(update={"page_count": len(project.pages), "cover_url": cover_url,
+    return result.model_copy(update={"page_count": page_count, "cover_url": cover_url,
         "cover_thumbnail_url": preview_url(cover_page, "cover") if cover_page else None})
 
 
-def image_read(page: ImagePage, *, include_history: bool = False, region_count: int | None = None) -> ImageRead:
+def image_read(page: ImagePage, *, include_history: bool = False, region_count: int | None = None,
+               metadata: dict | None = None) -> ImageRead:
     from app.services.editor_history import history_state
     storage = get_storage()
     result = ImageRead.model_validate(page)
     if region_count is None:
         db = object_session(page)
-        region_count = db.scalar(select(func.count(TextRegion.id)).where(TextRegion.image_id == page.id)) if db else len(page.regions)
-    classification = (page.metadata_json or {}).get("text_classification")
+        region_count = db.scalar(select(func.count()).select_from(TextRegion).where(TextRegion.image_id == page.id)) if db else len(page.regions)
+    metadata = (page.metadata_json or {}) if metadata is None else metadata
+    classification = metadata.get("text_classification")
     classification_summary = {
         key: classification[key]
         for key in ("version", "status", "excluded_count", "uncertain_count", "policy")
         if key in classification
     } if isinstance(classification, dict) else None
-    artifact_versions = (page.metadata_json or {}).get("artifact_versions", {})
+    artifact_versions = metadata.get("artifact_versions") or {}
 
     def versioned(path: str | None, artifact: str) -> str | None:
         url = storage.media_url(path)
@@ -82,15 +86,15 @@ def image_read(page: ImagePage, *, include_history: bool = False, region_count: 
         update={
             "text_classification": classification_summary,
             "editor_history": history_state(object_session(page), page.id) if include_history and object_session(page) else None,
-            "ocr_exempt": bool((page.metadata_json or {}).get("ocr_exempt", False)),
+            "ocr_exempt": bool(metadata.get("ocr_exempt", False)),
             "region_count": region_count,
             "original_url": versioned(page.original_path, "original"),
-            "thumbnail_url": preview_url(page, "page"),
-            "thumbnail_2x_url": preview_url(page, "page-2x"),
+            "thumbnail_url": preview_url(page, "page", metadata=metadata),
+            "thumbnail_2x_url": preview_url(page, "page-2x", metadata=metadata),
             "clean_url": versioned(page.clean_path, "clean"),
             "rendered_url": versioned(page.rendered_path, "rendered"),
             "text_layer_url": versioned(page.text_layer_path, "text_layer"),
-            "text_layer_region_ids": (page.metadata_json or {}).get("text_layer_region_ids") if page.text_layer_path else None,
+            "text_layer_region_ids": metadata.get("text_layer_region_ids") if page.text_layer_path else None,
         }
     )
 

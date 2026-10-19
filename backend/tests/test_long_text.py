@@ -14,9 +14,10 @@ from app.pipeline.processor import PipelineProcessor
 from app.services.detection.layout import RFDetrTextDetector, build_layout_regions
 from app.services.detection.layout_protocol import decode_predictions
 from app.services.detection.long_text import long_text_partitions
-from app.services.detection.nested_text import _coverage, _Mask, _window
+from app.services.detection.mask_evidence import _coverage, _Mask, _window
 from app.services.detection.text_roles import LayoutPrediction
 from app.utils.geometry import bbox_to_polygon, intersection_area
+from detection_assertions import assert_rebuilt_regions
 from PIL import Image
 
 
@@ -102,8 +103,21 @@ def test_unique_parent_lines_are_recovered_instead_of_deleting_the_enclosing_box
     assert sum(len(piece.lines) for piece in partition.pieces) == 8
 
 
+def test_overlapping_lower_confidence_query_remains_lettering_evidence_not_an_owner_blocker():
+    items = sample()
+    items.pop(2)
+    # The high-confidence top query covers two lines; this overlapping query
+    # also sees the third. Preference may ignore it for grouping, not lose it.
+    items.append(LayoutPrediction("text", .4, [20, 20, 240, 60], items[0].mask[:60].copy(), (20, 20)))
+    partition, = partitions(items).values()
+    assert sum(len(piece.lines) for piece in partition.pieces) == 8
+    frames = [_Mask(np.ones((int(p.bbox[3])+2, int(p.bbox[2])+2), np.uint8), int(p.bbox[0])-1, int(p.bbox[1])-1)
+              for p in partition.pieces]
+    assert all(_coverage(_window(item), frames) == 1 for item in items)
+
+
 @pytest.mark.parametrize("change", ["vertical", "slanted", "mixed", "bubble", "different_panel", "short",
-                                   "empty_parent", "empty_child", "unique_child", "punctuation", "bridge", "solid_mask"])
+                                   "empty_parent", "empty_child", "punctuation", "bridge", "solid_mask"])
 def test_ambiguous_or_out_of_scope_layout_is_left_untouched(change):
     items = sample()
     typography = dict.fromkeys(range(4), ("horizontal", 0.))
@@ -127,8 +141,6 @@ def test_ambiguous_or_out_of_scope_layout_is_left_untouched(change):
         items[0].mask[:] = 0
     elif change == "empty_child":
         items[1].mask[:] = 0
-    elif change == "unique_child":
-        items[1].mask[15:19, 10:90] = 1
     elif change == "punctuation":
         items[0].mask[97:100, 1:3] = 1  # Independent tiny line, not merely an antialiasing edge.
     elif change == "bridge":
@@ -136,6 +148,114 @@ def test_ambiguous_or_out_of_scope_layout_is_left_untouched(change):
     elif change == "solid_mask":
         items[0].mask[:] = 1
     assert partitions(items, typography=typography, bubbles=bubbles, panels=panels) == {}
+
+
+def test_additional_child_strokes_in_verified_line_are_preserved_not_discarded():
+    items = sample()
+    items[1].mask[15:19, 10:90] = 1
+    original = deepcopy(items)
+    partition, = partitions(items).values()
+    assert sum(len(piece.lines) for piece in partition.pieces) == 8
+    frames = [_Mask(np.ones((int(p.bbox[3]), int(p.bbox[2])), np.uint8), int(p.bbox[0]), int(p.bbox[1]))
+              for p in partition.pieces]
+    assert all(_coverage(_window(item), frames) == 1 for item in items)
+    assert all(piece.lettering is not None for piece in partition.pieces)
+    for before, after in zip(original, items, strict=True):
+        np.testing.assert_array_equal(before.mask, after.mask)
+
+
+def reported():
+    return decode_predictions(json.loads((Path(__file__).parent / "fixtures/residual_prose_predictions.json").read_text()))
+
+
+def test_reported_black_prose_page_recovers_every_parent_and_child_pixel_without_parent_overlap():
+    width, height, raw = reported()
+    original = deepcopy(raw)
+    results = build(raw, width, height)
+    pieces = [result for result in results if "long_text_partition" in result.metadata]
+    assert [p.metadata["long_text_partition"]["line_count"] for p in pieces] == [1, 2, 2, 4, 1, 2, 1, 1]
+    assert sum(p.metadata["long_text_partition"]["line_count"] for p in pieces) == 14
+    assert all(intersection_area(a.bbox, b.bbox) == 0 for i, a in enumerate(pieces) for b in pieces[i+1:])
+    frames = [_Mask(np.ones((int(p.bbox[3])+2, int(p.bbox[2])+2), np.uint8), int(p.bbox[0])-1, int(p.bbox[1])-1) for p in pieces]
+    parent = max((p for p in raw if p.label == "text"), key=lambda p: p.bbox[2]*p.bbox[3])
+    assert _coverage(_window(parent), frames) == 1
+    children = [p for p in raw if p.label == "text" and p is not parent and p.bbox[1] < 725]
+    assert all(_coverage(_window(child), frames) == 1 for child in children)
+    # The independent detection evidence contains all original child strokes,
+    # not just a larger rectangle around the incomplete parent segmentation.
+    lettering = [_Mask(p.text_mask, *p.text_mask_origin) for p in pieces]
+    assert all(_coverage(_window(child), lettering) == 1 for child in [parent, *children])
+    for before, after in zip(original, raw, strict=True):
+        np.testing.assert_array_equal(before.mask, after.mask)
+
+
+def test_reported_prose_is_deterministic_and_keeps_custom_padding_separate_from_masks():
+    width, height, raw = reported()
+    baseline = build(raw, width, height)
+    rng = np.random.default_rng(814)
+    for _ in range(5):
+        assert signature(build([raw[i] for i in rng.permutation(len(raw))], width, height)) == signature(baseline)
+    padded = build_layout_regions(raw, width, height, {"text_box_padding": 30}, page_key="long-text-test")
+    assert len(padded) == len(baseline)
+    for before, after in zip(baseline, padded, strict=True):
+        np.testing.assert_array_equal(before.text_mask, after.text_mask)
+        assert before.text_mask_origin == after.text_mask_origin
+
+
+def test_single_child_prose_recovers_uncovered_parent_lines():
+    items = sample()[:2]
+    partition, = partitions(items).values()
+    assert partition.children == [1]
+    assert sum(len(piece.lines) for piece in partition.pieces) == 8
+    assert any(piece.owner == 0 for piece in partition.pieces)
+
+
+def test_nested_intermediate_query_may_be_replaced_by_complete_leaf_frames():
+    items = sample()
+    extra = deepcopy(items[0])
+    extra.bbox = [20, 20, 240, 80]
+    extra.mask = extra.mask[:80].copy()
+    items.append(extra)
+    partition, = partitions(items).values()
+    assert partition.children == [1, 2, 3, 4]
+    assert [len(piece.lines) for piece in partition.pieces] == [2, 2, 2, 2]
+    assert all(piece.owner != 4 for piece in partition.pieces)
+
+
+def test_child_only_punctuation_or_new_line_cannot_be_hidden_by_union_completion():
+    items = sample()
+    items[1].mask[17:20, 1:3] = 1
+    assert partitions(items) == {}
+
+
+@pytest.mark.parametrize("protection", ["manual", "locked", "legacy"])
+def test_reported_prose_redetection_replaces_manual_line_and_recovers_complete_paragraphs(client, monkeypatch, protection):
+    width, height, raw = reported()
+    pieces = build(raw, width, height)
+    chosen = pieces[1].duplicate_members[0]
+    image = BytesIO()
+    Image.new("RGB", (width, height), "white").save(image, "PNG")
+    project = client.post("/api/projects", json={"name": "residual-text-protection"}).json()
+    page = client.post(f"/api/projects/{project['id']}/images", files={"files": ("page.png", image.getvalue(), "image/png")}).json()[0]
+    detector = RFDetrTextDetector({"device": "cpu"})
+    detector._text_classifier.ensure_loaded = Mock()
+    detector._text_classifier.detect_layout = Mock(return_value=(width, height, raw))
+    monkeypatch.setattr(PipelineProcessor, "_provider", lambda *_: (detector, "rfdetr"))
+    with SessionLocal() as db:
+        row = TextRegion(image_id=page["id"], region_key="R001", reading_order=1, bbox=chosen.bbox, polygon=chosen.polygon,
+                         translated_bbox=chosen.bbox, translated_polygon=chosen.polygon, source_text="user source", rotation=8.,
+                         locked=protection == "locked",
+                         layout_data={"manual": True} if protection == "manual" else {"detection": {}} if protection == "locked" else {})
+        db.add(row)
+        db.commit()
+        stored = db.get(ImagePage, page["id"])
+        for _ in range(2):
+            previous_ids = {r.id for r in stored.regions}
+            PipelineProcessor(db).detect(stored, None, force=True)
+            db.commit()
+            db.refresh(stored)
+            assert_rebuilt_regions(stored.regions, pieces, previous_ids)
+    detector.unload()
 
 
 @pytest.mark.parametrize("label", ["bubble", "panel"])
@@ -178,7 +298,7 @@ def test_existing_bubble_and_angle_fixtures_are_bit_identical_with_rule_enabled_
 
 @pytest.mark.parametrize("protection", ["manual", "locked", "legacy"])
 @pytest.mark.parametrize("scope", ["line", "paragraph", "whole"])
-def test_redetection_preserves_user_frames_and_uncovered_lines(client, monkeypatch, protection, scope):
+def test_redetection_replaces_every_frame_and_recovers_all_prose(client, monkeypatch, protection, scope):
     width, height, raw = recorded()
     pieces = build(raw, width, height)
     chosen = pieces[1].duplicate_members[0] if scope == "line" else pieces[1]
@@ -199,17 +319,11 @@ def test_redetection_preserves_user_frames_and_uncovered_lines(client, monkeypat
             layout_data={"manual": True} if protection == "manual" else {"detection": {}} if protection == "locked" else {})
         db.add(region)
         db.commit()
-        identifier = region.id
         stored = db.get(ImagePage, page["id"])
         for _ in range(2):
+            previous_ids = {r.id for r in stored.regions}
             PipelineProcessor(db).detect(stored, None, force=True)
             db.commit()
             db.refresh(stored)
-            protected = next(r for r in stored.regions if r.id == identifier)
-            assert protected.source_text == "user source" and protected.translated_text == "user translation"
-            assert protected.bbox == bbox and protected.rotation == 9.
-            others = [r for r in stored.regions if r.id != identifier]
-            assert len(others) == {"line": 9, "paragraph": 6, "whole": 1}[scope]
-            if scope == "line":
-                assert all(any(r.bbox == line.bbox for r in others) for line in pieces[1].duplicate_members[1:])
+            assert_rebuilt_regions(stored.regions, pieces, previous_ids)
     detector.unload()

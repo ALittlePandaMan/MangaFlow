@@ -5,9 +5,6 @@ from math import atan2, hypot, isfinite
 
 import numpy as np
 
-Point = tuple[float, float]
-BBox = tuple[float, float, float, float]
-
 
 def polygon_to_bbox(points: Iterable[Iterable[float]]) -> list[float]:
     normalized = [(float(point[0]), float(point[1])) for point in points]
@@ -117,15 +114,6 @@ def perspective_coefficients(
     except np.linalg.LinAlgError as exc:
         raise ValueError("Perspective quadrilateral is degenerate") from exc
     return tuple(float(value) for value in coefficients)
-
-
-def clamp_bbox(bbox: Iterable[float], image_width: int, image_height: int) -> list[float]:
-    x, y, width, height = (float(value) for value in bbox)
-    left = min(max(0.0, x), float(image_width))
-    top = min(max(0.0, y), float(image_height))
-    right = min(max(left, x + width), float(image_width))
-    bottom = min(max(top, y + height), float(image_height))
-    return [left, top, right - left, bottom - top]
 
 
 def intersection_area(first: Iterable[float], second: Iterable[float]) -> float:

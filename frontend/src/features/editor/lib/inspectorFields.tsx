@@ -3,14 +3,11 @@ import type {TextRegion} from '../../../types'
 import {cn, textareaClass} from '../../../ui'
 import {perspectiveQuadSize} from './perspectiveText'
 import {hasCurrentComputedFont, sizeText, usesAutomaticFontSize} from './fontSizing'
-import {shapePreviewRegion} from './shapeText'
 
 export function currentFontSize(region: TextRegion): number {
   if (!region.translated_text.trim() || !usesAutomaticFontSize(region) || hasCurrentComputedFont(region)) return region.font_size
-  const preview = shapePreviewRegion(region)
-  if (!preview) return region.font_size
-  const rect = preview.perspective_warp ? perspectiveQuadSize(preview.translated_polygon) ?? undefined : undefined
-  return sizeText(preview,rect).fontSize
+  const rect = region.perspective_warp ? perspectiveQuadSize(region.translated_polygon) ?? undefined : undefined
+  return sizeText(region,rect).fontSize
 }
 
 export function coordinateValue(value: number): number {

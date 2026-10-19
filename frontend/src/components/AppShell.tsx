@@ -143,7 +143,3 @@ function setupStageLabel(kind: string): string {
 export function EmptyState({ title, detail, action }: {title: string, detail: string, action?: React.ReactNode}) {
   return <div className="flex min-h-[350px] flex-col items-center justify-center rounded-2xl border border-dashed border-line bg-panel p-8 text-center text-muted shadow-soft"><BookOpen size={36} /><h3 className="mb-0 mt-4 text-base text-ink">{title}</h3><p className="mb-6 mt-2 max-w-[460px] text-[13px] leading-6">{detail}</p>{action}</div>
 }
-
-export function Loading({ label = '正在加载…' }: {label?: string}) {
-  return <PageLoader label={label}/>
-}

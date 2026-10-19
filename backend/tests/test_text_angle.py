@@ -123,3 +123,53 @@ def test_a_strong_global_score_is_insufficient_when_local_lines_are_upright():
 def test_sparse_dots_do_not_provide_enough_evidence_for_rotation(count):
     x, y = np.arange(count, dtype=float), np.arange(count, dtype=float)
     assert supported_text_angle(x, y, True, -30.) == 0.
+
+
+def test_fast_projection_histogram_is_bit_identical_to_original():
+    generator = np.random.default_rng(12)
+    for count in (4, 24, 1000, 8192):
+        for _ in range(8):
+            projection = generator.normal(0, 500, count)
+            shifted = projection-math.floor(float(projection.min()))
+            bins = shifted.astype(np.int32)
+            fraction = shifted-bins
+            histogram = np.bincount(bins, weights=1-fraction, minlength=int(bins.max())+2)
+            histogram += np.bincount(bins+1, weights=fraction, minlength=len(histogram))
+            assert projection_score(projection) == float(histogram@histogram)/count
+
+
+def test_typography_cache_reuses_only_identical_foreground_and_fallback_direction(monkeypatch):
+    from app.services.detection import text_angle
+
+    text_angle._measurement_cache.clear()
+    calls = []
+    original = text_angle.projection_score
+    monkeypatch.setattr(text_angle, "projection_score", lambda pixels: (calls.append(True), original(pixels))[1])
+    mask = np.zeros((50, 70), np.uint8)
+    mask[10:20, 5:65] = 1
+    first = text_angle.measure_text_mask(mask, False)
+    measured = len(calls)
+    assert measured >= 362
+    assert text_angle.measure_text_mask(mask.copy(), False) == first and len(calls) == measured
+    changed = mask.copy()
+    changed[21, 22] = 1
+    text_angle.measure_text_mask(changed, False)
+    assert len(calls) > measured
+    measured = len(calls)
+    text_angle.measure_text_mask(mask, True)
+    assert len(calls) > measured
+
+
+def test_typography_cache_is_bounded_and_does_not_retain_image_arrays(monkeypatch):
+    from app.services.detection import text_angle
+
+    text_angle._measurement_cache.clear()
+    monkeypatch.setattr(text_angle, "_MEASUREMENT_CACHE_SIZE", 4)
+    for i in range(8):
+        mask = np.zeros((20, 20), np.uint8)
+        mask[i, 2] = 1
+        text_angle.measure_text_mask(mask, False)
+    assert len(text_angle._measurement_cache) == 4
+    assert all(isinstance(key[1], bytes) and len(key[1]) == 32 for key in text_angle._measurement_cache)
+    assert all(len(value) == 2 for value in text_angle._measurement_cache.values())
+    text_angle._measurement_cache.clear()

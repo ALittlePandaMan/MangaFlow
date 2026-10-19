@@ -33,6 +33,182 @@ def _zip_image(payload: bytes, directory: str) -> Image.Image:
         return Image.open(BytesIO(archive.read(name))).convert("RGBA")
 
 
+def test_exports_in_the_same_second_never_overwrite_an_earlier_download(client, monkeypatch):
+    from datetime import datetime, timezone
+
+    from app.api import projects
+    from app.services import exporting
+
+    class FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 10, 18, tzinfo=timezone.utc)
+
+    monkeypatch.setattr(exporting, "datetime", FrozenDatetime)
+    project = client.post("/api/projects", json={"name": "simultaneous downloads"}).json()
+    client.post(f"/api/projects/{project['id']}/images",
+        files={"files": ("page.png", _page_image(), "image/png")})
+    original, saved = projects.export_project, []
+
+    def record(*args, **kwargs):
+        path = original(*args, **kwargs)
+        saved.append((path, path.read_bytes()))
+        return path
+
+    monkeypatch.setattr(projects, "export_project", record)
+    for formats in (["clean"], ["json"]):
+        response = client.post(f"/api/projects/{project['id']}/export", json={"formats": formats})
+        assert response.status_code == 200, response.text
+    assert saved[0][0] != saved[1][0]
+    assert saved[0][0].read_bytes() == saved[0][1]
+
+
+def test_export_rejects_an_earlier_page_invalidated_while_later_pages_render(client, monkeypatch):
+    from app.api import projects
+
+    project = client.post("/api/projects", json={"name": "edit during export"}).json()
+    pages = client.post(f"/api/projects/{project['id']}/images", files=[
+        ("files", (f"{index}.png", _page_image(), "image/png")) for index in range(2)]).json()
+    region = client.post(f"/api/images/{pages[0]['id']}/regions", json={
+        "bbox": [10, 10, 100, 100], "translated_text": "before"}).json()
+    original, rendered = projects.refresh_export_page, []
+
+    def invalidate_earlier(db, identifier):
+        original(db, identifier)
+        rendered.append(identifier)
+        if len(rendered) == 2:
+            with SessionLocal() as other:
+                page = other.get(ImagePage, rendered[0])
+                page.rendered_path = page.text_layer_path = None
+                other.get(TextRegion, region["id"]).translated_text = "new user edit"
+                other.commit()
+
+    monkeypatch.setattr(projects, "refresh_export_page", invalidate_earlier)
+    response = client.post(f"/api/projects/{project['id']}/export", json={"formats": ["translated"]})
+    assert len(rendered) == 2
+    assert response.status_code == 409, response.text
+    assert client.get(f"/api/images/{pages[0]['id']}").json()["rendered_url"] is None
+
+
+def test_export_reads_page_paths_and_regions_from_one_snapshot(client, monkeypatch):
+    from app.api import projects
+    from app.core.database import engine
+    from sqlalchemy import event
+
+    project = client.post("/api/projects", json={"name": "consistent export"}).json()
+    page = client.post(f"/api/projects/{project['id']}/images",
+        files={"files": ("page.png", _page_image(), "image/png")}).json()[0]
+    region = client.post(f"/api/images/{page['id']}/regions", json={
+        "bbox": [10, 10, 100, 100], "translated_text": "snapshot translation"}).json()
+    original, armed, writes = projects.refresh_export_page, [], []
+
+    def render(*args, **kwargs):
+        original(*args, **kwargs)
+        armed.append(True)
+
+    def concurrent_edit(connection, cursor, statement, parameters, context, executemany):
+        if armed and not writes and "FROM text_regions" in statement:
+            writes.append(True)
+            with SessionLocal() as other:
+                current = other.get(ImagePage, page["id"])
+                current.rendered_path = current.text_layer_path = None
+                other.get(TextRegion, region["id"]).translated_text = "later translation"
+                other.commit()
+
+    monkeypatch.setattr(projects, "refresh_export_page", render)
+    event.listen(engine, "before_cursor_execute", concurrent_edit)
+    try:
+        response = client.post(f"/api/projects/{project['id']}/export", json={"formats": ["translated", "json"]})
+    finally:
+        event.remove(engine, "before_cursor_execute", concurrent_edit)
+    assert writes == [True]
+    assert response.status_code == 200, response.text
+    with zipfile.ZipFile(BytesIO(response.content)) as archive:
+        assert "translated/1.png" in archive.namelist()
+        manifest = json.loads(archive.read("project.json"))
+    assert manifest["pages"][0]["regions"][0]["translated_text"] == "snapshot translation"
+    assert client.get(f"/api/images/{page['id']}/regions").json()[0]["translated_text"] == "later translation"
+
+
+def test_project_import_preserves_files_when_commit_acknowledgement_is_lost(client, monkeypatch):
+    import pytest
+    from app.models import Project
+    from app.services.exporting import import_project_archive
+    from sqlalchemy import select
+    from sqlalchemy.exc import OperationalError
+
+    project = client.post("/api/projects", json={"name": "ambiguous import"}).json()
+    client.post(f"/api/projects/{project['id']}/images",
+        files={"files": ("page.png", _page_image(), "image/png")})
+    exported = client.post(f"/api/projects/{project['id']}/export", json={"formats": ["project"]})
+    assert exported.status_code == 200
+    with SessionLocal() as db:
+        commit = db.commit
+
+        def lost_acknowledgement():
+            commit()  # The server committed; the client did not receive its acknowledgement.
+            raise OperationalError("COMMIT", {}, OSError("connection lost"), connection_invalidated=True)
+
+        monkeypatch.setattr(db, "commit", lost_acknowledgement)
+        with pytest.raises(OperationalError):
+            import_project_archive(BytesIO(exported.content), db, get_storage(), maximum_uncompressed_bytes=1024**2)
+    with SessionLocal() as db:
+        imported = db.scalar(select(Project).where(Project.name == project["name"], Project.id != project["id"]))
+        assert imported is not None and len(imported.pages) == 1
+        assert get_storage().absolute(imported.pages[0].original_path).is_file()
+
+
+def test_multi_page_export_renders_without_writer_and_outputs_remain_public(client, monkeypatch):
+    from app.services import export_render
+    from test_region_edit_transactions import _check_writer_available
+
+    project = client.post("/api/projects", json={"name": "unlocked export"}).json()
+    pages = client.post(f"/api/projects/{project['id']}/images", files=[
+        ("files", (f"{index}.png", _page_image(), "image/png")) for index in range(2)]).json()
+    before = client.get(f"/api/projects/{project['id']}/history").json()
+    original, calls = export_render._render, []
+
+    def unlocked(*args, **kwargs):
+        _check_writer_available(project["id"])
+        calls.append(1)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(export_render, "_render", unlocked)
+    response = client.post(f"/api/projects/{project['id']}/export", json={"formats": ["translated", "text_layer"]})
+    assert response.status_code == 200, response.text
+    assert calls == [1, 1]
+    assert client.get(f"/api/projects/{project['id']}/history").json() == before
+    for page in pages:
+        current = client.get(f"/api/images/{page['id']}").json()
+        assert "/export-" in current["rendered_url"]
+        assert client.get(current["rendered_url"]).status_code == 200
+        assert client.get(current["text_layer_url"]).status_code == 200
+
+
+def test_export_late_render_does_not_overwrite_a_newer_region_edit(client, monkeypatch):
+    from app.services import export_render
+
+    project = client.post("/api/projects", json={"name": "stale export"}).json()
+    page = client.post(f"/api/projects/{project['id']}/images",
+        files={"files": ("page.png", _page_image(), "image/png")}).json()[0]
+    region = client.post(f"/api/images/{page['id']}/regions", json={
+        "bbox": [10, 10, 100, 100], "translated_text": "old translation"}).json()
+    original = export_render._render
+
+    def concurrent(*args, **kwargs):
+        result = original(*args, **kwargs)
+        with SessionLocal() as other:
+            other.get(TextRegion, region["id"]).translated_text = "keep newer translation"
+            other.commit()
+        return result
+
+    monkeypatch.setattr(export_render, "_render", concurrent)
+    response = client.post(f"/api/projects/{project['id']}/export", json={"formats": ["translated"]})
+    assert response.status_code == 409, response.text
+    assert client.get(f"/api/images/{page['id']}").json()["rendered_url"] is None
+    assert client.get(f"/api/images/{page['id']}/regions").json()[0]["translated_text"] == "keep newer translation"
+
+
 def test_export_rebuilds_outputs_after_perspective_setting_invalidates_cache(client) -> None:
     project = client.post("/api/projects", json={"name": "perspective-export"}).json()
     page = client.post(

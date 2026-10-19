@@ -1,5 +1,6 @@
 export type ViewMode = 'original' | 'clean' | 'translated' | 'comparison' | 'mask'
 export type Tool = 'pan' | 'select' | 'rectangle' | 'polygon' | 'lasso' | 'brush' | 'eraser'
+export type RegionStageAction = 'ocr' | 'translate' | 'inpaint'
 
 export interface EditorHistoryState {
   project_id: string
@@ -121,16 +122,11 @@ export interface ProcessingTask {
   pause_requested: boolean
   created_at: string
   updated_at: string
-}
-
-export interface QualityIssue {
-  project_id: string
-  image_id: string
-  region_id: string | null
-  region_key: string | null
-  code: string
-  message: string
-  severity: 'warning' | 'error'
+  batch_id?: string | null
+  dependency_task_id?: string | null
+  waiting_reason?: string | null
+  error_kind?: string | null
+  active_stages?: string[]
 }
 
 export interface ModelDescriptor {
@@ -220,13 +216,16 @@ export interface ExecutionPolicy {
   max_pages: number
   cpu_workers: number
   memory_reserve_mb: number
+  gpu_max_concurrency?: number
+  gpu_memory_reserve_mb?: number
 }
 
 export interface ExecutionStatus {
   policy: ExecutionPolicy
   pages: {active:number,limit:number,maximum:number,peak:number,reason:string}
   cpu: {active:number,limit:number,maximum:number,peak:number,reason:string}
-  models: {active:number,limit:number,calls?:number,wait_seconds?:number,run_seconds?:number}
+  models: {active:number,limit:number,maximum?:number,reason?:string,calls?:number,wait_seconds?:number,run_seconds?:number}
+  inference?: Array<{kind:string; name:string; backend:string; device:string|null; state:string; fallback_reason:string|null}>
   gpu?: {known:boolean; devices:Array<{index:number; name:string; total_bytes:number; used_bytes:number; free_bytes:number; utilization_percent:number|null}>; reason?:string}
   stage_timings?: Array<{stage:string; samples:number; mean_seconds:number; p95_seconds:number}>
   resources: {known:boolean,available_bytes:number,total_bytes:number,cpu_percent:number,cpu_cores:number,rss_bytes:number}

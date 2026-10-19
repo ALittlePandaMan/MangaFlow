@@ -4,6 +4,7 @@ from app.core.config import get_settings
 from app.models import ImagePage, ProcessingTask, TextRegion
 from app.models.enums import TaskStatus
 from app.schemas.domain import QualityIssue
+from app.services.detection.text_roles import is_confirmed_free_text
 from app.services.inpainting import mask_is_empty
 from app.services.ocr.quality import ocr_review_hints
 from app.storage import get_storage
@@ -38,6 +39,12 @@ def evaluate_page(page: ImagePage, failed_tasks: list[ProcessingTask] | None = N
         if not region.source_text.strip():
             reasons.append("empty_source_text")
             add("empty_source_text", "OCR did not produce source text", region)
+        if isinstance(ocr_metadata, dict) and ocr_metadata.get("generation_truncated"):
+            reasons.append("ocr_generation_truncated")
+            add("ocr_generation_truncated", "OCR 输出达到长度上限，请核对原图或提高输出上限", region)
+        if isinstance(ocr_metadata, dict) and ocr_metadata.get("empty_chunks"):
+            reasons.append("incomplete_ocr_chunks")
+            add("incomplete_ocr_chunks", "长段落有部分行列未识别出文字，请核对原图", region)
         if (region.layout_data or {}).get("ocr_geometry_stale"):
             reasons.append("ocr_geometry_stale")
             add("ocr_geometry_stale", "原文框范围已修改，请按新框重新 OCR 并核对后再翻译", region)
@@ -67,7 +74,13 @@ def evaluate_page(page: ImagePage, failed_tasks: list[ProcessingTask] | None = N
         constraint = mask_generation.get("constraint") if isinstance(mask_generation, dict) else None
         if isinstance(constraint, dict):
             constraint_status = constraint.get("status")
-            if constraint_status in {"fallback", "skipped", "partial"}:
+            # Older generators mislabeled RF-DETR's confirmed free text as a
+            # skipped constraint. Correct that exact diagnostic without hiding
+            # unknown roles, partial masks or actual geometry failures.
+            known_free_text = (constraint_status == "skipped"
+                               and constraint.get("reason") == "balloon_assignment_unassigned"
+                               and is_confirmed_free_text((region.layout_data or {}).get("detection"), region.bubble_id))
+            if constraint_status in {"fallback", "skipped", "partial"} and not known_free_text:
                 reasons.append("repair_constraint_uncertain")
                 add(
                     "repair_constraint_uncertain",

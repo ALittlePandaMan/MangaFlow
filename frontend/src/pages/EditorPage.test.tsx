@@ -10,8 +10,9 @@ import type {EditorHistoryResult, EditorHistoryState, ImagePage, ProcessingTask,
 import {EditorPage} from './EditorPage'
 import {prepareMaskScene} from '../features/editor/lib/prepareMaskScene'
 
-const {confirmDialogMock, preloadImageMock, requestMaskLeaveMock, flushMaskMock, canvasPropsMock, propertiesPropsMock} = vi.hoisted(() => ({
+const {confirmDialogMock, openDialogMock, preloadImageMock, requestMaskLeaveMock, flushMaskMock, canvasPropsMock, propertiesPropsMock} = vi.hoisted(() => ({
   confirmDialogMock: vi.fn(),
+  openDialogMock: vi.fn(),
   preloadImageMock: vi.fn<(source: string) => Promise<void>>(),
   requestMaskLeaveMock: vi.fn<(leave: () => void) => void>(),
   flushMaskMock: vi.fn<() => Promise<void>>(),
@@ -33,7 +34,7 @@ vi.mock('../components/AppShell', () => ({
 }))
 
 vi.mock('../components/GlobalDialog', () => ({
-  useGlobalDialog: () => ({confirm: confirmDialogMock, isOpen: false}),
+  useGlobalDialog: () => ({confirm: confirmDialogMock, openDialog: openDialogMock, isOpen: false}),
 }))
 
 vi.mock('../components/LoadingUI', async importOriginal => ({
@@ -200,6 +201,7 @@ describe('EditorPage page snapshot revalidation', () => {
     vi.mocked(prepareMaskScene).mockReset()
     vi.mocked(prepareMaskScene).mockResolvedValue({} as Awaited<ReturnType<typeof prepareMaskScene>>)
     confirmDialogMock.mockReset()
+    openDialogMock.mockReset()
     confirmDialogMock.mockResolvedValue(true)
     requestMaskLeaveMock.mockReset()
     flushMaskMock.mockReset(); flushMaskMock.mockResolvedValue(undefined)
@@ -211,6 +213,7 @@ describe('EditorPage page snapshot revalidation', () => {
     vi.spyOn(api.projects, 'fonts').mockResolvedValue([])
     vi.spyOn(api.images, 'regions').mockResolvedValue([])
     vi.spyOn(api.tasks, 'list').mockResolvedValue([])
+    vi.spyOn(api.tasks, 'statuses').mockImplementation(ids => Promise.all(ids.map(id => api.tasks.get(id))))
     vi.spyOn(api.history,'state').mockResolvedValue({project_id:project.id,undo_count:0,redo_count:0,undo_id:null,redo_id:null,undo_label:null,redo_label:null,pending:false})
   })
 
@@ -218,6 +221,30 @@ describe('EditorPage page snapshot revalidation', () => {
     headerSlots.editorTarget = document.createElement('div')
     document.body.append(headerSlots.editorTarget)
   }
+
+  it('opens the requested page before a slow book index or font list has finished', async () => {
+    const current = page('page-a')
+    const index = deferred<ImagePage[]>(), fonts = deferred<never[]>()
+    vi.spyOn(api.projects,'images').mockReturnValue(index.promise)
+    vi.mocked(api.fonts.list).mockReturnValue(fonts.promise)
+    vi.spyOn(api.images,'get').mockResolvedValue(current)
+    renderEditor()
+    await waitFor(() => expect(screen.getByTestId('current-page')).toHaveAttribute('data-page-id', current.id))
+    expect(api.images.regions).toHaveBeenCalledOnce()
+    expect(screen.queryByText('initial loading')).not.toBeInTheDocument()
+    await act(async () => {index.resolve([current, page('page-b')]); fonts.resolve([])})
+    expect(screen.getByRole('button',{name:/page-b.png/})).toBeInTheDocument()
+    expect(api.images.regions).toHaveBeenCalledOnce()
+    expect(api.images.get).toHaveBeenCalledOnce()
+  })
+
+  it('does not show a page from a different project while its index loads', async () => {
+    vi.spyOn(api.projects,'images').mockResolvedValue([])
+    vi.spyOn(api.images,'get').mockResolvedValue(page('page-a', {project_id:'another-project'}))
+    renderEditor()
+    await screen.findByText('该页面不属于当前项目')
+    expect(screen.queryByTestId('current-page')).not.toBeInTheDocument()
+  })
 
   it('shows adaptive import progress, warns before closing, and opens the first new page on success', async () => {
     const first = page('page-a'), added = page('new-page')
@@ -396,6 +423,9 @@ describe('EditorPage page snapshot revalidation', () => {
     }))
     expect(screen.getByRole('button',{name:'批量识别'})).toBeDisabled()
     expect(screen.getAllByRole('status',{name:'正在批量修复并翻译…'}).length).toBeGreaterThan(0)
+    expect(screen.queryByRole('button',{name:'查看任务 / 暂停'})).not.toBeInTheDocument()
+    expect(screen.queryByRole('button',{name:'任务'})).not.toBeInTheDocument()
+    expect(openDialogMock).not.toHaveBeenCalled()
     getPage.mockResolvedValue({...current,clean_url:'/clean-new.png',rendered_url:'/translated-new.png'})
     vi.mocked(api.images.regions).mockResolvedValue([updated])
     await act(async () => {completion.resolve(tasks[0])})
@@ -954,6 +984,59 @@ describe('EditorPage page snapshot revalidation', () => {
     expect(screen.queryByRole('status',{name:/^区域处理：/})).not.toBeInTheDocument()
   })
 
+  it('keeps single-page inference in the task list while browsing another page without overwriting it on completion', async () => {
+    const first = page('page-a',{status:'OCR_DONE',clean_url:'/a-clean.png'})
+    const second = page('page-b',{status:'OCR_DONE',clean_url:'/b-clean.png'})
+    const secondRegions = [{...region({}),id:'b-region',image_id:second.id}]
+    vi.spyOn(api.projects,'images').mockResolvedValue([first,second])
+    vi.spyOn(api.images,'get').mockImplementation(async id => id === first.id ? first : second)
+    vi.mocked(api.images.regions).mockImplementation(async id => id === first.id ? [region({})] : secondRegions)
+    const running = maskRepairTask({id:'page-running',status:'RUNNING',progress:0,current_stage:'ocr',message:'OCR 0/1'})
+    vi.spyOn(api.images,'process').mockResolvedValue(running)
+    const completed = deferred<ProcessingTask>()
+    vi.spyOn(api.tasks,'get').mockReturnValue(completed.promise)
+    renderEditor()
+    fireEvent.contextMenu(await screen.findByTestId('current-page'),{clientX:600,clientY:300})
+    await userEvent.click(within(await screen.findByRole('menu',{name:'单页操作'})).getByRole('menuitem',{name:'重新检测'}))
+    await screen.findByRole('listitem',{name:'page-a.png · 处理中'})
+    expect(screen.getByRole('button',{name:'矩形区域'})).toBeDisabled()
+    expect(screen.getByRole('button',{name:'拖拽画布'})).toBeEnabled()
+    expect(screen.getByRole('button',{name:'译文'})).toBeEnabled()
+    expect(document.querySelector('.fixed.cursor-wait')).toBeNull()
+    await userEvent.click(screen.getByRole('button',{name:/page-b.png/}))
+    await waitFor(() => expect(screen.getByTestId('current-page')).toHaveAttribute('data-page-id',second.id))
+    await userEvent.click(screen.getByRole('button',{name:'对比'}))
+    await act(async () => completed.resolve({...running,status:'COMPLETED',progress:1}))
+    await waitFor(() => expect(screen.getByRole('button',{name:'矩形区域'})).toBeEnabled())
+    expect(screen.getByTestId('current-page')).toHaveAttribute('data-page-id',second.id)
+    expect(canvasPropsMock.mock.lastCall![0].regions).toEqual(secondRegions)
+    expect(useEditorStore.getState().view).toBe('comparison')
+    expect(screen.queryByRole('listitem',{name:'page-a.png · 已完成'})).not.toBeInTheDocument()
+    expect(screen.getByText('本次操作已完成。')).toBeInTheDocument()
+  })
+
+  it('keeps a batch monitored after page navigation and reloads the page actually being read', async () => {
+    showHeaderActions()
+    const first = page('page-a',{region_count:1}), second = page('page-b',{region_count:1})
+    vi.spyOn(api.projects,'images').mockResolvedValue([first,second])
+    vi.spyOn(api.images,'get').mockImplementation(async id => id === first.id ? first : second)
+    vi.mocked(api.images.regions).mockImplementation(async id => [{...region({}),image_id:id,id:`${id}-region`}])
+    const tasks = [maskRepairTask({id:'batch-a',status:'RUNNING',progress:0}),maskRepairTask({id:'batch-b',image_id:second.id,status:'QUEUED',progress:0})]
+    vi.spyOn(api.projects,'batch').mockResolvedValue(tasks)
+    const completion = deferred<ProcessingTask[]>()
+    vi.mocked(api.tasks.statuses).mockReturnValue(completion.promise)
+    renderEditor(); await screen.findByTestId('current-page')
+    await userEvent.click(screen.getByRole('button',{name:'批量修复并翻译'}))
+    await screen.findByRole('listitem',{name:'page-b.png · 排队中'})
+    await userEvent.click(screen.getByRole('img',{name:'page-b.png'}).closest('button')!)
+    await waitFor(() => expect(screen.getByTestId('current-page')).toHaveAttribute('data-page-id',second.id))
+    await act(async () => completion.resolve(tasks.map(task => ({...task,status:'COMPLETED',progress:1}))))
+    await screen.findByText(/批量修复并翻译完成，共 2 页/)
+    expect(screen.getByTestId('current-page')).toHaveAttribute('data-page-id',second.id)
+    expect(canvasPropsMock.mock.lastCall![0].regions[0].image_id).toBe(second.id)
+    expect(api.tasks.statuses).toHaveBeenCalledOnce()
+  })
+
   it('captures the single region actually requested even when multiple other boxes are selected', async () => {
     const snapshot = page('page-a',{status:'OCR_DONE'})
     const first = region({}), second = {...region({}),id:'region-2',region_key:'R002'}, third = {...region({}),id:'region-3',region_key:'R003'}
@@ -1024,11 +1107,46 @@ describe('EditorPage page snapshot revalidation', () => {
     await waitFor(() => expect(screen.queryByRole('status',{name:/处理：/})).not.toBeInTheDocument())
   })
 
+  it('merges only live selected regions and never forwards stale ids from removed frames',async()=>{
+    const snapshot=page('page-a',{status:'COMPLETED'})
+    const selected=[region({}),{...region({}),id:'region-2',region_key:'R002'}]
+    vi.spyOn(api.projects,'images').mockResolvedValue([snapshot])
+    vi.spyOn(api.images,'get').mockResolvedValue(snapshot)
+    vi.mocked(api.images.regions).mockResolvedValue(selected)
+    const merge=vi.spyOn(api.regions,'merge').mockResolvedValue({region:{...selected[0],id:'merged'},rebuild_task:null})
+    renderEditor();await screen.findByTestId('current-page')
+    act(()=>useEditorStore.getState().selectMany([...selected.map(item=>item.id),'deleted-region']))
+    fireEvent.keyDown(window,{code:'KeyM',ctrlKey:true})
+    await waitFor(()=>expect(merge).toHaveBeenCalledExactlyOnceWith(['region-1','region-2']))
+    await waitFor(()=>expect(useEditorStore.getState().selectedIds).toEqual(['merged']))
+  })
+
+  it.each(['single','multi'])('does not dispatch removed commands or layout shortcuts for %s selection',async scope=>{
+    const snapshot=page('page-a',{status:'COMPLETED',clean_url:'/clean.png'})
+    const selected=[region({}),{...region({}),id:'region-2',region_key:'R002'}]
+    vi.spyOn(api.projects,'images').mockResolvedValue([snapshot])
+    vi.spyOn(api.images,'get').mockResolvedValue(snapshot)
+    vi.mocked(api.images.regions).mockResolvedValue(selected)
+    const process=vi.spyOn(api.images,'process')
+    const stage=vi.spyOn(api.regions,'stage')
+    renderEditor();await screen.findByTestId('current-page')
+    const ids=(scope==='single'?selected.slice(0,1):selected).map(item=>item.id)
+    act(()=>useEditorStore.getState().selectMany(ids))
+    fireEvent.keyDown(window,{code:'Digit4',altKey:true})
+    fireEvent.keyDown(window,{code:'Digit4',ctrlKey:true,shiftKey:true})
+    for (const name of ['render','copy','split','visibility','unknown']) {
+      await act(async()=>{canvasPropsMock.mock.lastCall![0].onRegionAction(ids,name)})
+    }
+    expect(process).not.toHaveBeenCalled()
+    expect(stage).not.toHaveBeenCalled()
+    expect(canvasPropsMock.mock.lastCall![0].runningAction).toBeNull()
+    expect(useEditorStore.getState().selectedIds).toEqual(ids)
+  })
+
   it.each([
     ['ocr','ocr','ocr',{crop_padding:4}],
     ['translate','translation','translation',{}],
     ['inpaint','mask','inpainting',{repair_geometry:'translated'}],
-    ['render','rendering','rendering',{}],
   ])('uses every Ctrl+A-selected region for the right-click %s request', async (name,start,end,options) => {
     const snapshot = page('page-a',{status:'OCR_DONE',clean_url:'/clean-a.png'})
     const selected = [region({}),{...region({}),id:'region-2',region_key:'R002'},{...region({}),id:'region-3',region_key:'R003'}]
@@ -1195,7 +1313,6 @@ describe('EditorPage page snapshot revalidation', () => {
     ['ocr','ocr','ocr',{crop_padding:4}],
     ['translate','translation','translation',{}],
     ['inpaint','mask','inpainting',{repair_geometry:'translated'}],
-    ['render','rendering','rendering',{}],
   ])('runs right-click %s for the captured selection, not the clicked box or a later selection', async (name,start,end,options) => {
     const snapshot = page('page-a',{status:'OCR_DONE',clean_url:'/clean-a.png'})
     const first = region({}), second = {...region({}),id:'region-2',region_key:'R002',orientation:'horizontal'} as TextRegion
@@ -1447,7 +1564,8 @@ describe('EditorPage page snapshot revalidation', () => {
     expect(process).toHaveBeenCalledWith(snapshot.id,{
       start_stage:'inpainting',end_stage:'inpainting',force:true,options:{region_ids:changed.map(item=>item.id),repair_geometry:'source'},
     })
-    expect(screen.getByRole('status',{name:/区域处理：R001、R002.*正在修复修改后的蒙版/})).toHaveClass('fixed')
+    expect(screen.getByRole('status',{name:/区域处理：R001、R002.*正在修复修改后的蒙版/})).not.toHaveClass('fixed')
+    expect(screen.getByRole('complementary',{name:'任务进度'})).toBeInTheDocument()
     expect(useEditorStore.getState().view).toBe('mask')
     expect(screen.getByRole('button',{name:'净图'})).toBeDisabled()
     const repaired=changed.map(item=>({...item,layout_data:{mask_generation:{method:'manual_mask',repair_pending:false}}}))
@@ -1496,7 +1614,7 @@ describe('EditorPage page snapshot revalidation', () => {
     await userEvent.click(screen.getByRole('button',{name:'蒙版'}))
     await screen.findByRole('region',{name:'test mask editor'})
     await userEvent.click(screen.getByRole('button',{name:'净图'}))
-    await screen.findByText('repair failed')
+    expect(await screen.findByRole('alert')).toHaveTextContent('repair failed')
     expect(useEditorStore.getState().view).toBe('mask')
     expect(screen.getByRole('region',{name:'test mask editor'})).toHaveTextContent('/edited.png')
     expect(screen.getByRole('button',{name:'净图'})).toBeEnabled()
@@ -1677,6 +1795,37 @@ describe('EditorPage page snapshot revalidation', () => {
     expect(toolbarButton).toHaveFocus()
   })
 
+  it('saves the batch context mode without removing other project settings', async () => {
+    showHeaderActions()
+    const current = page('page-a')
+    vi.mocked(api.projects.get).mockResolvedValue({...project, settings:{existing:'preserved'}})
+    vi.spyOn(api.projects,'images').mockResolvedValue([current])
+    vi.spyOn(api.images,'get').mockResolvedValue(current)
+    const update = vi.spyOn(api.projects,'update').mockResolvedValue(project)
+    renderEditor(); await screen.findByTestId('current-page')
+    fireEvent.click(screen.getByRole('button',{name:'翻译上下文'}))
+    fireEvent.click(screen.getByRole('radio',{name:'依赖前页翻译'}))
+    fireEvent.change(screen.getByLabelText('项目翻译上下文 JSON'), {target:{value:'{"name":"熊"}'}})
+    fireEvent.click(screen.getByRole('button',{name:'保存上下文'}))
+    await waitFor(() => expect(update).toHaveBeenCalledWith(project.id, {
+      translation_context:{name:'熊'},settings:{existing:'preserved',translation_context_mode:'previous_page'},
+    }))
+  })
+
+  it('shows invalid context errors inside the open dialog', async () => {
+    showHeaderActions()
+    const current = page('page-a')
+    vi.spyOn(api.projects,'images').mockResolvedValue([current])
+    vi.spyOn(api.images,'get').mockResolvedValue(current)
+    const update = vi.spyOn(api.projects,'update')
+    renderEditor(); await screen.findByTestId('current-page')
+    fireEvent.click(screen.getByRole('button',{name:'翻译上下文'}))
+    fireEvent.change(screen.getByLabelText('项目翻译上下文 JSON'), {target:{value:'[]'}})
+    fireEvent.click(screen.getByRole('button',{name:'保存上下文'}))
+    expect(await within(screen.getByRole('dialog',{name:'翻译上下文'})).findByRole('alert')).toHaveTextContent('上下文需要是 JSON 对象')
+    expect(update).not.toHaveBeenCalled()
+  })
+
   it('shows the list snapshot immediately, then preloads and commits the authoritative page everywhere', async () => {
     const snapshot = page('page-a')
     const neighbor = page('page-b')
@@ -1787,8 +1936,8 @@ describe('EditorPage page snapshot revalidation', () => {
     }))
   })
 
-  it('keeps background repair disabled before OCR completes', async () => {
-    const snapshot = page('page-a', {status:'UPLOADED'})
+  it.each(['UPLOADED','COMPLETED'] as const)('keeps repair and translation disabled without text boxes even at %s status', async status => {
+    const snapshot = page('page-a', {status})
     vi.spyOn(api.projects, 'images').mockResolvedValue([snapshot])
     vi.spyOn(api.images, 'get').mockResolvedValue(snapshot)
 
@@ -1796,6 +1945,27 @@ describe('EditorPage page snapshot revalidation', () => {
     await screen.findByTestId('current-page')
     await openPageMenu(snapshot.filename)
     expect(screen.getByRole('menuitem', {name:'重新修复'})).toBeDisabled()
+    expect(screen.getByRole('menuitem', {name:'重新翻译'})).toBeDisabled()
+  })
+
+  it.each(['UPLOADED','DETECTED'] as const)('enables repair and translation for an empty manual box at %s status', async status => {
+    const snapshot = page('page-a', {status})
+    vi.spyOn(api.projects, 'images').mockResolvedValue([snapshot])
+    vi.spyOn(api.images, 'get').mockResolvedValue(snapshot)
+    vi.mocked(api.images.regions).mockResolvedValue([{...region({manual:true}),source_text:'',translated_text:''}])
+    const pendingTask = deferred<ProcessingTask>()
+    const process = vi.spyOn(api.images, 'process').mockReturnValue(pendingTask.promise)
+
+    renderEditor()
+    await screen.findByTestId('current-page')
+    await openPageMenu(snapshot.filename)
+    expect(screen.getByRole('menuitem', {name:'重新修复'})).toBeEnabled()
+    const translation = screen.getByRole('menuitem', {name:'重新翻译'})
+    expect(translation).toBeEnabled()
+    await userEvent.click(translation)
+    await waitFor(() => expect(process).toHaveBeenCalledWith(snapshot.id, {
+      start_stage:'translation',end_stage:'translation',force:true,options:{},
+    }))
   })
 
   it('does not show retired grouping failures from preserved legacy metadata', async () => {

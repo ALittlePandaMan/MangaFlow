@@ -26,12 +26,21 @@ RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
 RUN ln -sf /opt/conda/lib/libgomp.so.1 /usr/local/lib/libgomp.so.1 && ldconfig
 COPY backend/requirements/execution.txt /tmp/requirements-execution.txt
 RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked pip install -r /tmp/requirements-execution.txt
+COPY backend/requirements/segmentation-cuda.txt /tmp/requirements-segmentation-cuda.txt
+RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked pip install -r /tmp/requirements-segmentation-cuda.txt
+# PyTorch loads only part of cuDNN eagerly; ORT also needs its adv/cnn/ops
+# libraries. Register the existing wheel libraries, without another CUDA copy.
+RUN python -c "import site; from pathlib import Path; roots=[Path(p) / 'nvidia' for p in site.getsitepackages()]; Path('/etc/ld.so.conf.d/nvidia-python.conf').write_text('\n'.join(str(p) for root in roots for p in sorted(root.glob('*/lib'))))" && ldconfig
 COPY VERSION /app/VERSION
 COPY backend/requirements/classification.txt /tmp/requirements-classification.txt
 # Transformers 5 must not replace the Transformers 4 used by MangaOCR.
 RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
     python -m venv --system-site-packages /opt/layout-classifier \
     && /opt/layout-classifier/bin/python -m pip install --timeout 300 --retries 10 -r /tmp/requirements-classification.txt
+COPY backend/requirements/local-ocr.txt /tmp/requirements-local-ocr.txt
+RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
+    python -m venv --system-site-packages /opt/local-ocr \
+    && /opt/local-ocr/bin/python -m pip install --timeout 300 --retries 10 -r /tmp/requirements-local-ocr.txt
 COPY backend /app/backend
 WORKDIR /app/backend
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

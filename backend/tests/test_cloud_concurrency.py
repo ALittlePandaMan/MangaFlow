@@ -21,20 +21,53 @@ def isolated_budgets():
     budgets._budgets.clear()
 
 
+def test_ocr_workers_inherit_task_local_checkpoint_policy_and_timings():
+    from app.core.timing import TimingCollector, current_timings, record_timing
+
+    class OCR:
+        config = {"base_url":"https://context.invalid", "model":"test", "retries":0,
+                  "concurrency_mode":"fixed", "requests_per_minute":6000}
+
+        def recognize_once(self,*args):
+            assert budgets.checkpoint_requests.get()
+            record_timing("cloud.ocr_request",.25)
+            return OCRResult("text",.9,"vertical")
+
+    collector = TimingCollector()
+    timing_token = current_timings.set(collector)
+    policy_token = budgets.checkpoint_requests.set(True)
+    try:
+        results = list(recognize_regions(OCR(),Path("unused"),[OCRJob("one",(0,0,10,10),"vertical")],
+                                         4,lambda: None,lambda _: None))
+        assert len(results)==1 and results[0][0]=="one"
+        assert collector.snapshot()["cloud.ocr_request"]=={"seconds":.25,"calls":1}
+    finally:
+        current_timings.reset(timing_token)
+        budgets.checkpoint_requests.reset(policy_token)
+
+
 def test_budget_starts_small_ramps_and_backs_off_without_extra_requests(monkeypatch):
     clock = [100.0]
     monkeypatch.setattr(budgets.time, "monotonic", lambda: clock[0])
     budget = budgets.RequestBudget()
     for _ in range(4):
         assert budget.try_acquire()
-        clock[0] += 10
+        clock[0] += 1
+        assert budget.try_acquire()
+        assert not budget.try_acquire()
+        clock[0] += 9
         budget.finish(10)
+        budget.finish(9)
     assert budget.limit == 3
     # At three workers, a slower service yields no throughput gain.
-    for _ in range(6):
-        assert budget.try_acquire()
+    for _ in range(3):
+        for _ in range(3):
+            assert budget.try_acquire()
+            clock[0] += 1
+        assert not budget.try_acquire()
         clock[0] += 20
-        budget.finish(20)
+        for _ in range(3):
+            budget.finish(23)
     assert budget.limit == 2
     assert budget.try_acquire()
     budget.finish(1, ProviderError("限流", retryable=True, status_code=429, retry_after=40))
@@ -163,6 +196,53 @@ def test_retry_after_parses_seconds_and_http_date():
     assert 28 <= budgets.retry_after_seconds(future) <= 30
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["timeout", "invalid_response", "server_error"])
+async def test_checkpoint_translation_does_not_repeat_uncertain_paid_requests(monkeypatch, failure):
+    from app.services.translation.providers import OpenAICompatibleTranslator
+
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        if failure == "timeout":
+            raise httpx.ReadTimeout("response lost", request=request)
+        return httpx.Response(503 if failure == "server_error" else 200, json={"invalid": True})
+
+    client = httpx.AsyncClient
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: client(transport=httpx.MockTransport(handler), **kwargs))
+    provider = OpenAICompatibleTranslator({"base_url": "https://checkpoint.invalid/v1", "retries": 3})
+    token = budgets.checkpoint_requests.set(True)
+    try:
+        with pytest.raises(ProviderError):
+            await provider.translate_regions([("R001", "text")], source_language="ja", target_language="zh", context={})
+        assert len(calls) == 1
+        assert budgets.can_retry_request(ProviderError("rate limited", retryable=True, status_code=429))
+    finally:
+        budgets.checkpoint_requests.reset(token)
+    assert budgets.can_retry_request(ProviderError("legacy retry remains available", retryable=True))
+
+
+def test_checkpoint_ocr_does_not_resubmit_unknown_request(tmp_path):
+    class UncertainOCR:
+        config = {"base_url": "https://checkpoint.invalid/ocr", "retries": 3, "max_concurrency": 1}
+        calls = 0
+
+        def recognize_once(self, *_args):
+            self.calls += 1
+            raise ProviderError("response lost", retryable=True, status_code=0)
+
+    provider = UncertainOCR()
+    token = budgets.checkpoint_requests.set(True)
+    try:
+        with pytest.raises(ProviderError):
+            list(recognize_regions(provider, tmp_path / "image.png", [OCRJob("region", (1, 2, 3, 4), "vertical")],
+                4, lambda: None, lambda _message: None))
+        assert provider.calls == 1
+    finally:
+        budgets.checkpoint_requests.reset(token)
+
+
 class FakeOCR:
     def __init__(self, mode="fixed", maximum=3):
         self.config = {"base_url": "https://mock.example/ocr", "api_key": "test", "concurrency_mode": mode,
@@ -289,7 +369,12 @@ def test_pipeline_discards_late_result_after_manual_edit(client, monkeypatch, ch
             db.commit()
     finally:
         release.set()
-    assert wait_for_task(client, task["id"])["status"] == "COMPLETED"
+    from app.core.config import get_settings
+    done = wait_for_task(client,task["id"])
+    if get_settings().checkpoint_pipeline_enabled:
+        assert done["status"]=="FAILED" and "发生变化" in done["error_message"]
+    else:
+        assert done["status"]=="COMPLETED"
     updated = client.get(f"/api/images/{page['id']}/regions").json()[0]
     assert updated["source_text"] == change.get("source_text", "")
     for key, value in change.items():

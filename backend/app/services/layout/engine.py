@@ -3,7 +3,7 @@ from __future__ import annotations
 import unicodedata
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
-from functools import lru_cache
+from functools import cache, lru_cache
 from math import ceil, cos, radians, sin
 from pathlib import Path
 from typing import Any
@@ -256,7 +256,7 @@ class MangaLayoutEngine:
         step = max(1., size + character_spacing)
         pitch = size * line_spacing
 
-        @lru_cache(maxsize=None)
+        @cache
         def metrics(original):
             character = original.translate(VERTICAL_FORMS) if vertical else original
             path = resolve_font(character)
@@ -323,88 +323,6 @@ class MangaLayoutEngine:
                             overflow=used_width > width or used_height > height, lines=lines,
                             coordinate_width=None if vertical else width)
 
-    def _horizontal(
-        self,
-        text: str,
-        width: float,
-        height: float,
-        size: int,
-        family: str,
-        line_spacing: float,
-        character_spacing: float,
-        alignment: str,
-        custom: str | None,
-        weight: int,
-        resolve_font: Callable[[str | None], Path] | None = None,
-    ) -> LayoutResult:
-        resolve_font = resolve_font or self.fonts.prepare(family, custom, weight)
-        font_path = resolve_font(text[0])
-        font = self._font(font_path, size)
-        lines = self._wrap(text, font, width, character_spacing)
-        line_height = size * line_spacing
-        total_height = max(size, (len(lines) - 1) * line_height + size)
-        placements: list[GlyphPlacement] = []
-        max_width = 0.0
-        for line_index, line in enumerate(lines):
-            glyphs = []
-            cursor = 0.0
-            ink_left, ink_right = float("inf"), float("-inf")
-            for character in line:
-                char_path = resolve_font(character)
-                char_font = self._font(char_path, size)
-                ink = char_font.getbbox(character, anchor="lt")
-                ink_left, ink_right = min(ink_left, cursor + ink[0]), max(ink_right, cursor + ink[2])
-                total_height = max(total_height, line_index * line_height + ink[3])
-                glyphs.append((character, cursor, char_path))
-                cursor += self._measure(character, char_font, 0) + character_spacing
-            line_width = ink_right - ink_left if glyphs else 0.0
-            max_width = max(max_width, line_width)
-            start_x = {"left": 0.0, "right": width - line_width}.get(alignment, (width - line_width) / 2)
-            for character, cursor, char_path in glyphs:
-                placements.append(GlyphPlacement(character, cursor + start_x - ink_left, line_index * line_height, str(char_path), size))
-        overflow = max_width > width + 0.5 or total_height > height + 0.5
-        return LayoutResult(size, placements, max_width, total_height, overflow=overflow, lines=lines,
-                            coordinate_width=width)
-
-    def _vertical(
-        self,
-        text: str,
-        width: float,
-        height: float,
-        size: int,
-        family: str,
-        line_spacing: float,
-        character_spacing: float,
-        custom: str | None,
-        weight: int,
-        resolve_font: Callable[[str | None], Path] | None = None,
-    ) -> LayoutResult:
-        resolve_font = resolve_font or self.fonts.prepare(family, custom, weight)
-        paragraphs = text.replace("\r", "").split("\n")
-        # Negative character spacing may tighten a column, but it must never
-        # reverse the top-to-bottom flow or create a zero-height cell.
-        cell_height = max(1.0, size + character_spacing)
-        capacity = max(1, int(max(1.0, height + character_spacing) // cell_height))
-        columns: list[str] = []
-        for paragraph in paragraphs:
-            columns.extend(paragraph[index : index + capacity] for index in range(0, len(paragraph), capacity))
-            if not paragraph:
-                columns.append("")
-        column_width = size * line_spacing
-        total_width = max(size, (len(columns) - 1) * column_width + size)
-        placements: list[GlyphPlacement] = []
-        for column_index, column in enumerate(columns):
-            x = total_width - size - column_index * column_width
-            for row, original in enumerate(column):
-                vertical_char = original.translate(VERTICAL_FORMS)
-                char_path = resolve_font(vertical_char)
-                rotate = 90.0 if self._rotate_in_vertical(original) else 0.0
-                placements.append(GlyphPlacement(vertical_char, x, row * cell_height, str(char_path), size, rotate))
-        rows = max((len(column) for column in columns), default=0)
-        used_height = (rows - 1) * cell_height + size if rows else 0
-        overflow = total_width > width + 0.5 or used_height > height + .5
-        return LayoutResult(size, placements, total_width, used_height, overflow=overflow, lines=columns)
-
     @staticmethod
     def _rotate_in_vertical(character: str) -> bool:
         # Characters with Unicode vertical presentation forms must stay
@@ -414,28 +332,6 @@ class MangaLayoutEngine:
             return False
         category = unicodedata.category(character)
         return character.isascii() and (character.isalnum() or category.startswith("P"))
-
-    @staticmethod
-    def _polygon_factor(polygon: list[list[float]] | None, bbox: list[float]) -> float:
-        """Approximate an inscribed text area from polygon coverage.
-
-        An oval bubble occupies about 79% of its bbox, so the square root converts area
-        coverage into a conservative linear dimension without rasterizing large pages.
-        """
-        if not polygon or len(polygon) < 3 or bbox[2] <= 0 or bbox[3] <= 0:
-            return 1.0
-        area = (
-            abs(
-                sum(
-                    polygon[index][0] * polygon[(index + 1) % len(polygon)][1]
-                    - polygon[(index + 1) % len(polygon)][0] * polygon[index][1]
-                    for index in range(len(polygon))
-                )
-            )
-            / 2
-        )
-        coverage = max(0.2, min(1.0, area / (bbox[2] * bbox[3])))
-        return coverage**0.5
 
     @staticmethod
     @lru_cache(maxsize=8192)
@@ -453,36 +349,3 @@ class MangaLayoutEngine:
     @lru_cache(maxsize=512)
     def _font(path: Path, size: int) -> ImageFont.FreeTypeFont:
         return ImageFont.truetype(str(path), size=size)
-
-    @staticmethod
-    def _measure(text: str, font: ImageFont.FreeTypeFont, spacing: float) -> float:
-        if not text:
-            return 0.0
-        return sum(float(font.getlength(character)) for character in text) + max(0, len(text) - 1) * spacing
-
-    def _wrap(self, text: str, font: ImageFont.FreeTypeFont, width: float, spacing: float) -> list[str]:
-        output: list[str] = []
-        advances: dict[str, float] = {}
-        for paragraph in text.replace("\r", "").split("\n"):
-            if not paragraph:
-                output.append("")
-                continue
-            current = ""
-            glyph_width = 0.0
-            for character in paragraph:
-                if character not in advances:
-                    advances[character] = float(font.getlength(character))
-                advance = advances[character]
-                candidate_glyph_width = glyph_width + advance
-                # Same sum of individual glyph advances and spacing as
-                # _measure(), without remeasuring every growing line prefix.
-                if current and candidate_glyph_width + len(current) * spacing > width:
-                    output.append(current)
-                    current = character
-                    glyph_width = advance
-                else:
-                    current += character
-                    glyph_width = candidate_glyph_width
-            if current:
-                output.append(current)
-        return output or [""]

@@ -28,14 +28,19 @@ class ProviderCapabilities:
 
 
 class ProviderError(RuntimeError):
-    def __init__(self, message: str, *, retryable: bool = False, status_code: int | None = None, retry_after: float | None = None) -> None:
+    def __init__(self, message: str, *, retryable: bool = False, status_code: int | None = None, retry_after: float | None = None,
+                 error_kind: str | None = None) -> None:
         super().__init__(message)
         self.retryable = retryable
         self.status_code = status_code
         self.retry_after = retry_after
+        self.error_kind = error_kind
 
 
 T = TypeVar("T")
+
+SERIALIZED_MODEL_NAMES = {"manga-ocr", "paddleocr", "rfdetr", "lama", "hybrid",
+                          "paddleocr-vl-1.6", "baberu-ocr", "hayai-ocr"}
 
 
 class ModelProvider(ABC, Generic[T]):
@@ -44,9 +49,14 @@ class ModelProvider(ABC, Generic[T]):
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
         capability = getattr(cls, "capabilities", None)
-        if capability and capability.name in {"manga-ocr", "paddleocr", "rfdetr", "lama", "hybrid"}:
+        if capability and capability.name in SERIALIZED_MODEL_NAMES:
             from app.services.execution import serialized_model_call
-            for name in ("load", "unload", "detect", "recognize", "inpaint"):
+            for name in ("load", "unload", "detect", "recognize", "recognize_batch", "inpaint"):
+                # RF-DETR owns a narrower GPU critical section. Its immutable
+                # masks can be grouped on CPU while another model runs.
+                if (capability.name == "rfdetr" and name == "detect"
+                        or name in cls.__dict__.get("_scoped_model_methods", ())):
+                    continue
                 if name in cls.__dict__:
                     setattr(cls, name, serialized_model_call(cls.__dict__[name]))
 
@@ -61,13 +71,13 @@ class ModelProvider(ABC, Generic[T]):
 
     def unload(self) -> None:
         from app.services.execution import execution_runtime
-        slot = execution_runtime().model_slot() if self.capabilities.name in {"manga-ocr", "paddleocr", "rfdetr", "lama", "hybrid"} else nullcontext()
+        slot = execution_runtime().model_slot() if self.capabilities.name in SERIALIZED_MODEL_NAMES else nullcontext()
         with slot, self._load_lock:
             self.state = ProviderState.UNLOADED
 
     def ensure_loaded(self) -> None:
         from app.services.execution import execution_runtime
-        slot = execution_runtime().model_slot() if self.capabilities.name in {"manga-ocr", "paddleocr", "rfdetr", "lama", "hybrid"} else nullcontext()
+        slot = execution_runtime().model_slot() if self.capabilities.name in SERIALIZED_MODEL_NAMES else nullcontext()
         with slot, self._load_lock:
             if self.state == ProviderState.READY:
                 return
@@ -80,6 +90,8 @@ class ModelProvider(ABC, Generic[T]):
                 self.state = ProviderState.ERROR
                 self.last_error = str(exc)
                 raise ProviderError(f"Failed to load {self.capabilities.name}: {exc}") from exc
+            finally:
+                execution_runtime().report_provider(self)
 
 
 @dataclass(slots=True)
@@ -100,9 +112,8 @@ class DetectionResult:
     balloon_mask_id: str | None = None
     balloon_mask_parent_id: str | None = None
     balloon_mask_confidence: float | None = None
-    # Transient alternatives for a verified nested duplicate. If an existing
-    # manual/locked frame overlaps the enclosing detection, the pipeline can
-    # fall back to its separate columns without losing the untouched column.
+    # Transient line alternatives for a reconstructed prose block. If a user
+    # frame covers one line, keep the other lines instead of dropping the block.
     duplicate_members: list[DetectionResult] = field(default_factory=list, repr=False, compare=False)
     # Transient lettering evidence for safe filtering around manual frames.
     # Never serialize these arrays into region metadata or API responses.

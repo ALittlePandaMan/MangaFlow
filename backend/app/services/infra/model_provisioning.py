@@ -34,7 +34,7 @@ RECOMMENDED_MODELS = {
         "推荐漫画版面检测（RF-DETR）",
         "rfdetr",
         {
-            "device": "cuda:0",
+            "device": "auto",
             "text_threshold": 0.25,
             "bubble_threshold": 0.5,
             "panel_threshold": 0.5,
@@ -44,15 +44,15 @@ RECOMMENDED_MODELS = {
     ),
     "ocr": RecommendedModel(
         "ocr",
-        "推荐漫画识别（MangaOCR）",
-        "manga-ocr",
-        {"device": "cuda:0", "model": "kha-white/manga-ocr-base"},
+        "PaddleOCR-VL 1.6（Koharu 默认）",
+        "paddleocr-vl-1.6",
+        {"device": "auto", "max_new_tokens": 512},
     ),
     "translation": RecommendedModel(
         "translation", "安全翻译占位（需配置真实模型）", "passthrough", {"review_required": True}
     ),
     "inpainting": RecommendedModel(
-        "inpainting", "推荐复杂修复（LaMa）", "lama", {"device": "cuda:0"}
+        "inpainting", "推荐复杂修复（LaMa）", "lama", {"device": "auto"}
     ),
     "rendering": RecommendedModel("rendering", "默认排版渲染（Pillow）", "pillow", {"min_font_size": 10}),
 }
@@ -62,11 +62,16 @@ SELECTABLE_MODELS: dict[tuple[str, str], RecommendedModel] = {
 }
 SELECTABLE_MODELS.update(
     {
+        ("ocr", "manga-ocr"): RecommendedModel(
+            "ocr", "MangaOCR 漫画识别", "manga-ocr", {"device": "auto", "model": "kha-white/manga-ocr-base"}
+        ),
+        ("ocr", "baberu-ocr"): RecommendedModel("ocr", "Baberu OCR", "baberu-ocr", {"device": "auto", "max_new_tokens": 256}),
+        ("ocr", "hayai-ocr"): RecommendedModel("ocr", "Hayai OCR", "hayai-ocr", {"device": "auto", "max_new_tokens": 256}),
         ("detection", "opencv-fallback"): RecommendedModel(
             "detection", "本地 OpenCV 文本检测", "opencv-fallback", {"device": "cpu"}
         ),
         ("ocr", "paddleocr"): RecommendedModel(
-            "ocr", "PaddleOCR 文字识别", "paddleocr", {"device": "cuda:0", "language": "japan"}
+            "ocr", "PaddleOCR 文字识别", "paddleocr", {"device": "auto", "language": "japan"}
         ),
         ("ocr", "tesseract"): RecommendedModel(
             "ocr", "Tesseract OCR", "tesseract", {"device": "cpu"}
@@ -75,7 +80,7 @@ SELECTABLE_MODELS.update(
             "ocr", "人工审核占位 OCR", "review-fallback", {}
         ),
         ("inpainting", "hybrid"): RecommendedModel(
-            "inpainting", "LaMa 兼容修复", "hybrid", {"device": "cuda:0"}
+            "inpainting", "LaMa 兼容修复", "hybrid", {"device": "auto"}
         ),
         ("inpainting", "opencv"): RecommendedModel(
             "inpainting", "OpenCV 快速修复", "opencv", {"device": "cpu"}
@@ -253,6 +258,9 @@ def ensure_selected_config(
     recommendation = SELECTABLE_MODELS.get((kind, provider))
     if recommendation is None:
         raise ValueError(f"Provider {provider} is not available for {kind}")
+    from app.services.ocr.local_catalog import LOCAL_OCR_MODELS, validate_local_config
+    if kind == "ocr" and provider in LOCAL_OCR_MODELS:
+        validate_local_config(provider, {**recommendation.config, **(config_overrides or {})})
     existing = db.scalar(
         select(ModelConfig)
         .where(ModelConfig.kind == kind, ModelConfig.provider == provider)

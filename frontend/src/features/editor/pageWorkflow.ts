@@ -1,18 +1,12 @@
 import type {ViewMode} from '../../types'
 
-export type PageWorkflowStage = 'ocr' | 'translation' | 'inpainting' | 'rendering'
+export type PageWorkflowStage = 'ocr' | 'translation' | 'inpainting'
 
-const PAGE_WORKFLOW_REQUIRED_RANK: Record<PageWorkflowStage, number> = {
-  ocr: 0,
-  translation: 1,
-  // Background repair only needs OCR geometry, so it can run independently
-  // from translation.
-  inpainting: 1,
-  rendering: 3,
-}
-
-export function canRunPageWorkflowStage(stage: PageWorkflowStage, workflowRank: number): boolean {
-  return workflowRank >= PAGE_WORKFLOW_REQUIRED_RANK[stage]
+export function canRunPageWorkflowStage(stage: PageWorkflowStage, regionCount: number): boolean {
+  if (stage === 'ocr') return true
+  // Actual frames authorize these workflows, not an old page-status snapshot.
+  // Translation already OCRs empty originals; repair only needs frame geometry.
+  return (stage === 'translation' || stage === 'inpainting') && regionCount > 0
 }
 
 type PageWorkflowRequest = {
@@ -47,10 +41,5 @@ export function buildPageWorkflowRequest(stage: PageWorkflowStage): PageWorkflow
     force: true,
     options: {rebuild_clean: true},
   }
-  return {
-    start_stage: 'rendering',
-    end_stage: 'rendering',
-    force: true,
-    options: {},
-  }
+  throw new Error(`不支持的页面处理操作：${stage}`)
 }

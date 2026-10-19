@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     app_name: str = "MangaFlow"
     environment: str = "development"
     debug: bool = False
+    maintenance_mode: bool = False
     api_prefix: str = "/api"
     cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:5173"])
     data_dir: Path = REPOSITORY_ROOT / "data"
@@ -36,11 +37,17 @@ class Settings(BaseSettings):
     execution_mode: Literal["auto", "fixed", "serial"] = "auto"
     cpu_workers: int = Field(default=4, ge=1, le=8)
     memory_reserve_mb: int = Field(default=1024, ge=256, le=16384)
+    gpu_max_concurrency: int = Field(default=1, ge=1, le=2)
+    gpu_memory_reserve_mb: int = Field(default=2048, ge=2048, le=16384)
     native_threads: int = Field(default=2, ge=1, le=16)
     default_font_path: str | None = None
     auto_provision_models: bool = True
     text_segmentation_enabled: bool = True
+    segmentation_backend: Literal["auto", "opencv", "onnx_cuda"] = "auto"
     repair_auto_retry: bool = True
+    checkpoint_pipeline_enabled: bool = False
+    parallel_repair_translation: bool = False
+    checkpoint_gc_enabled: bool = False
 
     @field_validator("cors_origins", mode="before")
     @classmethod

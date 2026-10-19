@@ -15,10 +15,10 @@ from typing import Any
 import numpy as np
 from app.services.base import DetectionResult, ProviderCapabilities, TextDetector
 from app.services.detection.classification import MODEL_REPOSITORY, MODEL_REVISION, LayoutTextClassifier
-from app.services.detection.covered_text import covered_text_parents
+from app.services.detection.covered_text import covered_text_parents, duplicate_text_instances
 from app.services.detection.long_text import long_text_partitions
-from app.services.detection.nested_text import _window, nested_text_duplicates
-from app.services.detection.text_angle import projection_score, supported_text_angle
+from app.services.detection.mask_evidence import _window
+from app.services.detection.text_angle import measure_text_mask
 from app.services.detection.text_roles import LayoutPrediction
 from app.utils.geometry import bbox_to_polygon, polygon_to_bbox
 from PIL import Image
@@ -27,7 +27,7 @@ TEXT_BOX_PADDING = 3.0  # Original-image pixels on each edge, not display/zoom p
 MAX_TEXT_BOX_PADDING = 50.0
 LAYOUT_DEFAULTS = {"text_threshold": .25, "bubble_threshold": .5, "panel_threshold": .5,
                    "containment_threshold": .9, "text_box_padding": TEXT_BOX_PADDING}
-LAYOUT_VERSION = 9
+LAYOUT_VERSION = 18
 NATIVE_TEXT_POLICY = {"enabled": True, "filter_sfx": True, "min_sfx_confidence": .2}
 PADDING_SIDES = ("top", "bottom", "left", "right")
 
@@ -63,21 +63,24 @@ def layout_options(config: dict[str, Any]) -> dict[str, Any]:
     return values
 
 
-def _box_iou(a: LayoutPrediction, b: LayoutPrediction) -> float:
-    ax, ay, aw, ah = a.bbox
-    bx, by, bw, bh = b.bbox
-    intersection = max(0., min(ax+aw, bx+bw)-max(ax, bx))*max(0., min(ay+ah, by+bh)-max(ay, by))
-    return intersection/max(1., aw*ah+bw*bh-intersection)
-
-
 def _spatial_key(item: LayoutPrediction) -> tuple:
     return item.bbox[1], -item.bbox[0], item.label
 
 
-def _deduplicate(predictions: list[LayoutPrediction]) -> list[LayoutPrediction]:
+def _deduplicate_layout_instances(predictions: list[LayoutPrediction]) -> list[LayoutPrediction]:
+    """Collapse identical structural masks, never overlapping boxes alone.
+
+    Distinct interlocking balloons/panels may share the same bounding box.
+    Their original instance masks, not rectangle similarity, define identity.
+    Text queries retain their separate complete-lettering resolution below.
+    """
     kept: list[LayoutPrediction] = []
     for prediction in sorted(predictions, key=lambda item: (-item.confidence, *_spatial_key(item))):
-        if not any(item.label == prediction.label and _box_iou(item, prediction) >= .5 for item in kept):
+        if prediction.label == "text" or not any(
+            item.label == prediction.label and item.mask_origin == prediction.mask_origin
+            and item.mask.shape == prediction.mask.shape and np.array_equal(item.mask > 0, prediction.mask > 0)
+            and (np.any(prediction.mask) or item.bbox == prediction.bbox) for item in kept
+        ):
             kept.append(prediction)
     return kept
 
@@ -166,24 +169,7 @@ def text_geometry(item: LayoutPrediction, width: int, height: int, *, padding: f
     right = min(mx+mask_width, width, math.ceil(bx+bw+margin))
     bottom = min(my+mask_height, height, math.ceil(by+bh+margin))
     window = item.mask[top-my:bottom-my, left-mx:right-mx] if right > left and bottom > top else np.empty((0, 0))
-    rows, columns = np.nonzero(window)
-    vertical = item.bbox[3] > item.bbox[2]
-    angle = 0.
-    if len(rows) >= 4:
-        stride = max(1, math.ceil(len(rows)/8192))
-        x, y = columns[::stride].astype(float), rows[::stride].astype(float)
-        scores = [(0., 0.), (0., 0.)]
-        for degrees in np.arange(-45., 45.01, .5):
-            radians = math.radians(degrees)
-            sin, cos = math.sin(radians), math.cos(radians)
-            for axis, projection in enumerate((y*cos-x*sin, x*cos+y*sin)):
-                score = projection_score(projection)
-                if score > scores[axis][0]:
-                    scores[axis] = score, float(degrees)
-        maximum = max(scores[0][0], scores[1][0])
-        if abs(scores[0][0]-scores[1][0]) > maximum*.02:
-            vertical = scores[1][0] > scores[0][0]
-        angle = supported_text_angle(x, y, vertical, scores[int(vertical)][1])
+    vertical, angle = measure_text_mask(window, item.bbox[3] > item.bbox[2])
     return _text_polygon(item.bbox, width, height, padding, angle), "vertical" if vertical else "horizontal", angle
 
 
@@ -217,7 +203,14 @@ def _prose_frame(source: DetectionResult, box: list[float], neighbors: list[list
     left, top = max(0., x-padding["left"]), max(0., y-padding["top"])
     right, bottom = min(width, x+w+padding["right"]), min(height, y+h+padding["bottom"])
     vertical_padding = padding["top"] + padding["bottom"]
+    horizontal_padding = padding["left"] + padding["right"]
     for nx, ny, nw, nh in neighbors:
+        if (metadata.get("direction") == "vertical"
+                and min(y+h+padding["bottom"], ny+nh+padding["bottom"]) > max(y-padding["top"], ny-padding["top"])):
+            if horizontal_padding and nx+nw <= x:
+                left = max(left, nx+nw+(x-nx-nw)*padding["right"]/horizontal_padding)
+            if horizontal_padding and nx >= x+w:
+                right = min(right, x+w+(nx-x-w)*padding["right"]/horizontal_padding)
         # Padding can bring horizontally separated pieces into the same column.
         # Share their vertical gap before those expanded corners intersect.
         if min(x+w+padding["right"], nx+nw+padding["right"]) <= max(x-padding["left"], nx-padding["left"]):
@@ -229,16 +222,16 @@ def _prose_frame(source: DetectionResult, box: list[float], neighbors: list[list
         if vertical_padding and ny >= y+h:
             bottom = min(bottom, y+h+(ny-y-h)*padding["bottom"]/vertical_padding)
     bbox = [left, top, right-left, bottom-top]
-    return replace(source, bbox=bbox, polygon=bbox_to_polygon(bbox), orientation="horizontal",
+    return replace(source, bbox=bbox, polygon=bbox_to_polygon(bbox), orientation=metadata.get("direction", "horizontal"),
                    duplicate_members=[], metadata={**source.metadata, "raw_bbox": box, "text_angle": 0.,
-                                                   "long_text_partition": metadata})
+                                                   "long_text_partition": metadata, "ocr_frame_bbox": list(bbox)})
 
 
 def build_layout_regions(predictions: list[LayoutPrediction], width: int, height: int, config: dict[str, Any], *, page_key: str) -> list[DetectionResult]:
     options, policy = layout_options(config), dict(NATIVE_TEXT_POLICY)
     padding = options["text_box_padding"]
     thresholds = {"text": options["text_threshold"], "bubble": options["bubble_threshold"], "panel": options["panel_threshold"], "onomatopoeia": .2}
-    predictions = _deduplicate([item for item in predictions if item.confidence > thresholds[item.label]])
+    predictions = _deduplicate_layout_instances([item for item in predictions if item.confidence > thresholds[item.label]])
     bubbles = [(i, item) for i, item in enumerate(predictions) if item.label == "bubble"]
     order, text_panels = _layout_tree(predictions)
     assignments: dict[int, tuple[int | None, float]] = {}
@@ -249,19 +242,53 @@ def build_layout_regions(predictions: list[LayoutPrediction], width: int, height
         candidates = [(i, mask_containment(text, bubble)) for i, bubble in bubbles]
         candidates = [pair for pair in candidates if pair[1] >= options["containment_threshold"]]
         assignments[index] = min(candidates, key=lambda pair: np.count_nonzero(predictions[pair[0]].mask)) if candidates else (None, 0.)
-        # Keep filtering geometry stable: this setting only changes the final
-        # frame, never which candidates are duplicates or belong to a balloon.
+        # Measure typography from unchanged lettering. User padding never
+        # changes orientation, balloon association or the segmentation mask.
         geometries[index] = text_geometry(text, width, height, padding=TEXT_BOX_PADDING)
-    duplicates = nested_text_duplicates(predictions, {i: pair[0] if pair[1] >= .95 else None for i, pair in assignments.items()},
-                                        {i: (geometry[1], geometry[2]) for i, geometry in geometries.items()})
+    # One decision/threshold set regardless of text role. Only actual retained
+    # crops can prove complete lettering coverage; bubble/panel IDs constrain
+    # ownership and reading context, never request an enclosing dialogue box.
+    # Large user margins must not turn unique punctuation between columns into
+    # "covered lettering". Use at most the default edge tolerance, while still
+    # respecting tighter actual crops (including zero/asymmetric padding).
+    proof_padding = {side: min(margin, TEXT_BOX_PADDING) for side, margin in padding.items()}
+    final_geometries = {i: (_text_polygon(predictions[i].bbox, width, height, proof_padding, g[2]), *g[1:])
+                        for i, g in geometries.items()}
+    duplicates = duplicate_text_instances(
+        predictions, {i: pair[0] for i, pair in assignments.items()}, final_geometries, text_panels,
+        bubble_coverage={i: pair[1] for i, pair in assignments.items()}, include_fragments=False,
+    )
+    if duplicates:
+        # Suppressed queries must not become "other text" blockers or evidence
+        # in prose/parent resolution. Only text leaves were removed, so the
+        # established layout traversal remains valid after this index remap.
+        retained = [i for i in range(len(predictions)) if i not in duplicates]
+        remap = {old: new for new, old in enumerate(retained)}
+        predictions = [predictions[i] for i in retained]
+        order = [remap[i] for i in order if i in remap]
+        assignments = {remap[i]: (remap.get(bubble), coverage) for i, (bubble, coverage) in assignments.items() if i in remap}
+        text_panels = {remap[i]: remap.get(panel) for i, panel in text_panels.items() if i in remap}
+        geometries = {remap[i]: g for i, g in geometries.items() if i in remap}
+        final_geometries = {remap[i]: g for i, g in final_geometries.items() if i in remap}
     partitions = long_text_partitions(predictions, {i: pair[0] for i, pair in assignments.items()},
                                      {i: (geometry[1], geometry[2]) for i, geometry in geometries.items()}, text_panels)
-    suppressed = {i for children in duplicates.values() for i in children}
-    suppressed.update(i for partition in partitions.values() for i in partition.children)
-    # A candidate gets one decision only. In particular, the free-text pass
-    # must never remove a parent whose children the dialogue pass just removed.
-    covered = covered_text_parents(predictions, {i: pair[0] for i, pair in assignments.items()}, geometries,
-                                   text_panels, reserved=suppressed | set(duplicates) | set(partitions))
+    suppressed = {i for partition in partitions.values() for i in partition.children}
+    reserved = suppressed | set(partitions)
+    # Recover full prose from ALL paragraph candidates before removing contained
+    # fragments. Fragment confidence/padding cannot alter paragraph ownership.
+    replacements: dict[int, int] = {}
+    iou_replacements: dict[int, int] = {}
+    fragments = duplicate_text_instances(
+        predictions, {i: pair[0] for i, pair in assignments.items()},
+        {i: g for i, g in final_geometries.items() if i not in reserved}, text_panels,
+        bubble_coverage={i: pair[1] for i, pair in assignments.items()}, replacements=replacements, iou_replacements=iou_replacements,
+    )
+    covered = covered_text_parents(
+        predictions, {i: pair[0] for i, pair in assignments.items()}, final_geometries, text_panels,
+        reserved=reserved, bubble_coverage={i: pair[1] for i, pair in assignments.items()},
+        ignored=fragments, replacements=replacements,
+    )
+    suppressed.update(fragments)
     suppressed.update(covered)
     covered_by = {child: parent for parent, children in covered.items() for child in children}
     results: dict[int, DetectionResult] = {}
@@ -312,13 +339,14 @@ def build_layout_regions(predictions: list[LayoutPrediction], width: int, height
             panel = predictions[panel_index]
             metadata["panel"] = {"id": "panel-"+hashlib.sha256(str(panel.bbox).encode()).hexdigest()[:12],
                                  "bbox": panel.bbox, "method": "rfdetr"}
-        if index in duplicates:
-            metadata["nested_deduplication"] = {"method": "same_bubble_mask_coverage", "version": 1,
-                                                "removed_count": len(duplicates[index]), "edge_tolerance": 1}
         if index in covered_by:
             parent = covered_by[index]
-            metadata["covered_parent_deduplication"] = {"method": "free_text_mask_union", "version": 1,
+            metadata["covered_parent_deduplication"] = {"method": "complete_lettering_crops", "version": 3,
                 "parent_bbox": list(predictions[parent].bbox), "child_count": len(covered[parent]), "edge_tolerance": 1}
+        near_duplicates = [predictions[child].bbox for child, survivor in iou_replacements.items() if survivor == index]
+        if near_duplicates:
+            metadata["iou_deduplication"] = {"version": 1, "method": "box_iou_and_complete_lettering",
+                "threshold": .75, "removed_boxes": near_duplicates}
         results[index] = DetectionResult(
             polygon=polygon, bbox=polygon_to_bbox(polygon), confidence=text.confidence, orientation=orientation,
             metadata=metadata, bubble_id=bubble_id,
@@ -327,8 +355,6 @@ def build_layout_regions(predictions: list[LayoutPrediction], width: int, height
             balloon_mask_id=bubble_id, balloon_mask_confidence=bubble.confidence if bubble is not None else None,
             text_mask=lettering.pixels, text_mask_origin=(lettering.x, lettering.y),
         )
-    for parent, children in duplicates.items():
-        results[parent].duplicate_members = [results[i] for i in order if i in children]
     output = []
     for index, result in results.items():
         if index in suppressed:
@@ -340,15 +366,23 @@ def build_layout_regions(predictions: list[LayoutPrediction], width: int, height
         neighbors = [piece.bbox for piece in partition.pieces]
         for piece in partition.pieces:
             source = results[piece.owner]
-            metadata = {"version": 1, "method": "verified_horizontal_lines",
+            source = replace(source, text_mask=piece.lettering.pixels,
+                             text_mask_origin=(piece.lettering.x, piece.lettering.y))
+            metadata = {"version": 1, "method": partition.method, "direction": partition.orientation,
                         "parent_bbox": predictions[index].bbox, "source_bbox": predictions[piece.owner].bbox,
-                        "line_count": len(piece.lines), "replaced_candidates": 1+len(partition.children)}
+                        "line_count": len(piece.lines), "replaced_candidates": 1+len(partition.children),
+                        "ocr_boxes": piece.lines}
             frame = _prose_frame(source, piece.bbox, neighbors, width, height, metadata, padding=padding)
             if len(piece.lines) > 1:
                 # Existing manual/locked frames may cover just one line. Reuse
                 # the pipeline's per-member protection, not a whole-block drop.
-                frame.duplicate_members = [_prose_frame(source, box, neighbors+piece.lines, width, height,
-                                                       {**metadata, "line_count": 1}, padding=padding) for box in piece.lines]
+                for box in piece.lines:
+                    x, y, w, h = map(int, box)
+                    mx, my = piece.lettering.x, piece.lettering.y
+                    member_source = replace(source,
+                        text_mask=piece.lettering.pixels[y-my:y-my+h, x-mx:x-mx+w].copy(), text_mask_origin=(x, y))
+                    frame.duplicate_members.append(_prose_frame(member_source, box, neighbors+piece.lines, width, height,
+                                                               {**metadata, "line_count": 1, "ocr_boxes": [box]}, padding=padding))
             output.append(frame)
     return output
 
@@ -373,10 +407,15 @@ class RFDetrTextDetector(TextDetector):
         super().unload()
 
     def detect(self, image_path: Path) -> list[DetectionResult]:
-        self.ensure_loaded()
         options = layout_options(self.config)
         thresholds = (options["text_threshold"], .2, options["bubble_threshold"], options["panel_threshold"])
-        width, height, predictions = self._text_classifier.detect_layout(image_path, thresholds=thresholds)
+        from app.services.execution import execution_runtime
+
+        # Retain GPU serialization and lock ordering (model -> provider), but
+        # release both before pure CPU geometry/partitioning of private arrays.
+        with execution_runtime().model_slot(), self._load_lock:
+            self.ensure_loaded()
+            width, height, predictions = self._text_classifier.detect_layout(image_path, thresholds=thresholds)
         with Image.open(image_path) as source:
             if source.size != (width, height):
                 raise ValueError("RF-DETR 返回的页面尺寸不匹配")

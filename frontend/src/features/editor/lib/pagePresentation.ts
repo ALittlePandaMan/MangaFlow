@@ -1,4 +1,4 @@
-import type {ImagePage, ProcessingTask, TextRegion} from '../../../types'
+import type {ImagePage, ProcessingTask} from '../../../types'
 import type {PageWorkflowStage} from '../pageWorkflow'
 
 export function blurActiveControl() {
@@ -6,12 +6,14 @@ export function blurActiveControl() {
 }
 
 export function pageTaskBusyLabel(task: ProcessingTask | null, requestedStage: PageWorkflowStage | null): string {
+  if (task?.waiting_reason === 'previous_page_translation') return '等待前页翻译，不占用处理名额…'
+  if (task?.waiting_reason === 'previous_page_paused') return '前页已暂停，请先恢复前页任务…'
+  if (task?.active_stages && task.active_stages.length > 1) return `正在并行处理：${task.active_stages.map(stageLabel).join('、')}…`
   if (task?.current_stage === 'translation' && task.message.startsWith('翻译前自动识别')) return task.message
   if (!task?.current_stage) return ({
     ocr: '正在重新检测当前页并执行 OCR…',
     translation: '正在重新翻译当前页…',
     inpainting: '正在重新修复当前页…',
-    rendering: '正在重新排版当前页…',
   } as Record<PageWorkflowStage, string>)[requestedStage || 'ocr']
   if (task.current_stage === 'detection') return '正在检测文字区域…'
   if (task.current_stage === 'ocr') {
@@ -28,21 +30,8 @@ export function pageTaskBusyLabel(task: ProcessingTask | null, requestedStage: P
   } as Record<string, string>)[task.current_stage] || '正在处理当前页…'
 }
 
-export function pageWorkflowRank(page: ImagePage, regions: TextRegion[]): number {
-  const ranks: Record<string, number> = {
-    UPLOADED: 0, DETECTING: 0, DETECTED: 0, OCR_RUNNING: 0,
-    OCR_DONE: 1, TRANSLATING: 1,
-    TRANSLATED: 2, MASK_GENERATING: 2, INPAINTING: 2,
-    INPAINTED: 3, LAYOUTING: 3, RENDERING: 3,
-    COMPLETED: 4, NEEDS_REVIEW: 4,
-  }
-  if (page.status !== 'FAILED') return ranks[page.status] ?? 0
-  if (page.rendered_url || page.text_layer_url) return 4
-  if (page.clean_url) return 3
-  const recognized = regions.filter(region => region.source_text.trim())
-  if (recognized.length && recognized.every(region => region.translated_text.trim())) return 2
-  if (recognized.length) return 1
-  return 0
+export function stageLabel(stage: string): string {
+  return ({detection:'检测',ocr:'OCR',translation:'翻译',mask:'蒙版',inpainting:'修复',rendering:'排版'} as Record<string, string>)[stage] || stage
 }
 
 export function pageNeedsOcr(page: ImagePage): boolean {

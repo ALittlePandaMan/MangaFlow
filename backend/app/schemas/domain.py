@@ -21,6 +21,14 @@ class ProjectCreate(BaseModel):
     translation_context: dict[str, Any] = Field(default_factory=dict)
     settings: dict[str, Any] = Field(default_factory=dict)
 
+    @field_validator("settings")
+    @classmethod
+    def validate_context_mode(cls, value):
+        mode = value.get("translation_context_mode", "snapshot")
+        if not isinstance(mode, str) or mode not in {"snapshot", "previous_page"}:
+            raise ValueError("translation_context_mode must be snapshot or previous_page")
+        return value
+
 
 class ProjectUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=200)
@@ -29,6 +37,11 @@ class ProjectUpdate(BaseModel):
     target_language: str | None = None
     translation_context: dict[str, Any] | None = None
     settings: dict[str, Any] | None = None
+
+    @field_validator("settings")
+    @classmethod
+    def validate_context_mode(cls, value):
+        return ProjectCreate.validate_context_mode(value) if value is not None else value
 
 
 class ProjectRead(ORMModel):
@@ -200,22 +213,6 @@ class ProcessRequest(BaseModel):
     options: dict[str, Any] = Field(default_factory=dict)
 
 
-class RegionOCRRequest(BaseModel):
-    provider: str | None = None
-    orientation: Orientation | None = None
-    crop_padding: int = Field(default=4, ge=0, le=256)
-    force: bool = False
-
-
-class TranslateRequest(BaseModel):
-    provider: str | None = None
-    style: str = "natural manga dialogue"
-    glossary: dict[str, str] = Field(default_factory=dict)
-    honorific_rules: str = "preserve when meaningful"
-    onomatopoeia_strategy: str = "translate with concise equivalent"
-    force: bool = False
-
-
 class MaskOperation(BaseModel):
     operation: Literal["dilate", "erode", "blur", "expand", "clear"]
     amount: int = Field(default=3, ge=1, le=100)
@@ -238,6 +235,11 @@ class TaskRead(ORMModel):
     updated_at: datetime
     started_at: datetime | None
     finished_at: datetime | None
+    batch_id: str | None = None
+    dependency_task_id: str | None = None
+    waiting_reason: str | None = None
+    error_kind: str | None = None
+    active_stages: list[str] = Field(default_factory=list)
 
 
 class ModelConfigCreate(BaseModel):
@@ -251,18 +253,6 @@ class ModelConfigCreate(BaseModel):
     reuse_translation: bool = False
 
 
-class ModelConfigRead(ORMModel):
-    id: str
-    kind: str
-    name: str
-    provider: str
-    enabled: bool
-    is_default: bool
-    config: dict[str, Any]
-    has_api_key: bool = False
-    capabilities: dict[str, Any] = Field(default_factory=dict)
-
-
 class ModelDiscoveryRequest(BaseModel):
     base_url: str
     api_protocol: Literal["auto", "openai", "responses", "anthropic"] = "auto"
@@ -273,7 +263,7 @@ class ModelDiscoveryRequest(BaseModel):
 class BootstrapModelSelection(BaseModel):
     kind: Literal["detection", "ocr", "translation", "inpainting", "rendering"]
     provider: str
-    device: Literal["cpu", "cuda:0"] | None = None
+    device: Literal["auto", "cpu", "cuda:0"] | None = None
     config: dict[str, Any] = Field(default_factory=dict)
     api_key: str | None = None
 

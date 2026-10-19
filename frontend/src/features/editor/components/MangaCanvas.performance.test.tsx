@@ -4,7 +4,7 @@ import {afterAll,beforeAll,beforeEach,describe,expect,it,vi} from 'vitest'
 import type {ImagePage,TextRegion} from '../../../types'
 import {useEditorStore} from '../store'
 import {MangaCanvas} from './MangaCanvas'
-import {shapePreviewRegion} from '../lib/shapeText'
+import {sizeText} from '../lib/fontSizing'
 
 vi.mock('konva',()=>({default:{}}))
 vi.mock('react-konva',()=>{
@@ -14,10 +14,10 @@ vi.mock('react-konva',()=>{
 })
 vi.mock('../hooks/useImage',()=>({useImage:()=>({image:null,loading:false,error:false})}))
 vi.mock('./RegionPolygonEditor',()=>({RegionPolygonEditor:()=>null}))
-vi.mock('../lib/shapeText',async importOriginal=>({
-  ...await importOriginal<typeof import('../lib/shapeText')>(),
-  shapePreviewRegion:vi.fn((region:TextRegion)=>region),
-}))
+vi.mock('../lib/fontSizing',async importOriginal=>{
+  const original=await importOriginal<typeof import('../lib/fontSizing')>()
+  return {...original,sizeText:vi.fn(original.sizeText)}
+})
 
 const page={id:'page',width:1200,height:1800,original_url:'/page.png',clean_url:'/clean.png'} as ImagePage
 const region=(index:number)=>({id:`r${index}`,region_key:`R${index}`,visible:true,locked:false,
@@ -35,20 +35,38 @@ describe('dense-page preview work',()=>{
   afterAll(()=>{vi.unstubAllGlobals();vi.restoreAllMocks()})
   beforeEach(()=>{
     vi.spyOn(HTMLCanvasElement.prototype,'getContext').mockReturnValue(null)
-    vi.mocked(shapePreviewRegion).mockClear()
+    vi.mocked(sizeText).mockClear()
     useEditorStore.setState({view:'translated',tool:'select',zoom:1,selectedIds:[],layers:{original:false,detection:true,clean:true,translated:true,mask:false}})
   })
   it('does not redo layout for unchanged regions on 60 zoom frames',()=>{
     const regions=Array.from({length:100},(_,index)=>region(index))
     render(<MangaCanvas {...callbacks} page={page} regions={regions}/>)
     for(let frame=1;frame<=60;frame++) act(()=>useEditorStore.getState().setZoom(1+frame/100))
-    expect(shapePreviewRegion).toHaveBeenCalledTimes(100)
+    expect(sizeText).toHaveBeenCalledTimes(100)
   })
   it('recomputes only the edited region',()=>{
     const regions=Array.from({length:100},(_,index)=>region(index))
     const {rerender}=render(<MangaCanvas {...callbacks} page={page} regions={regions}/>)
     const edited=regions.map((item,index)=>index===42?{...item,translated_text:'新译文'}:item)
     rerender(<MangaCanvas {...callbacks} page={page} regions={edited}/>)
-    expect(shapePreviewRegion).toHaveBeenCalledTimes(101)
+    expect(sizeText).toHaveBeenCalledTimes(101)
+  })
+  it.each([
+    {shape_layout_applied:true,effective_text_bbox:[20,15,60,120]},
+    {shape_layout_applied:false,render_skipped:true},
+    {shape_layout_applied:true,effective_text_bbox:[0,0,NaN,10]},
+  ])('passes visible geometry to real text sizing despite stale legacy metadata: %j',layout_data=>{
+    const original={...region(1),layout_data}
+    const {rerender}=render(<MangaCanvas {...callbacks} page={page} regions={[original]}/>)
+    expect(sizeText).toHaveBeenCalledExactlyOnceWith(original)
+    expect(vi.mocked(sizeText).mock.calls[0][0]).toBe(original)
+    expect(original.translated_bbox).toEqual([10,10,100,180])
+    const locked={...original,locked:true,translated_bbox:[20,30,90,160]}
+    rerender(<MangaCanvas {...callbacks} page={page} regions={[locked]}/>)
+    expect(vi.mocked(sizeText).mock.lastCall?.[0]).toBe(locked)
+  })
+  it('does not size or paint a hidden region',()=>{
+    render(<MangaCanvas {...callbacks} page={page} regions={[{...region(1),visible:false}]}/>)
+    expect(sizeText).not.toHaveBeenCalled()
   })
 })

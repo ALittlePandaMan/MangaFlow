@@ -18,6 +18,7 @@ from typing import Any
 from app.core.config import get_settings
 from app.services.base import ProviderError
 from app.services.detection.layout_protocol import decode_predictions
+from app.services.infra.device import is_accelerator_error
 
 MODEL_REVISION = "aed55fdb8ca953c6bec33cf6ed6dd52a9b72bfa2"
 MODEL_REPOSITORY = "mayocream/koharu-layout-rfdetr-seg-2xl-1152"
@@ -40,6 +41,9 @@ class LayoutTextClassifier:
     def __init__(self, config: dict[str, Any]) -> None:
         self.options = dict(config)
         self.device = str(self.options.get("device", config.get("device", "auto")))
+        self._effective_device = self.device
+        self._actual_device = None
+        self._fallback_reason = None
         self._process: subprocess.Popen[str] | None = None
         self._messages: queue.Queue[Any] = queue.Queue()
         self._lock = RLock()
@@ -75,20 +79,29 @@ class LayoutTextClassifier:
         environment = {**os.environ, "HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1", "TOKENIZERS_PARALLELISM": "false"}
         self._messages = queue.Queue()
         self._process = subprocess.Popen(
-            [str(python), "-u", "-m", "app.services.detection.classification_worker", "--weights", str(weights), "--device", self.device],
+            [str(python), "-u", "-m", "app.services.detection.classification_worker", "--weights", str(weights), "--device", self._effective_device],
             cwd=Path(__file__).resolve().parents[3], env=environment,
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
             text=True, encoding="utf-8", bufsize=1,
             creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
         )
         Thread(target=self._read_stdout, args=(self._process, self._messages), daemon=True).start()
-        if self._receive(120).get("ready") is not True:
+        handshake = self._receive(120)
+        if handshake.get("ready") is not True:
             raise RuntimeError("invalid_worker_handshake")
+        from app.services.execution import execution_runtime
+
+        device = handshake.get("device")
+        self._actual_device = device
+        execution_runtime().report_inference(kind="detection", name="rfdetr", backend="torch-worker",
+            device=device, state="ready",
+            fallback_reason=self._fallback_reason or ("accelerator_unavailable" if device == "cpu" and self.device != "cpu" else None))
 
     def reset(self) -> None:
         """Restart the layout worker without changing any page content."""
         with self._lock:
             self.close()
+            self._effective_device, self._fallback_reason = self.device, None
 
     def ensure_loaded(self) -> None:
         with self._lock:
@@ -96,7 +109,15 @@ class LayoutTextClassifier:
                 if self._process is not None and self._process.poll() is not None:
                     self.close()
                 if self._process is None:
-                    self._start()
+                    try:
+                        self._start()
+                    except Exception as exc:
+                        if self.device != "auto" or self._effective_device == "cpu" or not is_accelerator_error(exc):
+                            raise
+                        self.close()
+                        self._effective_device = "cpu"
+                        self._fallback_reason = "accelerator_initialization_failed"
+                        self._start()
             except Exception:
                 self.close()
                 raise
@@ -109,22 +130,40 @@ class LayoutTextClassifier:
         with self._lock:
             try:
                 self.ensure_loaded()
-                assert self._process is not None and self._process.stdin is not None
                 request = {"operation": "layout", "image_path": str(image_path.resolve())}
                 if thresholds is not None:
                     request["thresholds"] = thresholds
-                self._process.stdin.write(json.dumps(request, allow_nan=False) + "\n")
-                self._process.stdin.flush()
-                return decode_predictions(self._receive(90))
+                try:
+                    return self._predict(request)
+                except Exception as exc:
+                    if (self.device != "auto" or not str(self._actual_device).startswith("cuda")
+                            or not is_accelerator_error(exc)):
+                        raise
+                    self.close()
+                    self._effective_device = "cpu"
+                    self._fallback_reason = "accelerator_inference_failed"
+                    self._start()
+                    return self._predict(request)
             except Exception as exc:
                 self.close()
                 raise ProviderError(f"RF-DETR 版面检测失败，原有区域保持不变：{exc}") from exc
 
+    def _predict(self, request):
+        assert self._process is not None and self._process.stdin is not None
+        self._process.stdin.write(json.dumps(request, allow_nan=False) + "\n")
+        self._process.stdin.flush()
+        return decode_predictions(self._receive(90))
+
     def close(self) -> None:
         with self._lock:
             process, self._process = self._process, None
+            self._actual_device = None
             if process is None:
                 return
+            from app.services.execution import execution_runtime
+
+            execution_runtime().report_inference(kind="detection", name="rfdetr", backend="torch-worker",
+                device=None, state="unloaded")
             if process.poll() is None:
                 process.terminate()
                 try:

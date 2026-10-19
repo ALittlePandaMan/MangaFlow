@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import math
 import time
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from threading import RLock
@@ -15,6 +16,15 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from app.services.base import ProviderError
+from app.services.concurrency_window import ConcurrencyWindow
+
+# Staged tasks persist and explicitly confirm uncertain paid requests. Keep
+# their retry policy task-local; never mutate shared provider configuration.
+checkpoint_requests: ContextVar[bool] = ContextVar("checkpoint_cloud_requests", default=False)
+
+
+def can_retry_request(error: ProviderError) -> bool:
+    return error.retryable and (not checkpoint_requests.get() or error.status_code == 429)
 
 
 def retry_after_seconds(value: str | None) -> float | None:
@@ -49,8 +59,7 @@ class RequestBudget:
         self.next_start = 0.0
         self.cooldown_until = 0.0
         self.last_used = time.monotonic()
-        self.latencies: list[float] = []
-        self.baseline: tuple[int, float] | None = None
+        self.window = ConcurrencyWindow()
         self.probe_after = 0.0
         self.failures = 0
 
@@ -61,15 +70,17 @@ class RequestBudget:
             if policy != self.policy or (not self.active and time.monotonic() - self.last_used > 600):
                 self.policy = policy
                 self.limit = 1 if policy[0] == "serial" else min(2, policy[1]) if policy[0] == "adaptive" else policy[1]
-                self.latencies.clear()
-                self.baseline = None
+                self.window.reset()
                 self.failures = 0
                 # Never clear an upstream cooldown when changing settings.
 
     def try_acquire(self) -> bool:
         with self.lock:
             now = time.monotonic()
-            if self.active >= self.limit or now < max(self.next_start, self.cooldown_until):
+            if self.active >= self.limit:
+                self.window.blocked()
+                return False
+            if now < max(self.next_start, self.cooldown_until):
                 return False
             self.active += 1
             self.last_used = now
@@ -77,7 +88,7 @@ class RequestBudget:
             self.next_start = now + 60 / self.policy[2]
             return True
 
-    def finish(self, elapsed: float, error: ProviderError | None = None, *, learn: bool = True) -> None:
+    def finish(self, elapsed: float, error: ProviderError | None = None, *, learn: bool = True, kind: str = "ocr", units: float = 1) -> None:
         with self.lock:
             self.active -= 1
             self.last_used = now = time.monotonic()
@@ -90,26 +101,12 @@ class RequestBudget:
                 delay = error.retry_after if error.retry_after is not None else min(2 ** min(self.failures, 5), 30)
                 self.cooldown_until = max(self.cooldown_until, now + max(1, delay))
                 self.probe_after = self.cooldown_until + 30
-                self.latencies.clear()
-                self.baseline = None
+                self.window.reset(cooldown=max(0,self.probe_after-now))
                 return
             if error or not learn or self.policy[0] != "adaptive" or now < self.probe_after:
                 return
             self.failures = 0
-            self.latencies.append(max(.001, elapsed))
-            if len(self.latencies) < max(4, self.limit * 2):
-                return
-            latency = sum(self.latencies) / len(self.latencies)
-            throughput = self.limit / latency
-            self.latencies.clear()
-            if self.baseline and self.limit > self.baseline[0] and throughput < self.baseline[1] * 1.05:
-                # Increasing concurrency without a useful gain adds load, so back off.
-                self.limit = self.baseline[0]
-                self.baseline = None
-                self.probe_after = now + 60
-            elif self.limit < self.policy[1] and throughput < self.policy[2] / 60:
-                self.baseline = (self.limit, throughput)
-                self.limit += 1
+            self.limit,_ = self.window.observe(elapsed,units,kind,self.limit,self.policy[1])
 
     def status(self) -> str:
         with self.lock:

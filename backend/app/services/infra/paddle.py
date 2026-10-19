@@ -1,54 +1,6 @@
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
-
-import numpy as np
-from app.services.base import ProviderError
-from PIL import Image
-
-
-def load_paddle_image(image_path: Path) -> np.ndarray:
-    """Decode formats accepted by uploads into contiguous, uint8 BGR pixels.
-
-    PaddleX's path sampler rejects WebP before inference. Decode with Pillow
-    instead of converting originals on disk, retaining native page coordinates.
-    """
-    try:
-        with Image.open(image_path) as source:
-            if "A" in source.getbands() or "transparency" in source.info:
-                rgba = source.convert("RGBA")
-                white = Image.new("RGBA", source.size, (255, 255, 255, 255))
-                rgb = Image.alpha_composite(white, rgba).convert("RGB")
-            else:
-                rgb = source.convert("RGB")
-            return np.ascontiguousarray(np.asarray(rgb, dtype=np.uint8)[..., ::-1])
-    except (OSError, ValueError, Image.DecompressionBombError) as exc:
-        raise ProviderError(f"Cannot decode image for PaddleOCR: {image_path.name}: {exc}") from exc
-
-
-def predict_paddle_image(model: Any, image: np.ndarray) -> list[dict[str, Any]]:
-    """Consume lazy inference inside the caller's GPU retry/locking boundary.
-
-    An empty *page* response is an input/inference failure, not proof that the
-    page has no text. A valid response containing zero polygons is legitimate.
-    """
-    predicted = model.predict(image)
-    if predicted is None:
-        pages = []
-    elif isinstance(predicted, (dict, list, tuple)) or hasattr(predicted, "json"):
-        pages = list(predicted) if isinstance(predicted, (list, tuple)) else [predicted]
-    else:
-        pages = list(predicted)
-    if not pages:
-        raise ProviderError("PaddleOCR produced no page result; image input was not processed")
-    payloads = []
-    for page in pages:
-        payload = _result_payload(page)
-        if payload.get("error") or not any(key in payload for key in ("dt_polys", "rec_polys")):
-            raise ProviderError("PaddleOCR returned an invalid page result; image input was not processed")
-        payloads.append(payload)
-    return payloads
 
 
 def _plain(value: Any) -> Any:

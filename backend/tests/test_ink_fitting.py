@@ -1,9 +1,8 @@
 import numpy as np
 import pytest
-from PIL import Image
-
 from app.services.layout.engine import FontResolver, MangaLayoutEngine
 from app.services.rendering import PillowRenderer
+from PIL import Image
 from test_layout import available_font, simple_render_region
 
 

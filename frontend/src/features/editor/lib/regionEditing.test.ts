@@ -1,6 +1,6 @@
 import {describe,expect,it} from 'vitest'
 import type {TextRegion} from '../../../types'
-import {alignRegions,constrainGroupMove,draftRegion,moveRegions} from './regionEditing'
+import {constrainGroupMove,draftRegion,moveRegions} from './regionEditing'
 
 const region = (id:string,x:number,y:number,locked=false) => ({id,locked,region_key:id,reading_order:1,bbox:[x,y,30,40],polygon:[[x,y],[x+30,y],[x+30,y+40],[x,y+40]],
   translated_bbox:[x+10,y+10,20,30],translated_polygon:[[x+10,y+10],[x+30,y+10],[x+30,y+40],[x+10,y+40]]} as TextRegion)
@@ -18,15 +18,6 @@ describe('group editing geometry',() => {
     expect(constrainGroupMove(regions,false,100,100,120,140)).toEqual({x:30,y:30})
     expect(constrainGroupMove(regions,false,-100,-100,120,140)).toEqual({x:-20,y:-20})
     expect(constrainGroupMove(regions.map(item=>({...item,locked:true})),false,10,10,120,140)).toEqual({x:0,y:0})
-  })
-  it.each(['left','center','right','top','middle','bottom'] as const)('aligns %s within the selected bounds without changing shape',alignment => {
-    const changes=alignRegions(regions,false,alignment)
-    expect(changes.every(change=>change.id !== 'R003')).toBe(true)
-    const after=regions.slice(0,2).map(item=>({...item,...changes.find(change=>change.id===item.id)?.patch}))
-    const coordinate = (box:number[]) => alignment==='left' ? box[0] : alignment==='right' ? box[0]+box[2] : alignment==='center' ? box[0]+box[2]/2
-      : alignment==='top' ? box[1] : alignment==='bottom' ? box[1]+box[3] : box[1]+box[3]/2
-    expect(coordinate(after[0].bbox)).toBe(coordinate(after[1].bbox))
-    expect(after.map(item=>item.bbox.slice(2))).toEqual([[30,40],[30,40]])
   })
   it('creates a stable UUID with independent source and translated points',() => {
     const draft=draftRegion('page',[[10,10],[50,10],[30,80]],[10,10,40,70],regions)

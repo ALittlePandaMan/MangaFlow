@@ -8,7 +8,6 @@ import pytest
 from app.services.detection.panels import detect_panel_frames, panel_reading_order
 from app.services.inpainting.text_segmentation import ComicTextSegmenter, learned_text_mask, text_probability
 from app.services.inpainting.verification import residual_mask, verify_and_retry
-from app.services.layout.shape import inscribed_text_box
 from app.services.ocr.quality import ocr_review_hints
 from app.services.translation.context import attach_page_image, page_context, page_image_data_url
 from app.services.translation.providers import OpenAICompatibleTranslator
@@ -145,27 +144,6 @@ def test_panel_detection_and_uncertain_page_fallback():
     assert detect_panel_frames(np.full_like(image, 255)) == []
     regions = [{"bbox": [10, 10, 30, 50]}, {"bbox": [100, 10, 30, 50]}]
     assert panel_reading_order(regions, [[0, 0, 50, 80]]) == ([1, 0], {})
-
-
-@pytest.mark.parametrize("kind", ["ellipse", "concave", "slanted"])
-def test_layout_box_contains_only_safe_shape_pixels(kind):
-    mask = np.zeros((200, 180), np.uint8)
-    if kind == "ellipse":
-        cv2.ellipse(mask, (90, 100), (75, 95), 0, 0, 360, 255, -1)
-    elif kind == "concave":
-        cv2.fillPoly(mask, [np.array([[10, 10], [150, 10], [150, 60], [70, 60], [70, 180], [10, 180]])], 255)
-    else:
-        cv2.fillPoly(mask, [np.array([[60, 10], [150, 20], [130, 185], [10, 160]])], 255)
-    box = inscribed_text_box(mask, [0, 0, 180, 200], margin=3)
-    assert box is not None
-    x, y, w, h = map(int, box)
-    safe = cv2.erode(mask, np.ones((7, 7), np.uint8), borderType=cv2.BORDER_CONSTANT, borderValue=0)
-    assert np.all(safe[y : y + h, x : x + w] > 0)
-    assert w * h > 1000
-
-
-def test_empty_shape_has_no_safe_layout_box():
-    assert inscribed_text_box(np.zeros((100, 100), np.uint8), [0, 0, 100, 100]) is None
 
 
 @pytest.mark.parametrize("protocol", ["openai", "responses", "anthropic"])

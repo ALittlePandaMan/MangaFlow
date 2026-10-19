@@ -19,10 +19,11 @@ PREVIEW_SIZES = {"cover": (768, 1536), "page": (200, 400), "page-2x": (400, 800)
 _LOCKS = tuple(Lock() for _ in range(16))
 
 
-def preview_source(page: ImagePage, kind: PreviewKind) -> tuple[str, str]:
+def preview_source(page: ImagePage, kind: PreviewKind, *, metadata: dict | None = None) -> tuple[str, str]:
     rendered = kind != "cover" and bool(page.rendered_path)
     path = page.rendered_path if rendered else page.original_path
-    versions = (page.metadata_json or {}).get("artifact_versions", {})
+    metadata = (page.metadata_json or {}) if metadata is None else metadata
+    versions = metadata.get("artifact_versions") or {}
     version = (
         versions.get("rendered") or int(page.updated_at.timestamp() * 1000)
         if rendered else int(page.created_at.timestamp() * 1000)
@@ -32,8 +33,8 @@ def preview_source(page: ImagePage, kind: PreviewKind) -> tuple[str, str]:
     return path, token
 
 
-def preview_url(page: ImagePage, kind: PreviewKind) -> str:
-    _, token = preview_source(page, kind)
+def preview_url(page: ImagePage, kind: PreviewKind, *, metadata: dict | None = None) -> str:
+    _, token = preview_source(page, kind, metadata=metadata)
     return f"{get_settings().api_prefix}/images/{page.id}/preview/{kind}?v={token}"
 
 

@@ -12,8 +12,8 @@ vi.mock('../components/LoadingUI', async importOriginal => ({
   useMinimumLoadingTime: (value: boolean) => value,
 }))
 
-const descriptors = ['manga-ocr', 'cloud-multimodal', 'cloud-ocr'].map(name => ({
-  kind: 'ocr', name, description: name, devices: name === 'manga-ocr' ? ['cpu', 'cuda'] : ['remote'],
+const descriptors = ['manga-ocr', 'cloud-multimodal', 'cloud-ocr', 'paddleocr-vl-1.6', 'baberu-ocr', 'hayai-ocr'].map(name => ({
+  kind: 'ocr', name, description: name, devices: ['cloud-multimodal', 'cloud-ocr'].includes(name) ? ['remote'] : ['cpu', 'cuda'],
   orientations: ['vertical'], supports_batch: false, capabilities: {}, installed: true, is_fallback: false,
 })) as ModelDescriptor[]
 let configuration: ModelConfiguration
@@ -44,6 +44,52 @@ async function openCloud() {
 }
 
 describe('cloud multimodal OCR settings', () => {
+  it('offers automatic GPU priority and saves the policy rather than the current hardware', async () => {
+    const user = userEvent.setup()
+    render(<GlobalDialogProvider><SettingsPage/></GlobalDialogProvider>)
+    await user.click(await screen.findByRole('button', {name: '编辑OCR 识别配置'}))
+    await user.click(screen.getByRole('button', {name: '运行设备'}))
+    await user.click(screen.getByRole('option', {name: '自动（GPU 优先）'}))
+    await user.click(screen.getByRole('button', {name: '保存配置'}))
+    expect(api.models.update).toHaveBeenCalledWith('ocr-1', expect.objectContaining({
+      config: {device: 'auto', model: 'local-manga'},
+    }))
+  })
+  it('restores an automatic device configuration without converting it to fixed GPU or CPU', async () => {
+    configuration = {...configuration, config: {device: 'auto', model: 'local-manga'}}
+    const user = userEvent.setup()
+    render(<GlobalDialogProvider><SettingsPage/></GlobalDialogProvider>)
+    expect(await screen.findByText('自动 GPU / CPU')).toBeVisible()
+    await user.click(screen.getByRole('button', {name: '编辑OCR 识别配置'}))
+    expect(screen.getByRole('button', {name: '运行设备'})).toHaveTextContent('自动（GPU 优先）')
+    await user.click(screen.getByRole('button', {name: '保存配置'}))
+    expect(api.models.update).toHaveBeenCalledWith('ocr-1', expect.objectContaining({
+      config: {device: 'auto', model: 'local-manga'},
+    }))
+  })
+  it('switches to Koharu OCR with independent local generation settings and preserves MangaOCR', async () => {
+    const user = await openCloud()
+    await user.click(screen.getByRole('button', {name: 'Provider 类型'}))
+    await user.click(screen.getByRole('option', {name: 'PaddleOCR-VL 1.6'}))
+    expect(screen.queryByLabelText('API Key')).not.toBeInTheDocument()
+    expect(screen.getByLabelText('本地 OCR 最大输出 Token 数')).toHaveValue('512')
+    fireEvent.change(screen.getByLabelText('本地 OCR 最大输出 Token 数'), {target: {value: '768'}})
+    await user.click(screen.getByRole('button', {name: '保存配置'}))
+    expect(api.models.update).not.toHaveBeenCalled()
+    expect(api.models.create).toHaveBeenCalledWith(expect.objectContaining({provider: 'paddleocr-vl-1.6', is_default: true,
+      config: {device: 'auto', max_new_tokens: 768, timeout: 180}}))
+  })
+  it('resets generation settings when switching between Baberu and Hayai', async () => {
+    const user = await openCloud()
+    await user.click(screen.getByRole('button', {name: 'Provider 类型'}))
+    await user.click(screen.getByRole('option', {name: 'Baberu OCR'}))
+    fireEvent.change(screen.getByLabelText('本地 OCR 最大输出 Token 数'), {target: {value: '512'}})
+    await user.click(screen.getByRole('button', {name: 'Provider 类型'}))
+    await user.click(screen.getByRole('option', {name: 'Hayai OCR'}))
+    expect(screen.getByLabelText('本地 OCR 最大输出 Token 数')).toHaveValue('256')
+    await user.click(screen.getByRole('button', {name: '保存配置'}))
+    expect(api.models.create).toHaveBeenCalledWith(expect.objectContaining({provider: 'hayai-ocr', config: expect.objectContaining({max_new_tokens: 256})}))
+  })
   it('restores and updates the saved provider instead of overwriting the local OCR config', async () => {
     savedOcr = {...configuration, id: 'saved-cloud', provider: 'cloud-multimodal', is_default: false, has_api_key: true, config: {model: 'saved-vision', base_url: 'https://vision.example/v1', prompt: 'Saved OCR prompt'}}
     const user = await openCloud()

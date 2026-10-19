@@ -1,5 +1,5 @@
 import {describe, expect, it} from 'vitest'
-import {DEFAULT_SHORTCUTS, formatShortcut, matchesShortcut, shortcutConflicts, shortcutForEvent, shortcutFromEvent} from './store'
+import {DEFAULT_SHORTCUTS, formatShortcut, matchesShortcut, shortcutConflicts, shortcutForEvent, shortcutFromEvent, SHORTCUT_DEFINITIONS, useShortcutStore} from './store'
 
 const keyboardEvent = (code: string, options: KeyboardEventInit = {}) => new KeyboardEvent('keydown', {code, ...options})
 
@@ -44,5 +44,23 @@ describe('shortcut bindings', () => {
   it('reports bindings shadowed by the fast nudge shift variant', () => {
     const shortcuts = {...DEFAULT_SHORTCUTS, 'region.cancelSelection':'Shift+ArrowLeft'}
     expect(shortcutConflicts(shortcuts).get('Shift+ArrowLeft')).toEqual(['region.cancelSelection', 'region.nudgeLeft'])
+  })
+
+  it('removes standalone re-layout commands from definitions, settings and keyboard matching', () => {
+    expect(SHORTCUT_DEFINITIONS.some(item => item.label.includes('重新排版'))).toBe(false)
+    expect(DEFAULT_SHORTCUTS).not.toHaveProperty('region.render')
+    expect(DEFAULT_SHORTCUTS).not.toHaveProperty('page.workflowRender')
+    expect(shortcutForEvent(keyboardEvent('Digit4',{altKey:true}),DEFAULT_SHORTCUTS)).toBeNull()
+    expect(shortcutForEvent(keyboardEvent('Digit4',{ctrlKey:true,shiftKey:true}),DEFAULT_SHORTCUTS)).toBeNull()
+    expect(shortcutForEvent(keyboardEvent('Digit4'),DEFAULT_SHORTCUTS)).toBe('view.comparison')
+  })
+
+  it('discards removed commands in persisted settings without losing custom active shortcuts', () => {
+    const legacy={...DEFAULT_SHORTCUTS,'region.render':'KeyR','page.workflowRender':'KeyD','page.next':'PageDown'}
+    const restored=useShortcutStore.persist.getOptions().merge!({shortcuts:legacy},useShortcutStore.getState())
+    expect(restored.shortcuts).not.toHaveProperty('region.render')
+    expect(restored.shortcuts).not.toHaveProperty('page.workflowRender')
+    expect(restored.shortcuts['page.next']).toBe('PageDown')
+    expect(shortcutConflicts(restored.shortcuts).size).toBe(0)
   })
 })

@@ -6,7 +6,29 @@ import pytest
 import yaml
 from app.api import models as model_api
 from app.api.models import _extract_model_ids, _model_endpoint_candidates
+from app.core.database import Base, get_db
+from app.main import app
 from app.services.infra.paddle import extract_paddle_lines
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session
+
+
+@pytest.fixture
+def fresh_model_database(monkeypatch, tmp_path):
+    # First-run defaults must not inherit deliberate CPU/custom selections
+    # from earlier integration tests sharing the main test database.
+    engine = create_engine(f"sqlite:///{tmp_path / 'models.db'}")
+    Base.metadata.create_all(engine)
+
+    def database():
+        with Session(engine) as db:
+            yield db
+
+    monkeypatch.setitem(app.dependency_overrides, get_db, database)
+    try:
+        yield
+    finally:
+        engine.dispose()
 
 
 class FakePaddleResult:
@@ -45,6 +67,7 @@ def test_model_discovery_tries_v1_for_root_base_url() -> None:
     assert _model_endpoint_candidates("http://example.com:9000/v1") == ["http://example.com:9000/v1/models"]
 
 
+@pytest.mark.usefixtures("fresh_model_database")
 def test_bootstrap_recommended_configs_without_downloading(client) -> None:
     response = client.post(
         "/api/models/bootstrap",
@@ -63,8 +86,11 @@ def test_bootstrap_recommended_configs_without_downloading(client) -> None:
     configured = client.get("/api/models").json()["configured"]
     defaults = {item["kind"]: item["provider"] for item in configured if item["is_default"]}
     assert defaults["detection"] == "rfdetr"
-    assert defaults["ocr"] == "manga-ocr"
+    assert defaults["ocr"] == "paddleocr-vl-1.6"
     assert defaults["inpainting"] == "lama"
+    for item in configured:
+        if item["is_default"] and item["kind"] in {"detection", "ocr", "inpainting"}:
+            assert item["config"]["device"] == "auto"
     recommended_detection = next(
         item for item in configured if item["kind"] == "detection" and item["is_default"]
     )
@@ -122,6 +148,18 @@ def test_bootstrap_applies_user_selected_providers_and_devices(client) -> None:
     setup = client.get("/api/models/setup-status").json()
     translation = next(item for item in setup["stages"] if item["kind"] == "translation")
     assert translation["status"] == "ready"
+
+
+def test_bootstrap_accepts_auto_device_for_all_local_gpu_providers(client):
+    response = client.post("/api/models/bootstrap", json={"preload": False, "selections": [
+        {"kind": "detection", "provider": "rfdetr", "device": "auto"},
+        {"kind": "inpainting", "provider": "hybrid", "device": "auto"},
+        {"kind": "ocr", "provider": "paddleocr-vl-1.6", "device": "auto"},
+    ]})
+    assert response.status_code == 200, response.text
+    defaults = {item["kind"]: item for item in client.get("/api/models").json()["configured"] if item["is_default"]}
+    for kind in ("detection", "inpainting", "ocr"):
+        assert defaults[kind]["config"]["device"] == "auto"
 
 
 def test_model_api_saves_active_settings_to_yaml_and_env(client, monkeypatch, tmp_path) -> None:

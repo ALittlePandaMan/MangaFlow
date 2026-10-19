@@ -95,6 +95,9 @@ class OpenCVInpainter(Inpainter):
 
 
 class SimpleLaMaInpainter(Inpainter):
+    # Image IO/compositing is thread-local. Only _infer owns the global model
+    # slot, always BEFORE the provider lock, just like loading and unloading.
+    _scoped_model_methods = {"inpaint"}
     capabilities = ProviderCapabilities(
         name="lama",
         provider_type="inpainting",
@@ -115,12 +118,14 @@ class SimpleLaMaInpainter(Inpainter):
         except ImportError as exc:
             raise ProviderError("simple-lama-inpainting is not installed") from exc
         self._device = resolve_torch_device(self.config.get("device", "auto"))
+        self._fallback_reason = None
         try:
             self._model = SimpleLama(device=torch.device(self._device))
         except Exception as exc:
             if self._device == "cpu" or not is_accelerator_error(exc):
                 raise
             logger.warning("LaMa could not start on %s; retrying on CPU: %s", self._device, exc)
+            self._fallback_reason = "accelerator_initialization_failed"
             self._device = "cpu"
             release_torch_cuda()
             self._model = SimpleLama(device=torch.device(self._device))
@@ -135,7 +140,6 @@ class SimpleLaMaInpainter(Inpainter):
         if bounds is None:
             save_png_with_metadata(image, output_path, metadata)
             return output_path
-        self.ensure_loaded()
         # Local repairs do not need inference over millions of unrelated page
         # pixels. Keep >=128 px of context and a >=512 px native-resolution
         # crop; never downsample text or alter pixels outside the saved mask.
@@ -148,20 +152,7 @@ class SimpleLaMaInpainter(Inpainter):
         if self.config.get("crop_context") is False or crop_width*crop_height >= image.width*image.height*.85:
             box = (0,0,image.width,image.height)
         model_image,model_mask = image.crop(box),mask.crop(box)
-        try:
-            result = self._model(model_image, model_mask)
-        except Exception as exc:
-            if self._device == "cpu" or not is_accelerator_error(exc):
-                raise
-            logger.warning("LaMa failed on %s; retrying on CPU: %s", self._device, exc)
-            self._model = None
-            self._device = "cpu"
-            release_torch_cuda()
-            import torch
-            from simple_lama_inpainting import SimpleLama
-
-            self._model = SimpleLama(device=torch.device(self._device))
-            result = self._model(model_image, model_mask)
+        result = self._infer(model_image, model_mask)
         # The reference model pads inputs to a multiple of eight. Never let that
         # implementation detail change page dimensions between pipeline regions.
         # Some model versions also slightly alter pixels outside the mask, so
@@ -175,9 +166,39 @@ class SimpleLaMaInpainter(Inpainter):
         save_png_with_metadata(composited, output_path, metadata)
         return output_path
 
+    def _infer(self, model_image, model_mask):
+        from app.services.execution import execution_runtime
+
+        runtime = execution_runtime()
+        with runtime.model_slot(), self._load_lock:
+            try:
+                self.ensure_loaded()
+                return self._infer_loaded(model_image, model_mask)
+            finally:
+                runtime.report_provider(self)
+
+    def _infer_loaded(self, model_image, model_mask):
+        try:
+            return self._model(model_image, model_mask)
+        except Exception as exc:
+            if self._device == "cpu" or not is_accelerator_error(exc):
+                raise
+            logger.warning("LaMa failed on %s; retrying on CPU: %s", self._device, exc)
+            self._fallback_reason = "accelerator_inference_failed"
+            self._model = None
+            self._device = "cpu"
+            release_torch_cuda()
+            import torch
+            from simple_lama_inpainting import SimpleLama
+
+            self._model = SimpleLama(device=torch.device(self._device))
+            return self._model(model_image, model_mask)
+
 
 class HybridInpainter(Inpainter):
     """Backward-compatible provider alias that routes every repair to LaMa."""
+
+    _scoped_model_methods = {"inpaint"}
 
     capabilities = ProviderCapabilities(
         name="hybrid",
@@ -189,9 +210,9 @@ class HybridInpainter(Inpainter):
 
     def __init__(self, config: dict | None = None) -> None:
         super().__init__(config)
-        self._lama = SimpleLaMaInpainter(
-            {"device": self.config.get("device", "auto"), **dict(self.config.get("lama", {}))}
-        )
+        lama_config = dict(self.config.get("lama", {}))
+        lama_config["device"] = self.config.get("device", lama_config.get("device", "auto"))
+        self._lama = SimpleLaMaInpainter(lama_config)
 
     def load(self) -> None:
         self._lama.ensure_loaded()

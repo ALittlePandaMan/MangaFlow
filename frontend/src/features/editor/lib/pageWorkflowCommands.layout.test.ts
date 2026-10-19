@@ -21,10 +21,10 @@ describe('whole-page redetection and OCR',()=>{
     vi.spyOn(api.images,'process').mockResolvedValue({id:'task',status:'COMPLETED'} as ProcessingTask)
   })
 
-  it('asks before replacing old automatic boxes and leaves them intact when declined',async()=>{
+  it('explains whole-page replacement and leaves all frames intact when declined',async()=>{
     const ctx=context([region])
     await createPageWorkflowCommands(ctx).processPageStage('ocr')
-    expect(ctx.confirmDialog).toHaveBeenCalledWith(expect.objectContaining({title:'重新检测？',message:expect.stringContaining('手工区域和锁定区域保留')}))
+    expect(ctx.confirmDialog).toHaveBeenCalledWith(expect.objectContaining({title:'重新检测？',message:expect.stringContaining('包括手工创建、调整过和锁定的框')}))
     expect(api.images.process).not.toHaveBeenCalled()
     expect(ctx.flushPendingRegions).not.toHaveBeenCalled()
   })
@@ -39,11 +39,11 @@ describe('whole-page redetection and OCR',()=>{
     expect(api.images.process).toHaveBeenCalledWith(page.id,expect.objectContaining({start_stage:'detection',end_stage:'ocr'}))
   })
 
-  it('preserves old locked frames while migrating the unlocked frames',async()=>{
+  it('requests whole-page replacement when old locked frames exist',async()=>{
     const locked={...region,id:'locked',locked:true,layout_data:{detection:{balloon_grouping_version:2,balloon_assignment:{status:'unavailable'}}}}
     const ctx=context([locked,region])
     vi.mocked(ctx.confirmDialog).mockResolvedValue(true)
-    vi.mocked(ctx.refreshAfterTask).mockResolvedValue({task:{status:'COMPLETED'} as ProcessingTask,regions:[locked]})
+    vi.mocked(ctx.refreshAfterTask).mockResolvedValue({task:{status:'COMPLETED'} as ProcessingTask,regions:[{...region,id:'new'}]})
     await createPageWorkflowCommands(ctx).processPageStage('ocr')
     expect(ctx.confirmDialog).toHaveBeenCalledWith(expect.objectContaining({title:'重新检测？'}))
     expect(api.images.process).toHaveBeenCalledWith(page.id,expect.objectContaining({start_stage:'detection',end_stage:'ocr'}))
@@ -72,4 +72,32 @@ describe('whole-page redetection and OCR',()=>{
     expect(ctx.confirmDialog).not.toHaveBeenCalled()
     expect(api.images.process).toHaveBeenCalledWith(page.id,expect.objectContaining({start_stage:'detection',end_stage:'ocr'}))
   })
+
+  it.each(['translation','inpainting'] as const)('allows %s on an unrecognized manual box without redetection',async stage=>{
+    const ctx=context([{...region,source_text:'',translated_text:'',layout_data:{manual:true}}])
+    ctx.getPage=()=>({...page,status:'UPLOADED'})
+    await createPageWorkflowCommands(ctx).processPageStage(stage)
+    expect(ctx.confirmDialog).not.toHaveBeenCalled()
+    expect(ctx.flushPendingRegions).toHaveBeenCalledOnce()
+    expect(api.images.process).toHaveBeenCalledWith(page.id,expect.objectContaining({
+      start_stage:stage==='translation'?'translation':'mask',end_stage:stage==='translation'?'translation':'rendering',
+    }))
+  })
+
+  it.each(['translation','inpainting'] as const)('does not enqueue %s for an empty page with stale completed status',async stage=>{
+    const ctx=context([])
+    ctx.getPage=()=>({...page,status:'COMPLETED'})
+    await createPageWorkflowCommands(ctx).processPageStage(stage)
+    expect(api.images.process).not.toHaveBeenCalled()
+    expect(ctx.flushPendingRegions).not.toHaveBeenCalled()
+  })
+
+  it('ignores a removed standalone rendering command without enqueuing work',async()=>{
+    const ctx=context([region])
+    await createPageWorkflowCommands(ctx).processPageStage('rendering' as never)
+    expect(api.images.process).not.toHaveBeenCalled()
+    expect(ctx.flushPendingRegions).not.toHaveBeenCalled()
+    expect(ctx.setSchedulingProcess).not.toHaveBeenCalled()
+  })
+
 })

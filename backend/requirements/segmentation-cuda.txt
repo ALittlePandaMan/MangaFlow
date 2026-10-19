@@ -1,0 +1,2 @@
+# CUDA 12.x / cuDNN 9, matching docker/backend.Dockerfile's PyTorch runtime.
+onnxruntime-gpu==1.20.2

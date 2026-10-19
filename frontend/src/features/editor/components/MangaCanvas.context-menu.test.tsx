@@ -1,4 +1,4 @@
-import {act, render, screen, fireEvent} from '@testing-library/react'
+import {act, render, screen, fireEvent, within} from '@testing-library/react'
 import type {ReactNode} from 'react'
 import {afterAll, beforeAll, beforeEach, describe, expect, it, vi} from 'vitest'
 import type {ImagePage, TextRegion} from '../../../types'
@@ -47,11 +47,20 @@ describe('canvas context-menu scopes', () => {
     fireEvent.click(screen.getByRole('menuitem',{name:'重新 OCR'}))
     expect(props.onRegionAction).toHaveBeenCalledWith([region.id],'ocr',{crop_padding:4,orientation:'vertical'})
   })
+  it.each([false,true])('shows only OCR, repair and translation in that order (multi-selection: %s)', multiple => {
+    const other={...region,id:'other',region_key:'R002'}
+    const props={...callbacks(),regions:multiple ? [region,other] : [region]}
+    if (multiple) useEditorStore.getState().selectMany([region.id,other.id])
+    render(<MangaCanvas {...props}/>)
+    rightClick()
+    const menu=screen.getByRole('menu',{name:multiple ? '所选 2 个区域' : 'R001 区域操作'})
+    expect(within(menu).getAllByRole('menuitem').map(item=>item.textContent)).toEqual(['重新 OCR','重新修复','重新翻译'])
+    expect(within(menu).queryByRole('menuitem',{name:'重新排版'})).not.toBeInTheDocument()
+  })
   it.each([
     ['重新 OCR','ocr',{crop_padding:4}],
-    ['重新翻译','translate',{}],
     ['重新修复','inpaint',{}],
-    ['重新排版','render',{}],
+    ['重新翻译','translate',{}],
   ])('keeps %s scoped to every selected region when right-clicking a selected box', (label,action,options) => {
     const other = {...region,id:'other',region_key:'R002',orientation:'horizontal'} as TextRegion
     const props = {...callbacks(),regions:[region,other]}
@@ -91,9 +100,8 @@ describe('canvas context-menu scopes', () => {
   })
   it.each([
     ['重新 OCR','ocr',{crop_padding:4}],
-    ['重新翻译','translate',{}],
     ['重新修复','inpaint',{}],
-    ['重新排版','render',{}],
+    ['重新翻译','translate',{}],
   ])('updates a previously single-region menu after select-all and runs %s for the entire selection', (label,action,options) => {
     const other = {...region,id:'other',region_key:'R002',orientation:'horizontal'} as TextRegion
     const third = {...region,id:'third',region_key:'R003'}

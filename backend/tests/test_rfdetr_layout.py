@@ -368,6 +368,23 @@ def test_provider_accepts_normal_images_and_calls_only_one_layout_model(tmp_path
     detector.unload()
 
 
+@pytest.mark.parametrize('mode,extension', [('RGB', 'jpg'), ('RGB', 'webp'), ('RGBA', 'png')])
+def test_layout_worker_preserves_image_colors_and_composites_transparency_on_white(tmp_path, mode, extension):
+    from app.services.detection.classification_worker import load_layout_image
+
+    path = tmp_path / f'page.{extension}'
+    color = (10, 20, 30, 0) if mode == 'RGBA' else (10, 20, 30)
+    Image.new(mode, (80, 100), color).save(path)
+    original = path.read_bytes()
+    loaded = load_layout_image(str(path))
+    assert loaded.mode == 'RGB' and loaded.size == (80, 100)
+    if mode == 'RGBA':
+        assert loaded.getpixel((0, 0)) == (255, 255, 255)
+    else:
+        assert max(loaded.getpixel((0, 0))) < 50
+    assert path.read_bytes() == original
+
+
 def test_authoritative_detection_errors_are_not_silently_treated_as_empty_pages():
     worker = LayoutTextClassifier({})
     worker._start = Mock(side_effect=RuntimeError("runtime_not_installed"))
@@ -436,10 +453,9 @@ def test_pipeline_persists_independent_texts_and_shared_exact_balloon_without_ru
         db.commit()
         db.refresh(stored)
         assert len(stored.regions) == 2
-        assert locked_id in {region.id for region in stored.regions}
+        assert locked_id not in {region.id for region in stored.regions}
         assert replaced_id not in {region.id for region in stored.regions}
-        locked = next(region for region in stored.regions if region.id == locked_id)
-        assert locked.locked and locked.source_text == "locked source" and locked.translated_text == "locked translation"
+        assert all(not region.locked and region.source_text == region.translated_text == '' for region in stored.regions)
         previous_ids = [region.id for region in stored.regions]
         detector._text_classifier.detect_layout.side_effect = ProviderError("model_failed")
         with pytest.raises(ProviderError):
@@ -492,7 +508,7 @@ def test_slanted_detection_initializes_only_free_text_angle(client, monkeypatch,
         assert region.rotation == (0. if in_balloon else region.layout_data["detection"]["text_angle"])
         assert bool(region.bubble_id) is in_balloon
         assert not region.perspective_warp
-        # A forced detection must not overwrite user-adjusted/locked text.
+        # Explicit redetection rebuilds locked and manually adjusted typography.
         region.rotation, region.locked = 7., True
         db.commit()
         region_id = region.id
@@ -500,5 +516,7 @@ def test_slanted_detection_initializes_only_free_text_angle(client, monkeypatch,
         db.commit()
         db.refresh(stored)
         assert len(stored.regions) == 1
-        assert stored.regions[0].id == region_id and stored.regions[0].rotation == 7.
+        rebuilt = stored.regions[0]
+        assert rebuilt.id != region_id and not rebuilt.locked
+        assert rebuilt.rotation == (0. if in_balloon else rebuilt.layout_data['detection']['text_angle'])
     detector.unload()

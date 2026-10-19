@@ -29,21 +29,28 @@ def test_missing_family_rescans_at_most_once_per_layout_and_glyphs_share_resolut
     assert len(scans) <= 1
 
 
-def test_horizontal_wrap_measures_each_unique_glyph_once_without_changing_line_breaks():
+def test_active_ink_layout_measures_each_unique_glyph_once_without_changing_line_breaks(monkeypatch):
     calls = []
     font = SimpleNamespace(getlength=lambda character: calls.append(character) or 10.0)
     engine = MangaLayoutEngine.__new__(MangaLayoutEngine)
+    monkeypatch.setattr(engine, "_font", lambda path, size: font)
+    monkeypatch.setattr(engine, "_ink_bounds", lambda path, size, character: (0, 0, 10, 10))
     text = "ABCD" * 100
-    lines = engine._wrap(text, font, 50, 1)
-    assert "".join(lines) == text
-    assert lines == ["ABCD"] * 100
+    result = engine._fit_ink(text, 50, 2000, 10, "horizontal", 1.1, 1, "center", lambda _: Path("fake.ttf"))
+    assert "".join(result.lines) == text
+    assert result.lines == ["ABCD"] * 100
+    assert not result.overflow
     assert len(calls) <= 4
 
 
 @pytest.mark.parametrize("spacing", [-2, 0, 0.5, 3])
-def test_linear_wrap_matches_legacy_line_breaks_for_variable_width_unicode_and_paragraphs(spacing):
-    font = SimpleNamespace(getlength=lambda character: 5.5 if character.isascii() else 11.0)
+def test_active_ink_layout_preserves_variable_width_unicode_and_paragraph_breaks(spacing, monkeypatch):
+    def advance(character):
+        return 5.5 if character.isascii() else 11.0
+    font = SimpleNamespace(getlength=advance)
     engine = MangaLayoutEngine.__new__(MangaLayoutEngine)
+    monkeypatch.setattr(engine, "_font", lambda path, size: font)
+    monkeypatch.setattr(engine, "_ink_bounds", lambda path, size, character: (0, 0, advance(character), 10))
     text = "漫画ABC翻译!?\n\n" + "  漫画 ABC!? " * 30
 
     def legacy_wrap(text, width):
@@ -55,7 +62,8 @@ def test_linear_wrap_matches_legacy_line_breaks_for_variable_width_unicode_and_p
             current = ""
             for character in paragraph:
                 candidate = current + character
-                if current and engine._measure(candidate, font, spacing) > width:
+                extent = sum(advance(character) for character in candidate) + (len(candidate)-1)*spacing
+                if current and extent > width:
                     output.append(current)
                     current = character
                 else:
@@ -65,7 +73,8 @@ def test_linear_wrap_matches_legacy_line_breaks_for_variable_width_unicode_and_p
         return output or [""]
 
     for width in [1, 5.5, 17, 44, 180]:
-        assert engine._wrap(text, font, width, spacing) == legacy_wrap(text, width)
+        result = engine._fit_ink(text, width, 10000, 10, "horizontal", 1.1, spacing, "center", lambda _: Path("fake.ttf"))
+        assert result.lines == legacy_wrap(text, width)
 
 
 def test_project_font_catalogue_never_walks_page_assets_and_finds_later_uploads(tmp_path, monkeypatch):

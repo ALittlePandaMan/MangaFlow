@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import math
 
+from app.services.detection.text_roles import is_confirmed_free_text
+
 TEXT_ROTATION_KEY = "text_rotation"
 
 
@@ -26,17 +28,7 @@ def effective_text_rotation(region, *, perspective: bool | None = None) -> float
 
 def free_text_angle(metadata: dict, bubble_id: str | None = None) -> float | None:
     """Missing association is unknown, never sufficient proof of free text."""
-    if bubble_id or not isinstance(metadata, dict) or metadata.get("detector") != "rfdetr":
-        return None
-    role = metadata.get("text_role", {})
-    classification = metadata.get("text_classification", {})
-    assignment = metadata.get("balloon_assignment", {})
-    if (not isinstance(role, dict) or role.get("label") != "free_text"
-            or not isinstance(classification, dict) or classification.get("status") != "classified"
-            or classification.get("label") != "text" or classification.get("excluded") is not False
-            or not isinstance(assignment, dict) or assignment.get("status") != "unassigned"
-            or assignment.get("bubble_id") is not None
-            or assignment.get("method") != "text_mask_containment"):
+    if not is_confirmed_free_text(metadata, bubble_id):
         return None
     value = metadata.get("text_angle")
     if isinstance(value, bool) or not isinstance(value, (int, float)):

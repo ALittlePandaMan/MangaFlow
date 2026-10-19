@@ -71,6 +71,12 @@ def provision_models_from_manifest() -> None:
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    if settings.maintenance_mode:
+        # Migration verification must not provision models, alter schema,
+        # dispatch old queued tasks, reconcile history, or collect assets.
+        logger.warning("Maintenance startup: business API and background workers are disabled")
+        yield
+        return
     from app.services.execution import configure_native_threads
     configure_native_threads()
     initialize_database()
@@ -80,11 +86,13 @@ async def lifespan(_: FastAPI):
     stop_maintenance = asyncio.Event()
     async def maintain_history():
         from app.services.history_assets import collect_idle_history_assets
+        from app.services.workflow_assets import collect_idle_workflow_assets
         while not stop_maintenance.is_set():
             try:
                 await asyncio.wait_for(stop_maintenance.wait(), timeout=600)
             except TimeoutError:
                 await asyncio.to_thread(collect_idle_history_assets)
+                await asyncio.to_thread(collect_idle_workflow_assets)
     maintenance = asyncio.create_task(maintain_history())
     try:
         yield
@@ -112,9 +120,24 @@ app.mount("/media", VersionedMediaFiles(directory=get_storage().root), name="med
 app.include_router(api_router, prefix=settings.api_prefix)
 
 
+@app.middleware("http")
+async def maintenance_gate(request: Request, call_next):
+    if settings.maintenance_mode and request.url.path != "/health":
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "服务正在维护校验，任务与业务操作暂未开放", "maintenance": True},
+            headers={"Retry-After": "60"},
+        )
+    return await call_next(request)
+
+
 @app.get("/health", tags=["system"])
 def health() -> dict[str, str]:
-    return {"status": "ok", "service": settings.app_name, "version": APP_VERSION}
+    return {
+        "status": "maintenance" if settings.maintenance_mode else "ok",
+        "service": settings.app_name,
+        "version": APP_VERSION,
+    }
 
 
 @app.exception_handler(ValueError)

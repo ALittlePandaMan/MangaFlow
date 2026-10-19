@@ -174,7 +174,10 @@ const RECOMMENDATION_GUIDES: Record<RecommendationKind, CandidateGuide[]> = {
     {provider:'opencv', title:'OpenCV 快速修复', summary:'使用 Telea/Navier-Stokes 在遮罩周围插值。', pros:['无需模型且速度快', '低内存 CPU 友好'], cons:['复杂背景容易出现色块或模糊', '大面积文字恢复能力有限'], requirements:['OpenCV', '任意现代 CPU']},
   ],
   ocr: [
+    {provider:'paddleocr-vl-1.6', title:'PaddleOCR-VL 1.6', summary:'Koharu 默认的本地视觉语言识字模型，只读取现有文本框。', pros:['支持多语言与复杂版面裁剪', '与检测、翻译配置独立'], cons:['首次需下载约 2 GB 权重', '长文推理可能慢于轻量 OCR，需实测'], requirements:['独立 Transformers 5 运行环境', '建议 GPU；不上传图片']},
     {provider:'manga-ocr', title:'MangaOCR 漫画识别', summary:'专门针对日文漫画训练的 Transformer OCR。', pros:['日文漫画和竖排文本准确率高', '对漫画字体与标点更稳'], cons:['只负责识别，不负责检测', '首次需下载模型且 CPU 较慢'], requirements:['PyTorch / Transformers', '建议 8 GB+ 内存；GPU 建议 2 GB+ 显存']},
+    {provider:'baberu-ocr', title:'Baberu OCR', summary:'Koharu 同款的日中英漫画气泡识字模型。', pros:['本地运行', '支持日文、中文、英文'], cons:['首次需要下载权重', '手写与小字效果需要实测'], requirements:['独立 Transformers 5 运行环境']},
+    {provider:'hayai-ocr', title:'Hayai OCR', summary:'Koharu 同款 Hayai OCR，按裁剪区域识别日中韩英。', pros:['保留裁剪区域的宽高比例', '本地运行'], cons:['不用于整页检测', '小字与艺术字效果需要实测'], requirements:['独立 Transformers 5 运行环境']},
     {provider:'paddleocr', title:'PaddleOCR 文字识别', summary:'通用日文 OCR，使用独立的 Paddle 识字运行时。', pros:['通用印刷体表现稳定', '支持批量与 GPU'], cons:['漫画艺术字通常弱于 MangaOCR', 'Paddle 依赖体积较大'], requirements:['PaddleOCR / PaddlePaddle', 'GPU 建议 2 GB+ 显存']},
     {provider:'tesseract', title:'Tesseract OCR', summary:'传统 CPU OCR，适合清晰规则的印刷文字。', pros:['轻量且完全离线', '无需 GPU'], cons:['漫画竖排与艺术字准确率较低', '日文语言包必须存在'], requirements:['Tesseract 与 jpn 语言包', '任意现代 CPU']},
     {provider:'review-fallback', title:'人工审核占位', summary:'不执行真实 OCR，只创建待人工填写的区域。', pros:['无依赖且不会伪造结果'], cons:['无法自动识别文本', '所有区域都需要手工录入'], requirements:['无需模型', '适合诊断或临时占位']},
@@ -239,7 +242,7 @@ export function RecommendedConfigurationWizard({available, configured, fonts, on
       const nextProviders: Record<RecommendationKind, string> = {
         detection: pick('detection', 'rfdetr', 'opencv-fallback'),
         inpainting: pick('inpainting', 'lama', 'opencv'),
-        ocr: pick('ocr', 'manga-ocr', 'tesseract'),
+        ocr: pick('ocr', 'paddleocr-vl-1.6', 'manga-ocr'),
         rendering: 'pillow',
         translation: 'openai-compatible',
         font: 'builtin',
@@ -247,14 +250,14 @@ export function RecommendedConfigurationWizard({available, configured, fonts, on
       setProviders(nextProviders)
       setDevices(current => ({
         ...current,
-        detection: result.recommendation.provider_devices.detection || 'cpu',
-        inpainting: nextProviders.inpainting === 'opencv' ? 'cpu' : result.recommendation.provider_devices.inpainting || 'cpu',
-        ocr: nextProviders.ocr === 'tesseract' ? 'cpu' : result.recommendation.provider_devices.ocr || 'cpu',
+        detection: nextProviders.detection === 'opencv-fallback' ? 'cpu' : 'auto',
+        inpainting: nextProviders.inpainting === 'opencv' ? 'cpu' : 'auto',
+        ocr: nextProviders.ocr === 'tesseract' ? 'cpu' : 'auto',
       }))
       setDeviceReasons({
         detection: nextProviders.detection === 'rfdetr' ? '使用统一的漫画版面检测与气泡分割模型。' : '当前资源更适合轻量 OpenCV 检测。',
         inpainting: nextProviders.inpainting === 'lama' ? '设备资源足以运行复杂背景修复。' : '内存或运行时受限，优先保证处理速度。',
-        ocr: nextProviders.ocr === 'manga-ocr' ? '设备资源适合漫画专用 OCR。' : '当前资源更适合轻量 CPU OCR。',
+        ocr: nextProviders.ocr === 'paddleocr-vl-1.6' ? '使用 Koharu 默认的本地视觉语言识字模型。' : '保留可用的本地 OCR 配置。',
         rendering: 'Pillow 使用 CPU 即可稳定完成排版。',
         translation: '云端翻译不占用本机 GPU，选择通用兼容接口。',
         font: '内置字体无需下载并覆盖中日韩字符。',
@@ -322,7 +325,9 @@ export function RecommendedConfigurationWizard({available, configured, fonts, on
     const selections = RECOMMENDATION_STAGES.map(stage => ({
       kind: stage.kind,
       provider: providers[stage.kind],
-      device: ['detection', 'inpainting', 'ocr'].includes(stage.kind) ? devices[stage.kind] : undefined,
+      device: ['detection', 'inpainting', 'ocr'].includes(stage.kind)
+        ? concreteDevice(devices[stage.kind], available.find(item => item.kind === stage.kind && item.name === providers[stage.kind]))
+        : undefined,
       config: stage.kind === 'translation' && providers.translation === 'openai-compatible' ? {
         ...PROVIDER_PRESETS['translation:openai-compatible'].config,
         api_protocol: translationProtocol,
@@ -399,7 +404,8 @@ function initialRecommendationDevices(available: ModelDescriptor[], configured: 
   const output: Record<string, string> = {}
   for (const kind of ['detection', 'inpainting', 'ocr']) {
     const current = configurationForStage(configured, kind)
-    const descriptor = available.find(item => item.kind === kind && item.name === current?.provider)
+    const provider = current?.provider || preferredProvider(kind, available.filter(item => item.kind === kind))
+    const descriptor = available.find(item => item.kind === kind && item.name === provider)
     output[kind] = concreteDevice(current?.config.device, descriptor)
   }
   return output
@@ -465,6 +471,7 @@ function ModelForm({available, configured, translation, fixedKind, initial, onCa
   const selected = choices.find(item => item.name === provider)
   const cloudOcr = kind === 'ocr' && provider === 'cloud-multimodal'
   const genericOcr = kind === 'ocr' && provider === 'cloud-ocr'
+  const koharuOcr = kind === 'ocr' && ['paddleocr-vl-1.6', 'baberu-ocr', 'hayai-ocr'].includes(provider)
   const cloud = cloudOcr || genericOcr || (kind === 'translation' && provider !== 'passthrough')
   const canReuseTranslation = Boolean(translation?.has_api_key && translation.config.base_url && translation.config.model)
   const [reuseTranslation, setReuseTranslation] = useState(false)
@@ -548,10 +555,10 @@ function ModelForm({available, configured, translation, fixedKind, initial, onCa
       config.text_box_padding=Object.fromEntries(TEXT_BOX_PADDING_SIDES.map(([side]) =>
         [side,Number(data.get(`text_box_padding_${side}`) ?? paddingValue(defaults,side))]))
     }
-    for (const key of ['api_protocol','base_url','model','device','batch_size','timeout','retries','temperature','max_tokens','min_font_size','prompt','request_format','image_field','image_encoding','auth_mode','api_key_header','response_text_path','concurrency_mode','max_concurrency','requests_per_minute']) {
+    for (const key of ['api_protocol','base_url','model','device','batch_size','timeout','retries','temperature','max_tokens','max_new_tokens','min_font_size','prompt','request_format','image_field','image_encoding','auth_mode','api_key_header','response_text_path','concurrency_mode','max_concurrency','requests_per_minute']) {
       if (!data.has(key)) continue
       const value = data.get(key)
-      if (typeof value === 'string' && value.trim()) config[key] = ['batch_size','timeout','retries','temperature','max_tokens','min_font_size','max_concurrency','requests_per_minute'].includes(key) ? Number(value) : value.trim()
+      if (typeof value === 'string' && value.trim()) config[key] = ['batch_size','timeout','retries','temperature','max_tokens','max_new_tokens','min_font_size','max_concurrency','requests_per_minute'].includes(key) ? Number(value) : value.trim()
       else delete config[key]
     }
     if (genericOcr) {
@@ -588,6 +595,7 @@ function ModelForm({available, configured, translation, fixedKind, initial, onCa
     {kind !== 'translation' && <div className="col-span-full grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 rounded-lg bg-surface p-3"><strong className="text-[11px] text-ink">{providerLabel(kind, provider)}</strong><span className="text-[10px] text-muted">{selected?.description}</span><i className="text-[9px] not-italic text-accent">{selected?.devices.join(' / ')}</i></div>}
     {kind !== 'translation' && kind !== 'rendering' && !cloud && <div className={fieldClass} key={`${kind}-${provider}-device`}><span>运行设备</span><SelectControl name="device" ariaLabel="运行设备" value={device} options={deviceOptions(selected)} onChange={setDevice}/></div>}
     {selected?.supports_batch && kind !== 'translation' && <label className={fieldClass} key={`${kind}-${provider}-batch`}>Batch Size<NumberControl ariaLabel="Batch Size" name="batch_size" min={1} step={1} defaultValue={String(defaults.batch_size ?? '')} placeholder="4"/></label>}
+    {koharuOcr && <fieldset key={provider} className="col-span-full grid grid-cols-2 gap-3 rounded-lg border border-line p-3"><legend className="px-1 text-[11px]">本地漫画 OCR</legend><label className={fieldClass}>最大输出 Token 数<NumberControl ariaLabel="本地 OCR 最大输出 Token 数" name="max_new_tokens" min={16} max={1024} step={16} defaultValue={String(defaults.max_new_tokens ?? (provider === 'paddleocr-vl-1.6' ? 512 : 256))}/></label><label className={fieldClass}>单区域超时（秒）<NumberControl ariaLabel="本地 OCR 超时" name="timeout" min={10} max={600} step={10} defaultValue={String(defaults.timeout ?? 180)}/></label><p className="col-span-full m-0 text-[10px] leading-relaxed text-muted">模型版本与 Koharu 对齐，首次使用下载权重；之后复用本地常驻模型。只识别原文，不重新检测或更改文本框、修复 Mask。图片不会发送给云端；输出达到上限时标记待检查。</p></fieldset>}
     {kind === 'detection' && provider === 'rfdetr' && <fieldset className="col-span-full grid grid-cols-2 gap-3 rounded-lg border border-line p-3"><legend className="px-1 text-[11px]">统一版面检测</legend>{([['text_threshold','文字检测置信度',0.25],['bubble_threshold','气泡检测置信度',0.5],['panel_threshold','分镜检测置信度',0.5],['containment_threshold','文字气泡包含率',0.9]] as const).map(([name,label,fallback]) => <label key={name} className={fieldClass}>{label}<NumberControl name={name} ariaLabel={label} min={name==='containment_threshold'?0.5:0.2} max={1} step={0.05} defaultValue={String(defaults[name] ?? fallback)}/></label>)}<fieldset className="col-span-full grid grid-cols-2 gap-3"><legend className="mb-2 text-[11px] text-secondary">文本框扩边（px）</legend>{TEXT_BOX_PADDING_SIDES.map(([side,label]) => <label key={side} className={fieldClass}>{label}<NumberControl name={`text_box_padding_${side}`} ariaLabel={`文本框${label}扩边像素`} min={0} max={50} step={1} defaultValue={paddingValue(defaults,side)}/></label>)}<small className="col-span-full block text-[10px] leading-relaxed text-muted">按原图像素分别向上、下、左、右扩展，0 表示该边不扩展；保存后用于新检测的文本框。修复 Mask 仍按字形生成，不额外膨胀。</small></fieldset><p className="col-span-full m-0 text-[10px] leading-relaxed text-muted">仅正文进入识别和翻译，拟声词保留在原图中。默认至少 90% 的框内文字像素在气泡内才建立关联；同一气泡内的文字框保持独立。</p></fieldset>}
     {genericOcr && <GenericOCRFields key={`${kind}-${provider}`} defaults={defaults} baseUrl={baseUrl} onBaseUrlChange={setBaseUrl} savedKeyUsable={savedKeyUsable}/>}
     {cloud && !genericOcr && <div className="col-span-full grid grid-cols-2 max-sm:grid-cols-1 gap-3" key={`${kind}-${provider}`}>
@@ -649,18 +657,21 @@ Requirements:
 6. Return only one valid JSON object whose keys exactly match all supplied Region IDs and whose values are translated strings. Do not use Markdown, code fences, comments, or any text outside the JSON object.`
 
 const PROVIDER_PRESETS: Record<string, {label: string, title: string, config: Record<string, unknown>}> = {
-  'detection:rfdetr': {label:'RF-DETR 漫画版面检测', title:'推荐漫画版面检测（RF-DETR）', config:{device:'cuda:0',text_threshold:0.25,bubble_threshold:0.5,panel_threshold:0.5,containment_threshold:0.9,text_box_padding:{top:3,bottom:3,left:3,right:3}}},
+  'ocr:paddleocr-vl-1.6': {label:'PaddleOCR-VL 1.6', title:'PaddleOCR-VL 1.6（Koharu 默认）', config:{device:'auto',max_new_tokens:512,timeout:180}},
+  'ocr:baberu-ocr': {label:'Baberu OCR', title:'Baberu OCR', config:{device:'auto',max_new_tokens:256,timeout:180}},
+  'ocr:hayai-ocr': {label:'Hayai OCR', title:'Hayai OCR', config:{device:'auto',max_new_tokens:256,timeout:180}},
+  'detection:rfdetr': {label:'RF-DETR 漫画版面检测', title:'推荐漫画版面检测（RF-DETR）', config:{device:'auto',text_threshold:0.25,bubble_threshold:0.5,panel_threshold:0.5,containment_threshold:0.9,text_box_padding:{top:3,bottom:3,left:3,right:3}}},
   'detection:opencv-fallback': {label: 'OpenCV 文本检测', title: '本地 OpenCV 文本检测', config: {device: 'cpu'}},
-  'ocr:manga-ocr': {label: 'MangaOCR 漫画识别', title: '推荐漫画识别（MangaOCR）', config: {device: 'cuda:0', model: 'kha-white/manga-ocr-base'}},
+  'ocr:manga-ocr': {label: 'MangaOCR 漫画识别', title: '推荐漫画识别（MangaOCR）', config: {device: 'auto', model: 'kha-white/manga-ocr-base'}},
   'ocr:cloud-multimodal': {label: '多模态大模型识字', title: '多模态大模型识字', config: {api_protocol: 'auto', timeout: 90, retries: 2, max_tokens: 2048, prompt: DEFAULT_OCR_PROMPT}},
   'ocr:cloud-ocr': {label: '云端 OCR（通用接口）', title: '云端 OCR（通用接口）', config: {request_format: 'json', image_field: 'image', image_encoding: 'base64', auth_mode: 'bearer', api_key_header: 'X-API-Key', response_text_path: 'text', extra_fields: {}, timeout: 90, retries: 2}},
-  'ocr:paddleocr': {label: 'PaddleOCR 文字识别', title: 'PaddleOCR 文字识别', config: {device: 'cuda:0', language: 'japan'}},
+  'ocr:paddleocr': {label: 'PaddleOCR 文字识别', title: 'PaddleOCR 文字识别', config: {device: 'auto', language: 'japan'}},
   'ocr:tesseract': {label: 'Tesseract OCR', title: 'Tesseract OCR', config: {device: 'cpu'}},
   'ocr:review-fallback': {label: '人工审核占位', title: '人工审核占位 OCR', config: {}},
   'translation:openai-compatible': {label: '自定义云端翻译', title: '自定义云端翻译', config: {api_protocol: 'auto', timeout: 90, retries: 2, temperature: 0.2, prompt: DEFAULT_TRANSLATION_PROMPT}},
   'translation:passthrough': {label: '不翻译（原文直通）', title: '安全翻译占位', config: {review_required: true}},
-  'inpainting:lama': {label: 'LaMa 复杂背景修复', title: '推荐复杂修复（LaMa）', config: {device: 'cuda:0'}},
-  'inpainting:hybrid': {label: 'LaMa 兼容修复', title: 'LaMa 兼容修复', config: {device: 'cuda:0'}},
+  'inpainting:lama': {label: 'LaMa 复杂背景修复', title: '推荐复杂修复（LaMa）', config: {device: 'auto'}},
+  'inpainting:hybrid': {label: 'LaMa 兼容修复', title: 'LaMa 兼容修复', config: {device: 'auto'}},
   'inpainting:opencv': {label: 'OpenCV 快速修复', title: '默认图像修复（OpenCV）', config: {device: 'cpu'}},
   'rendering:pillow': {label: 'Pillow 排版渲染', title: '默认排版渲染（Pillow）', config: {min_font_size: 10}},
 }
@@ -683,6 +694,7 @@ function configurationDeviceTag(item: ModelConfiguration, available: ModelDescri
   const descriptor = available.find(entry => entry.kind === item.kind && entry.name === item.provider)
   if (descriptor?.devices.includes('remote')) return '云端 API'
   const value = String(item.config.device || '').toLowerCase()
+  if (descriptor?.devices.includes('cuda') && (!value || value === 'auto' || value === 'recommended')) return '自动 GPU / CPU'
   if (value === 'cpu' || (!descriptor?.devices.includes('cuda') && descriptor?.devices.includes('cpu'))) return 'CPU'
   if (value.startsWith('cuda') || value.startsWith('gpu') || descriptor?.devices.includes('cuda')) return 'GPU'
   return ''
@@ -691,14 +703,14 @@ function concreteDevice(value: unknown, selected?: ModelDescriptor): string {
   const configured = String(value || '').trim().toLowerCase()
   if (configured === 'cpu' || !selected?.devices.includes('cuda')) return 'cpu'
   if (configured.startsWith('cuda') || configured.startsWith('gpu')) return 'cuda:0'
-  return 'cuda:0'
+  return 'auto'
 }
 function sameApiOrigin(left: string, right: string): boolean {
   try { return new URL(left).origin === new URL(right).origin } catch { return false }
 }
 function deviceOptions(selected?: ModelDescriptor) {
   return selected?.devices.includes('cuda')
-    ? [{value:'cuda:0', label:'GPU（CUDA 0）'}, {value:'cpu', label:'CPU'}]
+    ? [{value:'auto', label:'自动（GPU 优先）'}, {value:'cuda:0', label:'GPU（CUDA 0）'}, {value:'cpu', label:'CPU'}]
     : [{value:'cpu', label:'CPU'}]
 }
 function providerPreset(kind: string, provider: string) { return PROVIDER_PRESETS[`${kind}:${provider}`] || {label: provider, title: provider, config: {}} }
@@ -708,6 +720,6 @@ function translationPrompt(value: unknown): string {
   return !prompt || prompt === LEGACY_TRANSLATION_PROMPT ? DEFAULT_TRANSLATION_PROMPT : prompt
 }
 function preferredProvider(kind: string, choices: ModelDescriptor[]): string {
-  const preferred: Record<string, string> = {detection: 'rfdetr', ocr: 'manga-ocr', translation: 'openai-compatible', inpainting: 'lama', rendering: 'pillow'}
+  const preferred: Record<string, string> = {detection: 'rfdetr', ocr: 'paddleocr-vl-1.6', translation: 'openai-compatible', inpainting: 'lama', rendering: 'pillow'}
   return choices.some(item => item.name === preferred[kind]) ? preferred[kind] : choices[0]?.name || ''
 }

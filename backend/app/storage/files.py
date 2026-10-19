@@ -31,6 +31,10 @@ class StorageManager:
             (path / child).mkdir(parents=True, exist_ok=True)
         return path
 
+    def asset_page_dir(self, project_id: str, page_id: str) -> Path:
+        """Published asset boundary; staged workers override only output paths."""
+        return self.page_dir(project_id, page_id)
+
     def save_upload(self, project_id: str, page_id: str, filename: str, stream: BinaryIO) -> tuple[str, int, int]:
         safe_name = SAFE_FILENAME.sub("_", Path(filename).name).strip("._") or "page.png"
         extension = Path(safe_name).suffix.lower()

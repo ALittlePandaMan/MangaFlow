@@ -1,12 +1,31 @@
 import hashlib
 import shutil
 from pathlib import Path
+from uuid import uuid4
 
 import cv2
 import numpy as np
 import pytest
 from app.services.detection.artifacts import load_balloon_mask, persist_balloon_mask
 from app.storage.files import StorageManager
+
+
+def test_checkpoint_balloon_artifact_is_accepted_only_within_its_page_and_checksum(tmp_path):
+    storage = StorageManager(tmp_path/"data")
+    page = storage.page_dir("project","page")
+    output = page/"workflows"/str(uuid4())/str(uuid4())
+    entry = persist_balloon_mask(storage,output,instance_id="bubble",mask=np.ones((10,12),np.uint8),
+        origin=(2,3),image_shape=(40,50),confidence=.99,parent_instance_id=None)
+    loaded = load_balloon_mask(storage,page,entry,image_shape=(40,50))
+    assert loaded.shape==(40,50) and cv2.countNonZero(loaded)==120
+    with pytest.raises(ValueError,match="does not belong"):
+        load_balloon_mask(storage,storage.page_dir("project","another-page"),entry,image_shape=(40,50))
+    with pytest.raises(ValueError,match="does not belong"):
+        load_balloon_mask(storage,page,{**entry,"sha256":None},image_shape=(40,50))
+    path = storage.absolute(entry["path"])
+    path.write_bytes(b"changed after checkpoint")
+    with pytest.raises(ValueError,match="checksum"):
+        load_balloon_mask(storage,page,entry,image_shape=(40,50))
 
 
 def test_balloon_mask_png_round_trip_is_pixel_exact(tmp_path: Path) -> None:

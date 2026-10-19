@@ -53,7 +53,7 @@ def test_user_sized_export_preserves_overflow_pixels(tmp_path,orientation,perspe
     region.orientation,region.perspective_warp,region.rotation = orientation,perspective,rotation
     bg,out,layer = [tmp_path/name for name in ("bg.png","out.png","text.png")]
     Image.new("RGB",(320,300),"white").save(bg)
-    result = PillowRenderer().render(bg,[region],out,layer,shape_masks={region.id:np.zeros((300,320),np.uint8)})
+    result = PillowRenderer().render(bg,[region],out,layer)
     saved = result["layouts"][region.id]
     assert saved["font_size"] == 80 and saved["auto_font_size"] is False
     assert not saved["shape_layout_applied"] and not saved["render_skipped"]

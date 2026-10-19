@@ -4,7 +4,17 @@ from __future__ import annotations
 import logging
 import time
 
-from app.models import EditorHistoryEntry, ImagePage, Project, RegionRevision, TextRegion
+from app.core.config import get_settings
+from app.models import (
+    EditorHistoryEntry,
+    ImagePage,
+    ProcessingTask,
+    Project,
+    RegionRevision,
+    StageCheckpoint,
+    TaskWorkflow,
+    TextRegion,
+)
 from app.services.editor_history import PAGE_FIELDS, ensure_project_idle
 from app.services.regions import region_snapshot
 from app.storage import get_storage
@@ -44,6 +54,17 @@ def collect_project_history_assets(db: Session, project_id: str, *, grace_second
     # Region revisions are independently restorable, so retain their assets too.
     for snapshot in db.scalars(select(RegionRevision.snapshot).join(TextRegion).join(ImagePage).where(ImagePage.project_id == project_id)):
         mark(snapshot)
+    # Failed/paused workflows may resume from old archived masks even after
+    # editor history was trimmed. Their durable input/result references count
+    # as live until the checkpoint retention policy explicitly releases them.
+    for state in db.scalars(select(TaskWorkflow.input_state).join(ProcessingTask).where(
+        ProcessingTask.project_id == project_id, TaskWorkflow.status != "PUBLISHED",
+    )):
+        mark(state)
+    for result in db.scalars(select(StageCheckpoint.result).join(TaskWorkflow).join(ProcessingTask).where(
+        ProcessingTask.project_id == project_id, TaskWorkflow.status != "PUBLISHED", StageCheckpoint.status == "SUCCEEDED",
+    )):
+        mark(result)
     project = db.get(Project, project_id)
     if project:
         mark(project.settings)
@@ -72,6 +93,8 @@ def collect_project_history_assets(db: Session, project_id: str, *, grace_second
 
 
 def collect_idle_history_assets() -> None:
+    if get_settings().maintenance_mode:
+        return
     from app.core.database import SessionLocal
     with SessionLocal() as db:
         projects = list(db.scalars(select(Project.id)))

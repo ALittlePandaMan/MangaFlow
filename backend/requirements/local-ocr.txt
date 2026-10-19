@@ -1,0 +1,4 @@
+# Separate environment: MangaOCR must retain Transformers 4.
+transformers==5.5.3
+safetensors==0.7.0
+sentencepiece==0.2.1

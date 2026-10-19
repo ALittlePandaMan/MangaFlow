@@ -9,11 +9,14 @@ from __future__ import annotations
 import time
 from collections.abc import Callable, Iterator
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from contextvars import copy_context
 from dataclasses import dataclass
 from pathlib import Path
 
 from app.services.base import OCRResult, ProviderError
-from app.services.cloud_budget import request_budget
+from app.services.cloud_budget import can_retry_request, request_budget
+from app.services.cloud_results import current_cloud_results
+from app.services.workflow_state import fingerprint
 
 
 @dataclass(frozen=True)
@@ -31,12 +34,19 @@ def recognize_regions(provider, source: Path, jobs: list[OCRJob], padding: int, 
     queued = [(job, 0, 0.0) for job in jobs]
     futures: dict[Future, tuple[OCRJob, int]] = {}
     last_report = 0.0
+    cache = current_cloud_results.get()
+    keys = {job.region_id:fingerprint({"format":1,"kind":"ocr","config":provider.config,
+        "region_id":job.region_id,"bbox":job.bbox,"orientation":job.orientation,"padding":padding}) for job in jobs} if cache else {}
 
     def perform(job: OCRJob) -> OCRResult:
         started = time.monotonic()
         error = None
         try:
-            return provider.recognize_once(source, list(job.bbox), job.orientation, padding)
+            result = provider.recognize_once(source, list(job.bbox), job.orientation, padding)
+            if cache:
+                cache.put(keys[job.region_id],{"text":result.text,"confidence":result.confidence,
+                    "orientation":result.orientation,"metadata":result.metadata})
+            return result
         except ProviderError as exc:
             error = exc
             raise
@@ -57,7 +67,7 @@ def recognize_regions(provider, source: Path, jobs: list[OCRJob], padding: int, 
                     try:
                         result = future.result()
                     except ProviderError as error:
-                        if not error.retryable or attempt >= retries:
+                        if not can_retry_request(error) or attempt >= retries:
                             raise
                         queued.append((job, attempt + 1, now + min(2 ** attempt, 8)))
                     else:
@@ -65,11 +75,22 @@ def recognize_regions(provider, source: Path, jobs: list[OCRJob], padding: int, 
                         yield job.region_id, result
                 while queued and len(futures) < maximum:
                     ready = next((i for i, (_, _, at) in enumerate(queued) if at <= time.monotonic()), None)
-                    if ready is None or not budget.try_acquire():
+                    if ready is None:
+                        break
+                    job = queued[ready][0]
+                    saved = cache.get(keys[job.region_id]) if cache else None
+                    if saved is not None:
+                        queued.pop(ready)
+                        check()
+                        yield job.region_id, OCRResult(**saved)
+                        continue
+                    if not budget.try_acquire():
                         break
                     job, attempt, _ = queued.pop(ready)
                     try:
-                        futures[executor.submit(perform, job)] = (job, attempt)
+                        # Carry timing and checkpoint/retry policy into the
+                        # worker without sharing a database session or ORM row.
+                        futures[executor.submit(copy_context().run, perform, job)] = (job, attempt)
                     except BaseException:
                         budget.finish(0, ProviderError("任务已停止"), learn=False)
                         raise

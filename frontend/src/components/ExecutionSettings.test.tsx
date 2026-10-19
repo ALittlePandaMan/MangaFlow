@@ -39,11 +39,25 @@ describe('execution policy settings',() => {
     await waitFor(() => expect(save).toHaveBeenCalledWith({...state.policy,max_pages:3}))
     expect(await screen.findByText(/设置已生效/)).toBeInTheDocument()
   })
+  it('shows actual backends and safe fallback reasons without starting another request',async () => {
+    const get = vi.spyOn(api.execution,'get').mockResolvedValue({...state,inference:[
+      {kind:'segmentation',name:'comic-text-detector',backend:'opencv',device:'cpu',state:'ready',fallback_reason:'cuda_memory_reserve'},
+      {kind:'ocr',name:'manga-ocr',backend:'torch',device:'cuda:0',state:'ready',fallback_reason:null},
+      {kind:'detection',name:'rfdetr',backend:'torch-worker',device:null,state:'unloaded',fallback_reason:null},
+    ]})
+    render(<ExecutionSettings onCancel={() => {}}/>)
+    expect(await screen.findByText(/comic-text-detector · opencv · cpu · 回退原因：显存余量不足/)).toBeInTheDocument()
+    expect(screen.getByText('manga-ocr · torch · cuda:0')).toBeInTheDocument()
+    expect(screen.getByText('rfdetr · torch-worker · 未加载')).toBeInTheDocument()
+    expect(get).toHaveBeenCalledTimes(1)
+  })
   it('disables parallel controls in serial mode',async () => {
     vi.spyOn(api.execution,'get').mockResolvedValue({...state,policy:{...state.policy,mode:'serial'}})
     render(<ExecutionSettings onCancel={() => {}}/>)
     expect(await screen.findByLabelText('页面并发上限')).toBeDisabled()
     expect(screen.getByLabelText('CPU 计算线程上限')).toBeDisabled()
+    expect(screen.getByLabelText('GPU 并行上限')).toBeDisabled()
     expect(screen.getByLabelText('保留可用内存（MB）')).toBeEnabled()
+    expect(screen.getByLabelText('显存预留（MB）')).toHaveValue(2048)
   })
 })

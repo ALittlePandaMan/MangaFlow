@@ -10,8 +10,8 @@ export type ShortcutId =
   | 'zoom.out' | 'zoom.reset' | 'zoom.in'
   | 'region.delete' | 'region.cancelSelection' | 'region.merge'
   | 'region.nudgeLeft' | 'region.nudgeRight' | 'region.nudgeUp' | 'region.nudgeDown'
-  | 'region.ocr' | 'region.translate' | 'region.inpaint' | 'region.render'
-  | 'page.workflowOcr' | 'page.workflowTranslate' | 'page.workflowInpaint' | 'page.workflowRender'
+  | 'region.ocr' | 'region.translate' | 'region.inpaint'
+  | 'page.workflowOcr' | 'page.workflowTranslate' | 'page.workflowInpaint'
   | 'page.previous' | 'page.next'
   | 'page.import' | 'page.context' | 'page.export' | 'page.batchOcr' | 'page.reset'
 
@@ -61,14 +61,12 @@ export const SHORTCUT_DEFINITIONS: ShortcutDefinition[] = [
   {id:'region.ocr', group:'regions', label:'所选区域重新 OCR', description:'只重新识别当前所选区域', defaultBinding:'Alt+Digit1'},
   {id:'region.translate', group:'regions', label:'所选区域重新翻译', description:'只重新翻译当前所选区域', defaultBinding:'Alt+Digit2'},
   {id:'region.inpaint', group:'regions', label:'所选区域重新修复', description:'只重新修复当前所选区域', defaultBinding:'Alt+Digit3'},
-  {id:'region.render', group:'regions', label:'所选区域重新排版', description:'只重新排版当前所选区域', defaultBinding:'Alt+Digit4'},
 
   {id:'page.previous', group:'page', label:'上一张图片', description:'切换到页面列表中的上一张图片', defaultBinding:'KeyA'},
   {id:'page.next', group:'page', label:'下一张图片', description:'切换到页面列表中的下一张图片', defaultBinding:'KeyD'},
   {id:'page.workflowOcr', group:'page', label:'当前页重新检测', description:'按当前设置重新检测文字区域，再执行 OCR', defaultBinding:'Mod+Shift+Digit1'},
   {id:'page.workflowTranslate', group:'page', label:'当前页重新翻译', description:'执行当前页处理流程的翻译阶段', defaultBinding:'Mod+Shift+Digit2'},
   {id:'page.workflowInpaint', group:'page', label:'当前页重新修复', description:'执行当前页处理流程的修复阶段', defaultBinding:'Mod+Shift+Digit3'},
-  {id:'page.workflowRender', group:'page', label:'当前页重新排版', description:'执行当前页处理流程的排版阶段', defaultBinding:'Mod+Shift+Digit4'},
   {id:'page.import', group:'page', label:'导入图片', description:'打开漫画图片选择窗口', defaultBinding:'Mod+KeyO'},
   {id:'page.context', group:'page', label:'翻译上下文', description:'打开当前项目的翻译上下文', defaultBinding:'Mod+Shift+KeyC'},
   {id:'page.export', group:'page', label:'导出', description:'打开项目导出菜单', defaultBinding:'Mod+Shift+KeyE'},

@@ -17,8 +17,12 @@ docs
 frontend/node_modules
 frontend/dist
 frontend/*.tsbuildinfo
+build
+dist
+**/*.egg-info
 data
 models
+tmp
 *.db
 *.sqlite*
 *.log

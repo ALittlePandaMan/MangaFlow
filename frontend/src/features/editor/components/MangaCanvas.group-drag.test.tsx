@@ -46,4 +46,33 @@ describe('multi-region drag gestures',()=>{
     expect({x,y}).toEqual({x:0,y:0})
     expect(useEditorStore.getState().selectedIds).toEqual(['R001','R002','R003'])
   })
+
+  it.each([false,true])('moves the one unlocked box in a mixed selection without moving locked boxes (%s)',translated=>{
+    useEditorStore.setState({view:translated?'translated':'original',selectedIds:['R003','R001']})
+    const regions=[region('R001',20,20),region('R003',0,0,true)]
+    const before=structuredClone(regions)
+    const onUpdateMany=vi.fn(async (_changes:Array<{id:string,patch:Partial<TextRegion>}>)=>undefined)
+    const {container}=render(<MangaCanvas page={page} regions={regions} onCreate={vi.fn(async()=>true)} onUpdate={vi.fn(async()=>undefined)} onUpdateMany={onUpdateMany} onRegionAction={vi.fn()} runningAction={null} interactionKey="mixed"/>)
+    const group=container.querySelector('[data-name="selected-region-group"]')
+    expect(group).not.toBeNull()
+    expect(group!.querySelector('[data-name="region-R001"]')).not.toBeNull()
+    expect(group!.querySelector('[data-name="region-R003"]')).toBeNull()
+    let x=0,y=0
+    const target={x:()=>x,y:()=>y,position:(point:{x:number,y:number})=>{x=point.x;y=point.y}}
+    const event={target,currentTarget:target,cancelBubble:false}
+    act(()=>drag.start(event))
+    x=20;y=10;act(()=>drag.move(event))
+    expect(onUpdateMany).not.toHaveBeenCalled()
+    act(()=>drag.end(event))
+    expect(onUpdateMany).toHaveBeenCalledExactlyOnceWith([{id:'R001',patch:translated
+      ? {translated_bbox:[50,40,30,50],translated_polygon:[[50,40],[80,40],[80,90],[50,90]]}
+      : {bbox:[40,30,40,60],polygon:[[40,30],[80,30],[80,90],[40,90]]}}])
+    expect(regions).toEqual(before)
+    expect(useEditorStore.getState().selectedIds).toEqual(['R003','R001'])
+  })
+
+  it('does not create a movable group for an entirely locked selection',()=>{
+    const {container}=render(<MangaCanvas page={page} regions={[region('R001',20,20,true),region('R003',0,0,true)]} onCreate={vi.fn(async()=>true)} onUpdate={vi.fn(async()=>undefined)} onRegionAction={vi.fn()} runningAction={null} interactionKey="locked"/>)
+    expect(container.querySelector('[data-name="selected-region-group"]')).toBeNull()
+  })
 })

@@ -14,9 +14,10 @@ from app.pipeline.processor import PipelineProcessor
 from app.services.detection.covered_text import _frames_cover, covered_text_parents
 from app.services.detection.layout import RFDetrTextDetector, build_layout_regions
 from app.services.detection.layout_protocol import decode_predictions
-from app.services.detection.nested_text import _coverage, _dilate, _window
+from app.services.detection.mask_evidence import _coverage, _dilate, _window
 from app.services.detection.text_roles import LayoutPrediction
 from app.utils.geometry import bbox_to_polygon, intersection_area
+from detection_assertions import assert_rebuilt_regions
 from PIL import Image
 
 
@@ -52,10 +53,10 @@ def geometries(items):
             for i, p in enumerate(items) if p.label == "text"}
 
 
-def groups(items, *, bubbles=None, geometry=None, panels=None, reserved=None):
+def groups(items, *, bubbles=None, geometry=None, panels=None, reserved=None, bubble_coverage=None):
     geo = geometry if geometry is not None else geometries(items)
     return covered_text_parents(items, bubbles or dict.fromkeys(geo), geo, panels or dict.fromkeys(geo),
-                                reserved=reserved or set())
+                                reserved=reserved or set(), bubble_coverage=bubble_coverage or dict.fromkeys(geo, 1.))
 
 
 def test_real_colophon_keeps_four_independent_frames_without_mutating_children():
@@ -96,6 +97,23 @@ def test_unassigned_parent_direction_can_differ_without_rotating_retained_childr
     geo = geometries(items)
     geo[0] = (geo[0][0], "vertical", 20.)
     assert groups(items, geometry=geo) == {0: [2, 1]}
+
+
+def test_one_contained_child_can_replace_parent_only_when_it_preserves_all_lettering():
+    items = sample()[:2]
+    items[0].mask[40:] = 0  # No unique second paragraph remains in the parent.
+    assert groups(items) == {0: [1]}
+    items[0].mask[45:47, 8:10] = 1
+    assert groups(items) == {}  # Even a tiny unique punctuation mark protects it.
+
+
+def test_eighty_percent_containment_is_only_a_candidate_not_permission_to_drop_ink():
+    items = sample()[:2]
+    items[0].mask[40:] = 0
+    items[1].bbox = [15, 15, 140, 50]  # ~87% inside, but ALL lettering is retained.
+    assert groups(items) == {0: [1]}
+    items[0].mask[60:62, 8:10] = 1
+    assert groups(items) == {}
 
 
 @pytest.mark.parametrize("index", [0, 1, 2])
@@ -216,22 +234,20 @@ def test_incompatible_child_typography_is_ambiguous(direction, angle):
     assert groups(items, geometry=geo) == {}
 
 
-@pytest.mark.parametrize("fixture", ["nested_bubble_predictions.json", "long_text_predictions.json", "upright_text_predictions.json"])
-def test_previous_dialogue_prose_and_angle_cases_are_identical(fixture):
+@pytest.mark.parametrize("fixture", ["long_text_predictions.json", "upright_text_predictions.json"])
+def test_prose_recovery_and_angle_cases_are_not_affected_by_unified_dedup(fixture):
     width, height, raw = recorded(fixture)
     enabled = build(raw, width, height)
     with patch("app.services.detection.layout.covered_text_parents", return_value={}):
         assert signature(build(raw, width, height)) == signature(enabled)
-    if fixture == "nested_bubble_predictions.json":
-        assert len(enabled) == 1 and len(enabled[0].duplicate_members) == 2
-    elif fixture == "long_text_predictions.json":
+    if fixture == "long_text_predictions.json":
         assert len(enabled) == 7
         assert sum(r.metadata.get("long_text_partition", {}).get("line_count", 0) for r in enabled) == 16
 
 
 @pytest.mark.parametrize("protection", ["manual", "locked", "legacy"])
 @pytest.mark.parametrize("scope", ["title", "publication", "whole"])
-def test_redetection_keeps_user_regions_and_other_independent_text(client, monkeypatch, protection, scope):
+def test_redetection_replaces_all_frames_and_keeps_complete_independent_text(client, monkeypatch, protection, scope):
     width, height, raw = recorded()
     results = build(raw, width, height)
     with patch("app.services.detection.layout.covered_text_parents", return_value={}):
@@ -252,16 +268,11 @@ def test_redetection_keeps_user_regions_and_other_independent_text(client, monke
             layout_data={"manual": True} if protection == "manual" else {"detection": {}} if protection == "locked" else {})
         db.add(region)
         db.commit()
-        identifier = region.id
         stored = db.get(ImagePage, page["id"])
         for _ in range(2):
+            previous_ids = {r.id for r in stored.regions}
             PipelineProcessor(db).detect(stored, None, force=True)
             db.commit()
             db.refresh(stored)
-            protected = next(r for r in stored.regions if r.id == identifier)
-            assert protected.bbox == chosen.bbox and protected.polygon == chosen.polygon and protected.rotation == 11.
-            assert protected.source_text == "user source" and protected.translated_text == "user translation"
-            others = [r for r in stored.regions if r.id != identifier]
-            expected = results[2:] if scope == "whole" else [r for r in results if r is not chosen]
-            assert [r.bbox for r in others] == [r.bbox for r in expected]
+            assert_rebuilt_regions(stored.regions, results, previous_ids)
     detector.unload()

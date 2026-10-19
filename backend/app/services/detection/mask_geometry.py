@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import cv2
 import numpy as np
-from app.services.detection.nested_text import _Mask
+from app.services.detection.mask_evidence import _Mask
 
 
 def polygon_points(polygon) -> np.ndarray | None:
@@ -55,3 +55,25 @@ def covered_components(mask: _Mask, polygons: list) -> np.ndarray:
         if covered[1:].all():
             break
     return covered[labels]
+
+
+def components_supported(mask: _Mask, support: _Mask) -> bool:
+    """Every ink component must have a majority match in a reference mask.
+
+    A global overlap score hides wholly unsupported small characters. Count
+    matches separately, including one-pixel punctuation. Callers may supply a
+    transient one-pixel edge tolerance; neither input is changed.
+    """
+    if not mask.pixels.size or not np.any(mask.pixels):
+        return False
+    count, labels = cv2.connectedComponents((mask.pixels > 0).astype(np.uint8), connectivity=8)
+    sizes = np.bincount(labels.ravel(), minlength=count)
+    left, top = max(mask.x, support.x), max(mask.y, support.y)
+    right = min(mask.x+mask.pixels.shape[1], support.x+support.pixels.shape[1])
+    bottom = min(mask.y+mask.pixels.shape[0], support.y+support.pixels.shape[0])
+    if right <= left or bottom <= top:
+        return False
+    own = labels[top-mask.y:bottom-mask.y, left-mask.x:right-mask.x]
+    reference = support.pixels[top-support.y:bottom-support.y, left-support.x:right-support.x] > 0
+    matches = np.bincount(own[reference], minlength=count)
+    return bool(np.all(2*matches[1:] >= sizes[1:]))

@@ -129,7 +129,13 @@ def load_balloon_mask(
             and path.parent == (storage.project_dir(page_parts[1]) / "history" / "assets").resolve()
             and path.name == f"{expected_sha256}.png"
         )
-        if not archived:
+        relative = path.relative_to(page_directory.resolve()).parts if path.is_relative_to(page_directory.resolve()) else ()
+        workflow = bool(len(relative)==5 and relative[0]=="workflows" and relative[3]=="bubbles"
+            and isinstance(expected_sha256,str) and re.fullmatch(r"[0-9a-f]{64}",expected_sha256)
+            and path.name.endswith(f"-{expected_sha256[:16]}.png")
+            and all(re.fullmatch(r"[0-9a-f]{32}|[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}",part)
+                    for part in relative[1:3]))
+        if not archived and not workflow:
             raise ValueError("Balloon constraint path does not belong to this page")
     if not path.is_file():
         raise ValueError("Balloon constraint file is missing")

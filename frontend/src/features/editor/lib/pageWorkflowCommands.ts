@@ -4,7 +4,7 @@ import type {TaskUpdateHandler} from '../hooks/useTaskMonitor'
 import {api} from '../../../services/api'
 import {useEditorStore} from '../store'
 import {buildPageWorkflowRequest, canRunPageWorkflowStage, pageWorkflowTargetView, type PageWorkflowStage} from '../pageWorkflow'
-import {blurActiveControl, pageWorkflowRank} from './pagePresentation'
+import {blurActiveControl} from './pagePresentation'
 
 export interface PageWorkflowContext {
   getPage: () => ImagePage | null
@@ -21,6 +21,7 @@ export interface PageWorkflowContext {
   flushPendingRegions: () => Promise<void>
   refreshAfterTask: (id:string, onUpdate?:TaskUpdateHandler) => Promise<{task:ProcessingTask; regions:TextRegion[]} | null>
   syncTaskProgress: TaskUpdateHandler
+  onStart?: () => void
 }
 
 export function createPageWorkflowCommands(ctx:PageWorkflowContext) {
@@ -30,16 +31,16 @@ export function createPageWorkflowCommands(ctx:PageWorkflowContext) {
     if (!page || ctx.isBusy()) return
     // Capture the originating view before the workflow switches to clean view.
     const repairGeometry = useEditorStore.getState().view === 'translated' ? 'translated' : 'source'
-    const rank = pageWorkflowRank(page, ctx.getRegions())
-    if (!canRunPageWorkflowStage(stage, rank)) return
     const currentRegions = ctx.getRegions()
+    if (!canRunPageWorkflowStage(stage, currentRegions.length)) return
     if (stage === 'ocr' && currentRegions.length > 0 && !await confirmDialog({
       title: '重新检测？',
-      message: '将按当前检测设置重新检测文字区域，再执行 OCR。未锁定的自动框及其原文、译文、样式会重建，净图与译图会失效。手工区域和锁定区域保留。',
+      message: '将重新检测整张图片并执行 OCR。所有现有文本框（包括手工创建、调整过和锁定的框）及其原文、译文、样式和蒙版都会替换，净图与译图会失效。',
       tone: 'info',
       confirmLabel: '重新检测',
     })) return
     if (ctx.currentPageId() !== page.id || ctx.isBusy()) return
+    ctx.onStart?.()
     const targetView = pageWorkflowTargetView(stage)
     if (targetView) setView(targetView)
     const request = buildPageWorkflowRequest(stage)
@@ -48,13 +49,11 @@ export function createPageWorkflowCommands(ctx:PageWorkflowContext) {
       ocr: '正在重新检测文字区域并执行 OCR…',
       translation: '正在重新翻译当前页…',
       inpainting: '正在重新生成文字 Mask、修复背景并自动重新排版…',
-      rendering: '正在根据当前译文重新排版…',
     }
     const completedNotices: Record<PageWorkflowStage, string> = {
       ocr: '重新检测与 OCR 已完成，请核对文字区域和原文；确认无误后再执行重新翻译。',
       translation: '当前页翻译已完成。',
       inpainting: '背景修复与重新排版已完成。',
-      rendering: '当前页重新排版已完成。',
     }
     blurActiveControl()
     setSchedulingProcess(true)
@@ -67,8 +66,9 @@ export function createPageWorkflowCommands(ctx:PageWorkflowContext) {
       const task = await api.images.process(page.id, request)
       setRunningPageTask(task)
       const result = await refreshAfterTask(task.id, syncTaskProgress)
-      if (result?.task.status === 'COMPLETED') {
-        if (targetView) setView(targetView)
+      if (result?.task.status === 'COMPLETED' && ctx.currentPageId() === page.id) {
+        // The user can browse other views while inference runs. Do not reset
+        // their newer view choice when the background task completes.
         setNotice(completedNotices[stage])
       }
     } catch (reason) {
