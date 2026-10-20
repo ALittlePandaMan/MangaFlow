@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import os
 import shutil
 from copy import deepcopy
@@ -9,6 +8,7 @@ from pathlib import Path
 from stat import S_ISREG
 from uuid import uuid4
 
+from app.core.serialization import file_digest
 from app.core.timing import measured
 from app.core.transactions import has_pending_writes, retry_write
 from app.models import EditorHistoryEntry, ImagePage, ProcessingTask, Project, TextRegion
@@ -60,11 +60,7 @@ def _archive_file(source: str, size: int, modified: int, directory: str) -> str:
     # The stat signature prevents stale reuse when the pipeline overwrites its
     # usual output path. Content-addressing deduplicates unchanged assets.
     path = Path(source)
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    target = Path(directory) / f"{digest.hexdigest()}{path.suffix}"
+    target = Path(directory) / f"{file_digest(path)}{path.suffix}"
     target.parent.mkdir(parents=True, exist_ok=True)
     if not target.exists():
         temporary = target.with_name(f".{uuid4().hex}.tmp")

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sqlite3
 from io import BytesIO
 
 import pytest
@@ -8,6 +7,7 @@ from app.core.database import SessionLocal, engine
 from app.models import EditorHistoryEntry, ImagePage, Project, RegionRevision, TextRegion
 from app.services import region_edits
 from PIL import Image
+from psycopg.errors import LockNotAvailable
 from sqlalchemy import event, func, select
 from sqlalchemy.exc import OperationalError
 from test_editor_history import apply as undo
@@ -16,18 +16,9 @@ from test_repair_geometry_sync import setup_page
 
 def _check_writer_available(project_id):
     with engine.connect() as connection:
-        if connection.dialect.name == "sqlite":
-            previous = connection.exec_driver_sql("PRAGMA busy_timeout").scalar()
-            connection.exec_driver_sql("PRAGMA busy_timeout=50")
-            try:
-                connection.exec_driver_sql("BEGIN IMMEDIATE")
-            finally:
-                connection.rollback()
-                connection.exec_driver_sql(f"PRAGMA busy_timeout={int(previous)}")
-        else:
-            connection.execute(select(Project.id).where(Project.id == project_id).with_for_update(nowait=True))
-            list(connection.scalars(select(ImagePage.id).where(ImagePage.project_id == project_id).with_for_update(nowait=True)))
-            connection.rollback()
+        connection.execute(select(Project.id).where(Project.id == project_id).with_for_update(nowait=True))
+        list(connection.scalars(select(ImagePage.id).where(ImagePage.project_id == project_id).with_for_update(nowait=True)))
+        connection.rollback()
 
 
 def test_reorder_uses_the_order_from_its_prepared_snapshot(client, monkeypatch):
@@ -114,8 +105,6 @@ def test_import_write_retry_does_not_repeat_upload_or_create_duplicate_history(c
     from app.storage import get_storage
     from test_repair_geometry_sync import png
 
-    if engine.dialect.name != "sqlite":
-        pytest.skip("SQLite fault injection; PostgreSQL retries are tested separately")
     identifier = client.post("/api/projects", json={"name": "import write conflict"}).json()["id"]
     upload, calls, failures = get_storage().save_upload, [], []
 
@@ -126,7 +115,7 @@ def test_import_write_retry_does_not_repeat_upload_or_create_duplicate_history(c
     def fail_once(connection, cursor, statement, parameters, context, executemany):
         if not failures and statement.startswith("INSERT INTO editor_history"):
             failures.append(1)
-            raise OperationalError("test", {}, sqlite3.OperationalError("database is locked"))
+            raise OperationalError("test", {}, LockNotAvailable("synthetic lock timeout"))
 
     monkeypatch.setattr(get_storage(), "save_upload", record)
     event.listen(engine, "before_cursor_execute", fail_once)
@@ -166,18 +155,9 @@ def test_property_edit_archives_both_sides_without_holding_a_writer_or_row_lock(
 
     def unlocked(*args,**kwargs):
         with engine.connect() as connection:
-            if connection.dialect.name=="sqlite":
-                previous = connection.exec_driver_sql("PRAGMA busy_timeout").scalar()
-                connection.exec_driver_sql("PRAGMA busy_timeout=50")
-                try:
-                    connection.exec_driver_sql("BEGIN IMMEDIATE")
-                finally:
-                    connection.rollback()
-                    connection.exec_driver_sql(f"PRAGMA busy_timeout={int(previous)}")
-            else:
-                connection.execute(select(Project.id).where(Project.id==page["project_id"]).with_for_update(nowait=True))
-                connection.execute(select(ImagePage.id).where(ImagePage.id==page["id"]).with_for_update(nowait=True))
-                connection.rollback()
+            connection.execute(select(Project.id).where(Project.id==page["project_id"]).with_for_update(nowait=True))
+            connection.execute(select(ImagePage.id).where(ImagePage.id==page["id"]).with_for_update(nowait=True))
+            connection.rollback()
         calls.append(1)
         return original(*args,**kwargs)
 
@@ -218,8 +198,6 @@ def test_late_property_save_rejects_stale_input_without_overwriting_the_other_ed
 
 
 def test_bulk_edit_retries_only_the_short_save_without_rearchiving_or_duplicate_revisions(client,monkeypatch):
-    if engine.dialect.name!="sqlite":
-        pytest.skip("SQLite contention injection; PostgreSQL row locks are tested independently")
     page,regions = setup_page(client,2)
     original = region_edits._archive_paths
     calls,failures = [],[]
@@ -233,7 +211,7 @@ def test_bulk_edit_retries_only_the_short_save_without_rearchiving_or_duplicate_
     def fail_once(connection,cursor,statement,parameters,context,executemany):
         if not failures and statement.startswith("INSERT INTO editor_history"):
             failures.append(1)
-            raise OperationalError("test",{},sqlite3.OperationalError("database is locked"))
+            raise OperationalError("test",{},LockNotAvailable("synthetic lock timeout"))
 
     monkeypatch.setattr(region_edits,"_archive_paths",archive)
     event.listen(engine,"before_cursor_execute",fail_once)
@@ -260,11 +238,8 @@ def test_mask_file_and_sparse_history_are_prepared_without_a_writer(client,monke
 
     def no_writer(*args,**kwargs):
         with engine.connect() as connection:
-            if connection.dialect.name=="sqlite":
-                connection.exec_driver_sql("BEGIN IMMEDIATE")
-            else:
-                connection.execute(select(Project.id).where(Project.id==page["project_id"]).with_for_update(nowait=True))
-                connection.execute(select(ImagePage.id).where(ImagePage.id==page["id"]).with_for_update(nowait=True))
+            connection.execute(select(Project.id).where(Project.id==page["project_id"]).with_for_update(nowait=True))
+            connection.execute(select(ImagePage.id).where(ImagePage.id==page["id"]).with_for_update(nowait=True))
             connection.rollback()
         calls.append(1)
         return original(*args,**kwargs)
@@ -320,10 +295,7 @@ def test_undo_prepares_files_without_writer_and_never_overwrites_an_intervening_
 
     def prepare_without_writer(*args,**kwargs):
         with engine.connect() as connection:
-            if connection.dialect.name=="sqlite":
-                connection.exec_driver_sql("BEGIN IMMEDIATE")
-            else:
-                connection.execute(select(Project.id).where(Project.id==page["project_id"]).with_for_update(nowait=True))
+            connection.execute(select(Project.id).where(Project.id==page["project_id"]).with_for_update(nowait=True))
             connection.rollback()
         value = original(*args,**kwargs)
         calls.append(1)
@@ -344,8 +316,6 @@ def test_undo_prepares_files_without_writer_and_never_overwrites_an_intervening_
 def test_undo_short_write_retries_do_not_repeat_file_preparation_or_revisions(client,monkeypatch):
     from app.services import editor_history
 
-    if engine.dialect.name!="sqlite":
-        pytest.skip("SQLite abort injection; PostgreSQL concurrency is covered separately")
     page,regions = setup_page(client)
     assert client.patch(f"/api/regions/{regions[0]['id']}",json={"font_size":39}).status_code==200
     original = editor_history._prepare_restore_page
@@ -360,7 +330,7 @@ def test_undo_short_write_retries_do_not_repeat_file_preparation_or_revisions(cl
     def fail_once(connection,cursor,statement,parameters,context,executemany):
         if not failures and statement.startswith("UPDATE editor_history"):
             failures.append(1)
-            raise OperationalError("test",{},sqlite3.OperationalError("database is locked"))
+            raise OperationalError("test",{},LockNotAvailable("synthetic lock timeout"))
 
     monkeypatch.setattr(editor_history,"_prepare_restore_page",prepare)
     event.listen(engine,"before_cursor_execute",fail_once)

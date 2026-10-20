@@ -28,14 +28,14 @@ cp .env.example .env
 cp config.example.yaml config.yaml
 ```
 
-也可以运行 `./scripts/bootstrap.sh` 或 `./scripts/docker.sh up --build` 自动创建缺失文件。脚本不会覆盖已存在的本地设置。
+也可以运行 `./scripts/bootstrap.sh` 或 `./scripts/docker.sh up --build` 自动创建缺失文件。脚本不会覆盖已存在的非空密码或本地设置。
 
 ## 迁移到另一台设备
 
 1. 克隆仓库或复制源码。
 2. 单独安全复制原设备的 `config.yaml` 和 `.env`。
-3. 如需保留项目，复制 `data/`；如需避免重新下载模型，也复制 `models/`。
-4. 执行 `./scripts/docker.sh up --build -d`。
+3. 如需保留项目，备份并恢复 PostgreSQL 数据库，同时复制 `data/` 和其中的 `.secret_key`；如需避免重新下载模型，也复制 `models/`。仅复制 `data/` 不会迁移 PostgreSQL 持久卷中的项目记录。
+4. 在新设备启动 PostgreSQL、恢复数据库，再执行 `./scripts/docker.sh up --build -d`。备份方式见下文。
 
 只复制 `config.yaml` 而不复制 `.env` 时，模型和运行参数仍可恢复，但云端翻译需要重新填写 API Key。
 
@@ -53,35 +53,26 @@ Compose 将 `config.yaml` 和 `.env` 以文件形式挂载到后端容器，网�
 
 此开关不是热切换或自动迁移工具。先停止接收业务并安全排空旧进程，再启动维护实例；不能同时让旧实例继续写入同一数据库。验证通过后撤销开关并重新启动正常服务，才允许恢复队列。维护模式本身不备份、不迁移或回滚数据。
 
-## SQLite / PostgreSQL 迁移
+## PostgreSQL 数据库
 
-默认继续使用 SQLite。正常启动会执行 Alembic 升级；维护模式不会执行。旧库按版本补齐字段并保留所有已支持的旧字段，不用 `create_all` 推测未来迁移。未知缺失字段、未匹配的表或列会阻止复制，不静默丢弃。禁止破坏性 schema downgrade；回退通过验证后的反向数据复制完成。
+项目只使用 PostgreSQL（psycopg 3）。默认 Docker Compose 已包含 PostgreSQL 18、内部网络及 `postgres-data` 持久卷，不再需要数据库覆盖文件或额外启用标记。数据库端口不对外发布，原有同名数据卷会继续使用。
 
-`docker-compose.postgres.yml` 是显式启用的覆盖文件，不会自动切换现用数据库。它使用 PostgreSQL 18、内部网络和持久卷，不发布数据库端口。密码从私有环境变量 `MANGAFLOW_POSTGRES_PASSWORD` 读取，应用通过 `PGPASSWORD` 单独传给驱动，避免密码里的 `@`、`/` 等字符破坏连接 URL。不要提交密码、渲染包含密钥的 Compose 配置，或使用 `down -v` 删除数据库卷。
+`./scripts/docker.sh` 和 `./scripts/bootstrap.sh` 会为首次安装生成私有数据库密码；已配置的密码不会被覆盖。直接使用 Compose 时，需要先在私有 `.env` 中填写强随机的 `MANGAFLOW_POSTGRES_PASSWORD`。密码通过 `PGPASSWORD` 单独传给驱动，不拼进 URL。不要输出含密钥的 Compose 完整配置，也不要使用 `down -v` 删除业务数据库卷。
 
-本机迁移验证完成后，在私有 `.env` 中设置 `MANGAFLOW_LOCAL_POSTGRES=true`，`scripts/docker.sh` 会自动叠加这个覆盖文件，后续启动、停止和重建沿用 PostgreSQL 部署。该标记只选择 Docker 配置，不执行迁移。直接使用 Compose 时仍需同时指定两个文件；外部 PostgreSQL 不使用此本机标记。不要通过恢复旧 `.env` 回滚一个已经开放新写入的数据库。
+本地开发连接自行准备的 PostgreSQL：设置 `MANGAFLOW_DATABASE_URL=postgresql+psycopg://mangaflow@127.0.0.1:5432/mangaflow`，并通过进程环境提供 `PGPASSWORD`。不配置 URL 时也只会尝试此 PostgreSQL 地址，不会创建本地数据库文件。
 
-迁移顺序：
+数据库账号需要业务 schema 的读写/升级权限以及数据库的 `TEMPORARY` 权限；阶段工作副本使用连接私有临时表，不需要创建额外的持久化 schema。默认 Compose 创建的账号已满足这些条件。
 
-1. 停止新请求和调度，等待当前任务退出；保留排队/暂停状态，不用强制取消代替排空。确认没有第二个写入进程。
-2. 备份私有 `.env`、`config.yaml`、原始 `data/.secret_key`（或原 `MANGAFLOW_SECRET_KEY`）、项目资源及数据库。SQLite 必须用下面的在线备份命令，不能只复制 live `.db` 而遗漏 WAL。
-3. 留一份只读原始备份；另复制一份演练快照，对快照执行 `upgrade`。不要用现用数据库作为升级演练目标。
-4. 在空 PostgreSQL 库执行 `copy`。工具先校验目标无数据，全部行在同一目标事务中复制，逐表校验数量和 SHA-256，并恢复历史自增序列。失败不会激活目标；目标已有任何数据均拒绝覆盖。
-5. 对迁移库执行 `verify-assets`，确认资源不存在缺失且密钥可解密；保留工具输出的 JSON 证据。首次切库前再从 PostgreSQL 反向复制到全新 SQLite 文件并验证。源读取使用一致性快照，源与目标仍应保持停写。
-6. 新应用先以维护模式连接目标库，验证连接和配置；全部检查通过后正常启动，检查图片、区域、编辑、撤销与任务恢复，再开放业务。不要让两套服务同时恢复相同排队任务。
+正常启动使用 Alembic 自动升级 schema，维护模式不会启动模型、升级或恢复任务。已部署的数据库版本链保留；不支持破坏性 schema downgrade。
 
-离线工具不会启动服务、下载模型或调用云端。URL 从命名环境变量读取，避免放进命令行日志；环境变量须由本机安全方式提供。`--report-file` 只新建文件，已有报告不会覆盖。运行命令前创建备份和报告目录：
+备份应同时保存数据库、项目图片、私有配置及原始 `data/.secret_key`。以下方式不经过宿主机的文本重定向，适用于 PowerShell 和 Bash：
 
 ```bash
-PYTHONPATH=backend .venv/bin/python -m app.services.database_transfer backup-sqlite data/mangaflow.db <新备份路径> --report-file <新备份报告路径>
-PYTHONPATH=backend .venv/bin/python -m app.services.database_transfer upgrade --url-env SNAPSHOT_DATABASE_URL
-PYTHONPATH=backend .venv/bin/python -m app.services.database_transfer copy --source-env SNAPSHOT_DATABASE_URL --target-env TARGET_DATABASE_URL --report-file <新复制报告路径>
-PYTHONPATH=backend .venv/bin/python -m app.services.database_transfer verify-assets --url-env TARGET_DATABASE_URL --data-dir data --secret-key-file data/.secret_key --report-file <新资源报告路径>
+./scripts/docker.sh exec postgres pg_dump -U mangaflow -d mangaflow -Fc -f /tmp/mangaflow-backup.dump
+./scripts/docker.sh cp postgres:/tmp/mangaflow-backup.dump data/backups/<新的备份名>.dump
 ```
 
-使用注入的 `MANGAFLOW_SECRET_KEY` 时省略 `--secret-key-file`。路径参数里的尖括号是占位符，需替换。`copy` 支持 PostgreSQL → SQLite；反向时只交换源和目标的环境变量名，目标必须是新库。切库后只要发生过新写入，就不能直接换回旧 SQLite 文件：必须再次排空、备份 PostgreSQL、反向复制并核对新增任务/历史/文本，才能切回，以免丢失新数据。
-
-资源校验同样要求素材目录停写。重复引用只解析一次，父目录解析使用有界缓存；数据库读取结束后，最多四路文件读取逐一核对 SHA-256。清单顺序、缺失文件检查、密钥解密和软链接越界检查保持不变；不能把此离线校验当作并发修改素材时的安全快照。
+先创建宿主机备份目录，替换示例中的文件名，不覆盖已有备份。恢复使用 PostgreSQL 的 `pg_restore`，先在独立空库演练并核对项目数量、原图、文本、撤销历史及密钥可解密性，再安排正式维护窗口。备份不包含 Docker 外部目录中的图片和模型文件。
 
 ## 执行策略与推理诊断
 

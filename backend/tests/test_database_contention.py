@@ -1,19 +1,19 @@
 from __future__ import annotations
 
-import sqlite3
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 from app.core.database import SessionLocal, engine
-from app.core.transactions import is_sqlite_busy, retry_write
+from app.core.transactions import is_retryable_write, retry_write
 from app.models import EditorHistoryEntry, ProcessingTask, RegionRevision
 from app.pipeline.processor import PipelineProcessor
 from app.services.base import OCRResult
 from app.tasks import task_manager
 from app.tasks.manager import TaskManager
-from sqlalchemy import create_engine, event, select, text
+from db_assertions import assert_rows_unlocked
+from psycopg.errors import LockNotAvailable
+from sqlalchemy import event, select, text
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 from test_editor_history import apply as apply_history
@@ -23,41 +23,11 @@ from test_repair_geometry_sync import setup_page
 
 
 def busy():
-    return OperationalError("test write", {}, sqlite3.OperationalError("database is locked"))
+    return OperationalError("test write", {}, LockNotAvailable("synthetic lock timeout"))
 
 
-def test_write_retries_actual_sqlite_lock_and_restores_connection_timeout(tmp_path):
-    local = create_engine(f"sqlite:///{tmp_path / 'contention.db'}")
-    with local.begin() as connection:
-        connection.exec_driver_sql("CREATE TABLE values_test (value INTEGER)")
-    writer = local.connect()
-    writer.exec_driver_sql("BEGIN IMMEDIATE")
-    started = threading.Event()
-    calls = []
-
-    def work():
-        with Session(local) as db:
-            started.set()
-            retry_write(db, lambda: (calls.append(1), db.execute(text("INSERT INTO values_test VALUES (7)"))))
-
-    try:
-        with ThreadPoolExecutor(1) as pool:
-            future = pool.submit(work)
-            assert started.wait(2)
-            time.sleep(1.15)  # First bounded lock acquisition times out.
-            writer.rollback()
-            future.result(5)
-        with local.connect() as connection:
-            assert connection.exec_driver_sql("SELECT value FROM values_test").all() == [(7,)]
-            assert connection.exec_driver_sql("PRAGMA busy_timeout").scalar() == 5000
-        assert calls == [1]
-    finally:
-        writer.close()
-        local.dispose()
-
-
-def test_transaction_replays_writes_after_rollback_not_just_commit(tmp_path):
-    local = create_engine(f"sqlite:///{tmp_path / 'retry.db'}")
+def test_transaction_replays_writes_after_rollback_not_just_commit(target):
+    local = target
     with local.begin() as connection:
         connection.exec_driver_sql("CREATE TABLE values_test (value INTEGER)")
     calls = []
@@ -70,11 +40,10 @@ def test_transaction_replays_writes_after_rollback_not_just_commit(tmp_path):
         retry_write(db, save)
         assert db.execute(text("SELECT value FROM values_test")).all() == [(9,)]
     assert len(calls) == 2
-    local.dispose()
 
 
-def test_non_lock_errors_are_not_retried(tmp_path):
-    local = create_engine(f"sqlite:///{tmp_path / 'error.db'}")
+def test_non_lock_errors_are_not_retried(target):
+    local = target
     calls = []
     with Session(local) as db:
         def save():
@@ -83,12 +52,11 @@ def test_non_lock_errors_are_not_retried(tmp_path):
         with pytest.raises(ValueError, match="not transient"):
             retry_write(db, save)
     assert calls == [1]
-    assert not is_sqlite_busy(OperationalError("test", {}, sqlite3.OperationalError("disk I/O error")))
-    local.dispose()
+    assert not is_retryable_write(OperationalError("test", {}, OSError("disk I/O error")))
 
 
-def test_retry_rejects_already_flushed_writes_instead_of_silently_rolling_them_back(tmp_path):
-    local = create_engine(f"sqlite:///{tmp_path / 'flushed.db'}")
+def test_retry_rejects_already_flushed_writes_instead_of_silently_rolling_them_back(target):
+    local = target
     with local.begin() as connection:
         connection.exec_driver_sql("CREATE TABLE values_test (value INTEGER)")
     with Session(local) as db:
@@ -98,7 +66,6 @@ def test_retry_rejects_already_flushed_writes_instead_of_silently_rolling_them_b
             retry_write(db, lambda: None)
         db.commit()
         assert db.execute(text("SELECT value FROM values_test")).all() == [(11,)]
-    local.dispose()
 
 
 @pytest.mark.parametrize("failure_at", ["result", "progress"])
@@ -123,8 +90,9 @@ def test_ocr_save_contention_does_not_repeat_inference_or_lose_history(client, m
         if injected:
             return
         values = parameters if executemany else [parameters]
+        values = [tuple(row.values()) if isinstance(row, dict) else row for row in values]
         result = failure_at == "result" and statement.startswith("UPDATE text_regions SET") and any("recognized-1" in row for row in values)
-        progress = failure_at == "progress" and statement.startswith("UPDATE processing_tasks SET") and "OCR 1/3" in parameters
+        progress = failure_at == "progress" and statement.startswith("UPDATE processing_tasks SET") and any("OCR 1/3" in row for row in values)
         if result or progress:
             injected.append(1)
             raise busy()
@@ -200,7 +168,7 @@ def test_failure_save_can_also_fail_without_leaving_fake_running_task(client, mo
     assert task_manager.terminal_error(task["id"]) is None
 
 
-def test_no_sqlite_write_lock_is_held_during_ocr(client, monkeypatch):
+def test_no_row_lock_is_held_during_ocr(client, monkeypatch):
     page, _ = setup_page(client, 3)
 
     class OCR:
@@ -208,13 +176,7 @@ def test_no_sqlite_write_lock_is_held_during_ocr(client, monkeypatch):
             self.check()
 
         def check(self):
-            with engine.connect() as connection:
-                connection.exec_driver_sql("PRAGMA busy_timeout=50")
-                try:
-                    connection.exec_driver_sql("BEGIN IMMEDIATE")
-                finally:
-                    connection.exec_driver_sql("PRAGMA busy_timeout=30000")
-                    connection.rollback()
+            assert_rows_unlocked(engine, page["project_id"], page["id"])
 
         def recognize(self, *args):
             self.check()
@@ -236,14 +198,8 @@ def test_target_geometry_and_masks_release_writer_before_model_work(client, monk
     checked = []
 
     def check():
-        with engine.connect() as connection:
-            connection.exec_driver_sql("PRAGMA busy_timeout=50")
-            try:
-                connection.exec_driver_sql("BEGIN IMMEDIATE")
-                checked.append(1)
-            finally:
-                connection.exec_driver_sql("PRAGMA busy_timeout=30000")
-                connection.rollback()
+        assert_rows_unlocked(engine, page["project_id"], page["id"])
+        checked.append(1)
 
     generate = PipelineProcessor.generate_masks
     repair = PipelineProcessor._repair_masks

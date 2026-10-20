@@ -1,12 +1,11 @@
 """Computed translations survive DB contention, not stale input versions."""
 from __future__ import annotations
 
-import sqlite3
-
 import pytest
 from app.core.database import SessionLocal, engine
 from app.models import TextRegion, Translation
 from app.pipeline.processor import PipelineProcessor
+from psycopg.errors import LockNotAvailable
 from sqlalchemy import event, func, select
 from sqlalchemy.exc import OperationalError
 from test_translation_auto_ocr import run_translation, setup
@@ -37,7 +36,7 @@ def test_translation_retries_only_save_and_never_overwrites_stale_input(client, 
     def fail_once(connection, cursor, statement, parameters, context, executemany):
         if not failures and not stale_input and statement.startswith("INSERT INTO translations"):
             failures.append(1)
-            raise OperationalError("test", {}, sqlite3.OperationalError("database is locked"))
+            raise OperationalError("test", {}, LockNotAvailable("synthetic lock timeout"))
 
     event.listen(engine, "before_cursor_execute", fail_once)
     try:

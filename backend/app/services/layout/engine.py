@@ -177,7 +177,6 @@ class MangaLayoutEngine:
         alignment: str,
         custom_font_path: str | None = None,
         font_weight: int = 400,
-        polygon: list[list[float]] | None = None,
         auto_fit: bool = True,
         stroke_width: float = 0,
         rotation: float = 0,

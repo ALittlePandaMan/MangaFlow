@@ -15,6 +15,7 @@ from app.services import editor_history
 from app.services.base import OCRResult
 from app.services.execution import ExecutionPolicy, ExecutionRuntime
 from app.tasks.manager import TaskManager
+from db_assertions import assert_rows_unlocked
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 from starlette.websockets import WebSocketDisconnect
@@ -23,20 +24,14 @@ from test_pipeline import wait_for_task
 from test_repair_geometry_sync import setup_page
 
 
-def test_task_history_archives_without_a_sqlite_writer_and_remains_reversible(client, monkeypatch):
+def test_task_history_archives_without_row_locks_and_remains_reversible(client, monkeypatch):
     page, regions = setup_page(client, 2)
     archive = editor_history._archive_paths
     calls = []
 
     def check(*args, **kwargs):
-        with engine.connect() as connection:
-            connection.exec_driver_sql("PRAGMA busy_timeout=50")
-            try:
-                connection.exec_driver_sql("BEGIN IMMEDIATE")
-                calls.append(1)
-            finally:
-                connection.exec_driver_sql("PRAGMA busy_timeout=30000")
-                connection.rollback()
+        assert_rows_unlocked(engine, page["project_id"], page["id"])
+        calls.append(1)
         return archive(*args, **kwargs)
 
     monkeypatch.setattr(editor_history, "_archive_paths", check)

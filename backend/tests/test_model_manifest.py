@@ -4,12 +4,11 @@ from copy import deepcopy
 
 import pytest
 import yaml
-from app.core.database import Base
 from app.core.secrets import SecretStore
 from app.models import ModelConfig
 from app.services.infra import model_manifest as manifests
 from cryptography.fernet import Fernet
-from sqlalchemy import create_engine, func, select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 
@@ -54,12 +53,9 @@ def manifest_payload(*, lightweight: bool = False) -> dict:
 
 
 @pytest.fixture
-def db() -> Session:
-    engine = create_engine("sqlite:///:memory:")
-    Base.metadata.create_all(engine)
-    with Session(engine, expire_on_commit=False) as session:
+def db(model_engine) -> Session:
+    with Session(model_engine, expire_on_commit=False) as session:
         yield session
-    engine.dispose()
 
 
 def test_load_model_manifest_validates_version_stages_and_registered_provider(tmp_path) -> None:
@@ -173,14 +169,14 @@ def test_apply_manifest_does_not_clear_existing_secret_when_environment_is_missi
     assert existing.config["model"] == "old-model"
 
 
-def test_manifest_rejects_nonportable_or_unsupported_device() -> None:
+def test_manifest_rejects_nonportable_or_unsupported_device(db) -> None:
     invalid = manifest_payload()
     invalid["stages"]["detection"].pop("device")
     invalid["stages"]["detection"]["config"]["device"] = "cuda:99"
     manifest = manifests.ModelManifest.model_validate(invalid)
 
     with pytest.raises(manifests.ModelManifestError, match="Unsupported device 'cuda:99'"):
-        manifests.apply_model_manifest(Session(create_engine("sqlite:///:memory:")), manifest)
+        manifests.apply_model_manifest(db, manifest)
 
     incompatible = manifest_payload(lightweight=True)
     incompatible["stages"]["detection"]["device"] = "cuda:0"

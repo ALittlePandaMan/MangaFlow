@@ -28,13 +28,8 @@ def database_revision(engine: Engine) -> str | None:
 def upgrade_database(engine: Engine) -> None:
     # One transactional lock serializes schema adoption across startup races.
     with engine.connect() as connection:
-        if engine.dialect.name == "sqlite":
-            connection.exec_driver_sql("PRAGMA journal_mode=WAL")
-            connection.commit()
-            connection.exec_driver_sql("BEGIN IMMEDIATE")
-        else:
-            connection.begin()
-            connection.exec_driver_sql("SELECT pg_advisory_xact_lock(74125789017831)")
+        connection.begin()
+        connection.exec_driver_sql("SELECT pg_advisory_xact_lock(74125789017831)")
         try:
             config = migration_config()
             config.attributes["connection"] = connection

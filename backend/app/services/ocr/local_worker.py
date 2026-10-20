@@ -29,7 +29,7 @@ def source_module(directory, name, *, package=None):
     return module
 
 
-def checked_state(model, directory, torch, *, tied=()):
+def checked_state(model, directory, *, tied=()):
     from safetensors.torch import load_file
 
     state = load_file(directory / "model.safetensors")
@@ -84,7 +84,7 @@ def build_model(provider, directory, auxiliary, device):
         config.vision_model_name = str(auxiliary)
         with torch.device("meta"):
             model = module.BaberuOCRModel(config)
-        checked_state(model, directory, torch, tied=(("lm_head.weight", "model.embed_tokens.weight"),))
+        checked_state(model, directory, tied=(("lm_head.weight", "model.embed_tokens.weight"),))
         # This non-persistent buffer is absent from SafeTensors. Rebuild it
         # explicitly rather than materialize uninitialized RoPE frequencies.
         for layer in model.modules():
@@ -143,7 +143,7 @@ def build_model(provider, directory, auxiliary, device):
     config = configuration.HayaiConfig.from_pretrained(directory, local_files_only=True)
     with torch.device("meta"):
         model = PinnedHayaiModel(config)
-    checked_state(model, directory, torch, tied=(("decoder.output_head.weight", "decoder.token_embeddings.weight"),))
+    checked_state(model, directory, tied=(("decoder.output_head.weight", "decoder.token_embeddings.weight"),))
     model.to(device=device, dtype=dtype).eval()
     tokenizer = PreTrainedTokenizerFast.from_pretrained(directory, local_files_only=True)
     processor = AutoProcessor.from_pretrained(auxiliary, local_files_only=True)

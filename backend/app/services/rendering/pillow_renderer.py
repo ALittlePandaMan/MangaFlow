@@ -94,15 +94,11 @@ class PillowRenderer(Renderer):
                 alignment=region.alignment,
                 custom_font_path=(region.layout_data or {}).get("custom_font_path"),
                 font_weight=region.font_weight,
-                # Perspective mode lays text out in the normal rectangular
-                # bbox first; the complete transparent tile is warped below.
-                polygon=None if warp_quad or text_frame else translated_polygon,
                 auto_fit=auto_fit,
                 stroke_width=fit_stroke,
                 rotation=0.0 if text_frame else effective_text_rotation(region, perspective=bool(warp_quad)),
             )
             if auto_fit and layout.overflow:
-                layout.overflow = True
                 region_layouts[region.id] = {
                     **layout.to_dict(), "auto_font_size": auto_fit, "render_output_version": RENDER_OUTPUT_VERSION,
                     "shape_layout_applied": False, "render_skipped": True,

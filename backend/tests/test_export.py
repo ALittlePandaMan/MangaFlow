@@ -524,7 +524,6 @@ def test_project_archive_round_trips_exact_balloon_constraint_assets(client) -> 
             origin=(50, 20),
             image_shape=(140, 220),
             confidence=0.97,
-            parent_instance_id=None,
         )
         persisted_page.metadata_json = {
             BUBBLE_GEOMETRY_KEY: {

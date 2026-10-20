@@ -4,6 +4,8 @@
 
 ```bash
 ./scripts/bootstrap.sh
+# 先准备可连接的 PostgreSQL，并设置 MANGAFLOW_DATABASE_URL 和 PGPASSWORD。
+# 数据库配置见 docs/configuration.md；默认 Compose 数据库不发布宿主机端口。
 ./scripts/dev.sh
 ```
 
@@ -21,7 +23,9 @@
 ./scripts/docker.sh config --quiet
 ```
 
-后端测试通过 `backend/tests/conftest.py` 使用独立临时目录和 SQLite，不会读写本地项目数据，也不会自动加载模型清单。前端使用 Vitest、Testing Library、ESLint、TypeScript 和生产构建作为质量门禁；组件测试放在被测组件旁，并以用户可见行为和无障碍语义为主要断言。
+后端测试通过 `backend/tests/conftest.py` 使用独立临时目录和 PostgreSQL 随机隔离 schema，不读取私有配置或本地项目数据。运行 `bash scripts/test-backend.sh -q` 会自动创建并销毁测试数据库容器；也可显式提供名称以 `mangaflow_test_` 开头的 `MANGAFLOW_TEST_POSTGRES_URL`。前端使用 Vitest、Testing Library、ESLint、TypeScript 和生产构建作为质量门禁；组件测试放在被测组件旁，并以用户可见行为和无障碍语义为主要断言。
+
+前端构建同时检查未使用的本地变量和参数。删除内部参数时应同步更新所有调用方；路由装饰器、模型注册、独立推理进程和缓存键不能仅按文本引用数量判为死代码。历史归档、气泡素材和工作流检查点统一使用 `app.core.serialization.file_digest` 校验文件，保持已有内容寻址路径和校验值不变。测试中的 `model_engine` 已建表，不必再次执行 `create_all`。
 
 ## 新增 Provider
 
@@ -41,7 +45,7 @@ GitHub Actions 在 Python 3.11/3.12 上运行 Ruff 和 Pytest，在 Node 20 上�
 
 ## 批量性能改进
 
-当前本机已迁移至 PostgreSQL 18.6，并启用阶段检查点、原文框修复与翻译并行、CTD CUDA 和有界工作文件回收。数据库使用独立 Docker 持久卷；正常启动会加载现有 RF-DETR、MangaOCR 和 LaMa 配置。下文较早的数字是阶段性验收记录，不代表最终部署仍停留在那个阶段。最终逐项报告与测试产物位于本机忽略目录 `tmp/plan-migration-20261018/`，切库备份和正反迁移证明位于 `tmp/plan-production-cutover-20261018/`；这些目录含私有备份，不应提交或公开分享。
+当前仅支持 PostgreSQL 18 与 psycopg 3，数据库使用独立 Docker 持久卷。阶段检查点、原文框修复与翻译并行、CTD CUDA 和工作文件回收继续按配置启用。下文模型性能数字是历史专项验收记录，不代表每次运行的耗时。
 
 任务执行尝试的耗时写入 `task_execution_runs`，不会随 `/api/execution` 的最近 100 条内存采样淘汰。通过 `GET /api/tasks/{task_id}/timings?limit=50&offset=0` 查询；任务列表也支持 `limit`（1–500）和 `offset`，默认响应仍兼容原接口。旧任务没有记录时返回空列表，不推算不存在的阶段耗时。
 
@@ -57,13 +61,7 @@ CTD 保持相同模型、预处理、概率缓存键和蒙版阈值。新增最�
 
 可用 `PYTHONPATH=backend .venv/bin/python scripts/benchmark_segmentation_cache.py <原图路径>` 进行只读微基准，验证解码像素与缓存键一致并比较输入准备耗时。该脚本不加载模型、不访问云端，也不修改项目数据；输出不是整条流水线的提速倍数。
 
-数据库现在使用 Alembic 版本化迁移，SQLite 仍是默认配置。支持 psycopg 3 驱动的 PostgreSQL；只读事务不会误判为未提交写入，事务重试仅覆盖明确可重试的锁超时、序列化失败和死锁，不重试提交结果未知的连接故障。SQLite 的短写事务在进程内排队，等待时间单独计入诊断。
-
-2026-10-18 的隔离真实数据演练已完成 SQLite → PostgreSQL → SQLite 双向复制：5 个项目、629 张图片、6,544 个文本框、33,736 条区域修订、5,253 条译文、1,707 个任务及 302 条撤销记录逐表数量和内容摘要一致。检查了 14,068 个资源引用（无缺失），3 组加密密钥可解密。旧库 `cover_path` 字段保留，不因 ORM 曾停用而丢弃。演练不等于生产切库，也不表示批量性能已经验收。
-
-同一 `reading_order` 的区域统一按创建时间、ID 继续排序，避免 PostgreSQL 更新行后列表、历史与渲染返回顺序漂移。CI 增加真实 PostgreSQL 的双向迁移、并发保存、流水线、蒙版和撤销测试。离线操作及回退要求见 [配置与迁移](configuration.md)。
-
-该轮验收记录：SQLite 全量 1,141 项通过、10 项跳过；PostgreSQL 扩大回归 1,131 项通过、2 项跳过（两组专门操作 SQLite PRAGMA/写锁的测试仍由 SQLite 作业覆盖）。后端 Ruff、Python wheel 及两种 Compose 配置检查通过，wheel 已确认包含迁移脚本。蒙版历史的版本时间戳统一使用与区域响应相同的序列化，带时区的保存前置条件按同一时刻比较，避免切库后撤销缓存失效。此记录是当前迁移/保存改动的回归证据，不是尚未运行的 GPU、前端或整批性能验收结果。
+数据库使用 Alembic 版本化迁移。只读事务不会误判为未提交写入，事务重试仅覆盖明确可重试的锁超时、序列化失败和死锁，不重试提交结果未知的连接故障。阶段副本采用连接私有的临时表，仅搜索 `pg_temp`；提交、回滚、并行分支及异常关闭均由隔离测试覆盖。
 
 ### 阶段检查点与原子发布
 
@@ -79,7 +77,7 @@ CTD 保持相同模型、预处理、概率缓存键和蒙版阈值。新增最�
 
 ### 批次上下文与任务操作
 
-迁移 `20261018_05` 新增私有批次快照和依赖字段，不重建 SQLite 的任务父表，避免级联丢失已保存的检查点。快照固定提交时的模型配置、源/目标语言、术语上下文、修复配置与上页内容；私有加密配置不进入任务 API 的 `payload`。后续设置修改仅影响新批次，发布仍核验页面与区域版本。迁移资源校验也检查快照中的加密密钥及以路径为键的资源清单。
+迁移 `20261018_05` 新增私有批次快照和依赖字段，保留现有任务及检查点。快照固定提交时的模型配置、源/目标语言、术语上下文、修复配置与上页内容；私有加密配置不进入任务 API 的 `payload`。后续设置修改仅影响新批次，发布仍核验页面与区域版本。
 
 项目“翻译上下文”可选两种模式。默认 `snapshot` 让各页使用提交时快照并发翻译；`previous_page` 依赖同批次紧邻前页的翻译检查点，前页修复尚未完成时即可继续。前页不在批次内时使用其提交时快照。等待依赖不占页面名额，完成事件仅唤醒关联任务；30 秒超时只用于恢复外部状态变化。前页暂停、失败或依赖丢失会明确显示，不静默换成旧译文。
 
@@ -111,22 +109,16 @@ Python 安装包仅包含 `app` 命名空间，不打包后端测试；数据库
 
 2026-10-18 V100 16 GiB 实测：24 页（16 页包含已检测区域，共 217 区域、41 个局部窗口），CTD 累计 OpenCV 425.519 秒、CUDA 3.709 秒；P95 分别 44.920 秒与 0.331 秒。所有生成蒙版逐像素一致，未丢失字形连通分量，源图摘要保持一致。包含空白/未检测页，暂未覆盖全部气泡约束、手工蒙版、重复冷启动或完整修复质量，因此还不能作为整条流水线或整批性能的完成证明。ORT 1.20.2、Torch 2.6.0+cu126、cuDNN 9.5.1，TF32 关闭；报告保存于隔离验收目录 `ctd-parity-24.json`。
 
-该轮后续门禁：SQLite 全量 1,233 项通过、18 项跳过；PostgreSQL 全量（排除两组 SQLite 专用测试）1,231 项通过、2 项跳过；修复命名 Provider 跨阶段误用后的相关回归 107 项通过。新版 Docker 候选镜像完成构建，在无网络、权重只读挂载下通过启动、CRUD、迁移到 `20261018_05` 和真实 CUDA 推理，无需额外设置 `LD_LIBRARY_PATH`。未替换生产镜像。迁移到新版的真实数据副本再次完成正反复制，12 张业务表的数量和摘要一致，原始备份 SHA-256 未变；新增批次/检查点在该旧数据副本中为空，其迁移保留与复制行为另由带检查点的集成测试覆盖。
-
 最终固定 24 页完整 mask＋LaMa 修复验收：冷缓存从 760.99 秒降至 73.84 秒，暖缓存从 89.36 秒降至 51.66 秒。自动 mask 最大差异为并集的 0.02677%，低于 0.1% 门槛，无完整字形连通分量丢失；手工 mask 语义、局部未选中区域及 mask 外像素检查通过。这里的冷暖指应用及模型缓存，不是操作系统页缓存。两个 CTD Session 的吞吐虽提升约 21.7%，P95 却增长约 128%，未通过延迟门禁，因此实际 GPU 推理保持单路。
 
 原批次 337 页的独立副本仅进行一次真实付费翻译＋修复：墙钟 1165.67 秒（约 19 分 26 秒），336 页成功、1 页云端结果未知，数据库冲突失败为零。该未知请求未自动重发。峰值采样页面并发 4、CPU 工作 5、本地模型 1；源项目指纹和全部测试输入素材校验一致。测试使用 Docker 命名数据卷，不同于原 Windows bind mount，且历史批次有 21 页失败，不能据此声称严格同条件的整批加速倍数。整本不含真实手工 mask/手动字体，相关语义由固定集及功能回归另行覆盖。
-
-生产迁移逐表保留全部业务 ID、UTC 时间、JSON、历史、加密配置和资源引用；正反复制以及临时测试项目中新建、移动、复制、删除、撤销和重做均已验证。含新写入的反向数据库也完成内容校验，清理临时项目后原业务表摘要一致。开放业务后若需回退，仍必须再次排空并反向复制**当时最新**的 PostgreSQL 数据，不能直接使用这次演练快照。
-
-最终回归：SQLite 1,299 项通过、29 项跳过；PostgreSQL 1,304 项通过、6 项跳过（两组 SQLite 专用文件仍由 SQLite 作业覆盖）。发布运行时另通过 36 项连接/迁移专项，包括主动断开空闲及事务中连接，验证连接池恢复、回滚清理及不自动重放未知提交。导入文件清理也会先用新连接确认没有已提交记录，不能因为丢失提交确认就删除已保存的原图。
 
 导出补渲染使用普通快照数据进入有界 CPU 池，在线程内建立私有适配器。各次渲染使用独立 UUID 文件名，短事务重新核验页面版本后发布缓存；计算期间有新编辑时返回 409，不覆盖它，也不额外占用撤销步骤。归档及 ZIP 打包均不持有应用写锁，公开图片地址和项目包回导已回归验证。过期且无引用的 UUID 导出图由相同的保留期/限量回收机制处理，旧格式和用户文件不会按该规则删除。
 
 针对性回归：
 
 ```bash
-.venv/bin/pytest -q backend/tests/test_performance_foundation.py backend/tests/test_database_contention.py backend/tests/test_editor_history.py backend/tests/test_history_assets.py backend/tests/test_execution.py backend/tests/test_segmentation_performance.py
+bash scripts/test-backend.sh -q backend/tests/test_performance_foundation.py backend/tests/test_database_contention.py backend/tests/test_editor_history.py backend/tests/test_history_assets.py backend/tests/test_execution.py backend/tests/test_segmentation_performance.py
 ```
 
 ### 全流程并行、文字去重与黑白配色复核（2026-10-18）
@@ -142,3 +134,7 @@ Python 安装包仅包含 `app` 命名空间，不打包后端测试；数据库
 LaMa 的读图、裁图、合成和 PNG 保存已移出全局推理锁，只有模型加载/推理/回退位于同一安全临界区，锁顺序始终为全局模型锁→Provider 锁。4 张真实原图和保存蒙版、4 线程每轮 8 次修复的三轮本地测试，中位耗时 3.93→1.39 秒；前后像素最大差值 1，发生比例低于百万分之一。该局部测试不是整批翻译速度保证，实际 GPU 推理仍单路。
 
 真实回归夹具与专项测试：`test_dense_prose.py`、`test_hybrid_iou_dedup.py`、`test_native_prose_ocr.py`、`test_inference_lock_scope.py`、`test_translation_response_compat.py`、`test_full_pipeline_parallel.py`、`test_text_paint.py`。接口内容限制不通过程序绕过；OCR 误读、漏检测和模糊交叠仍需要质量复核，不能把文件安全检查或低 IoU 当作识别准确性的证明。
+
+### 数据库与诊断清理（2026-10-20）
+
+已移除旧文件库的驱动分支、写入串行锁、迁移复制/反向恢复工具、历史批次回放脚本及其专用测试。保留 PostgreSQL schema 升级、事务重试、并行工作副本、编辑与撤销、蒙版及模型相关回归。Python 3.11/3.12 的 CI 均运行 PostgreSQL 全量测试，不再有双数据库测试矩阵或专用排除项。仍有效的 CTD、检测与蒙版只读诊断脚本改从 PostgreSQL 一致性快照读取，读完即释放连接，再执行模型和文件操作。

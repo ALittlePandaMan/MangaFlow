@@ -6,20 +6,21 @@ import hashlib
 import json
 import math
 import queue
-import sqlite3
 import statistics
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import closing
 from pathlib import Path
 
 import cv2
 import numpy as np
 import torch
+from app.core.config import get_settings
+from app.core.db_engine import read_only_connection
 from app.services.execution import configure_native_threads
 from app.services.inpainting.segmentation_cuda import CudaSegmentationSession
 from app.services.inpainting.text_segmentation import MODEL_FILENAME, MODEL_SHA256, _probability_map
+from sqlalchemy import text
 
 
 def main():
@@ -34,9 +35,9 @@ def main():
     configure_native_threads()
     path = args.model_dir / MODEL_FILENAME
     assert hashlib.sha256(path.read_bytes()).hexdigest() == MODEL_SHA256
-    with closing(sqlite3.connect(f"file:{(args.data_dir/'mangaflow.db').as_posix()}?mode=ro",uri=True)) as db:
-        paths = [args.data_dir/row[0] for row in db.execute("""SELECT original_path FROM image_pages p WHERE project_id=?
-            AND EXISTS(SELECT 1 FROM text_regions r WHERE r.image_id=p.id) ORDER BY order_index LIMIT 24""",(args.project,))]
+    with read_only_connection(get_settings().database_url) as db:
+        paths = [args.data_dir/row[0] for row in db.execute(text("""SELECT original_path FROM image_pages p WHERE project_id=:project
+            AND EXISTS(SELECT 1 FROM text_regions r WHERE r.image_id=p.id) ORDER BY order_index LIMIT 24"""), {"project": args.project})]
     blobs = []
     for source in paths:
         image = cv2.imread(str(source))

@@ -28,7 +28,7 @@ def _render(state, models):
         db.commit()
         processor = PipelineProcessor(db)
         processor.settings = processor.settings.model_copy(update={"auto_provision_models": False})
-        processor.render(page, None, region_id=None, output_tag=uuid4().hex)
+        processor.render(page, None, output_tag=uuid4().hex)
         db.commit()
         return delta(state, capture_page(db, page.id, compact_history=False))
 

@@ -1,10 +1,10 @@
 import {Check, CircleAlert, LoaderCircle, Square, X} from 'lucide-react'
-import {memo, useEffect, useMemo, useRef, useState, useSyncExternalStore} from 'react'
+import {memo, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore} from 'react'
 import type {ImagePage, ProcessingTask} from '../../../types'
 import type {ProcessingScope} from '../../../components/LoadingUI'
-import {cn} from '../../../ui'
+import {cn, scrollbarClass} from '../../../ui'
 import {pageTaskBusyLabel, stageLabel} from '../lib/pagePresentation'
-import {COMPLETION_NOTICE_MS, TaskActivity, taskProgress} from '../lib/taskActivity'
+import {COMPLETION_NOTICE_MS, MAX_VISIBLE_TASKS, TaskActivity, taskProgress} from '../lib/taskActivity'
 
 const statusLabel = (task: ProcessingTask) => ({QUEUED:'排队中', RUNNING:task.pause_requested ? '暂停中' : '处理中',
   CANCELLING:'正在停止', PAUSED:'已暂停'} as Record<string, string>)[task.status] || task.status
@@ -20,6 +20,7 @@ export const CanvasTaskList = memo(function CanvasTaskList({activity, pages, pen
 }) {
   const state = useSyncExternalStore(activity.subscribe, activity.getSnapshot)
   const {tasks, completion, connectionIssue} = state
+  const taskList=useRef<HTMLOListElement>(null)
   const pageDetails = useMemo(() => new Map(pages.map((page,index) => [page.id,
     {filename:page.filename, number:Number.isFinite(page.order_index) ? page.order_index+1 : index+1}])), [pages])
   const [cancelErrors, setCancelErrors] = useState<Record<string,string>>({})
@@ -33,6 +34,23 @@ export const CanvasTaskList = memo(function CanvasTaskList({activity, pages, pen
     const timer = window.setTimeout(() => activity.dismissCompletion(completionId), COMPLETION_NOTICE_MS)
     return () => window.clearTimeout(timer)
   }, [activity, completionId, failed])
+
+  useLayoutEffect(() => {
+    const list=taskList.current
+    if (!list) return
+    // A viewport holds five real rows, including optional provider/error lines.
+    // Native scrolling keeps its position on progress updates without a render
+    // for every wheel event. A new operation gets a fresh list via its key.
+    const rows=Array.from(list.children).slice(0,MAX_VISIBLE_TASKS)
+    const measure=() => {
+      const height=rows.reduce((sum,row) => sum+row.getBoundingClientRect().height,0)
+      if (height > 0) list.style.maxHeight=`${height}px`
+    }
+    measure()
+    const observer=typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure)
+    rows.forEach(row => observer?.observe(row))
+    return () => observer?.disconnect()
+  }, [tasks,state.operationId])
 
   const stop = async (id: string) => {
     if (!onCancelTask || cancelRequests.has(id)) return
@@ -48,13 +66,17 @@ export const CanvasTaskList = memo(function CanvasTaskList({activity, pages, pen
   return <aside className="canvas-task-list rounded-[18px] border border-line-subtle bg-popover text-secondary shadow-panel"
     aria-label="任务进度" onPointerDown={event => event.stopPropagation()} onWheel={event => event.stopPropagation()}
     onKeyDown={event => event.stopPropagation()}>
-    <header className="flex min-h-10 items-center border-b border-line-subtle px-3.5 py-2.5"><h3 className="m-0 text-[13px] font-semibold text-ink">活动</h3></header>
+    <header className="flex min-h-10 items-center justify-between gap-3 border-b border-line-subtle px-3.5 py-2.5">
+      <h3 className="m-0 text-base font-semibold text-ink">活动</h3>
+      {finished && <button type="button" className="grid size-6 shrink-0 cursor-pointer place-items-center rounded-md border-0 bg-transparent p-0 text-muted outline-none hover:bg-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-accent/40"
+        aria-label="关闭本次操作提示" title="关闭提示" onClick={() => activity.dismissCompletion(finished.id)}><X size={14}/></button>}
+    </header>
     {connectionIssue && <p className="m-0 border-b border-line-subtle px-3.5 py-2 text-xs leading-relaxed text-warning" role="status">进度连接中断，正在重连。后台任务不会重新执行。</p>}
     {pendingLabel && scope && <div className="sr-only" role="status"
       aria-label={`${scope.kind === 'regions' ? `区域处理：${scope.regionKeys.join('、')}` : `整页处理：${scope.filename}`} · ${pendingLabel}`}>
       {scope.kind === 'regions' ? `区域处理 · ${scope.regionKeys.length} 个 ${scope.regionKeys.join('、')}` : '整页处理'} · {scope.filename} · {pendingLabel}
     </div>}
-    {!!tasks.length && <ol className="m-0 list-none p-0" aria-label="本次操作的活动任务（最多 5 个）">{tasks.map(task => {
+    {!!tasks.length && <ol key={state.operationId} ref={taskList} tabIndex={0} className={cn('canvas-task-items m-0 list-none p-0',scrollbarClass)} aria-label="本次操作的活动任务">{tasks.map(task => {
       const page = task.image_id ? pageDetails.get(task.image_id) : undefined
       const filename = page?.filename || '漫画页面'
       const target = page ? `第 ${page.number} 页：${filename}` : filename
@@ -86,11 +108,7 @@ export const CanvasTaskList = memo(function CanvasTaskList({activity, pages, pen
       <LoaderCircle size={15} className="shrink-0 animate-spin text-accent motion-reduce:animate-none"/>
       <span className="min-w-0 truncate" title={pendingLabel || batch?.label}>{pendingLabel || `正在${batch?.label}…`}</span>
     </div>}
-    {state.total > 1 && !finished && <footer className="border-t border-line-subtle px-3.5 py-2 text-xs text-muted">
-      <div className="flex items-center justify-between gap-2"><span>本次完成 {state.completed}/{state.total}</span><span className="tabular-nums">{Math.round(state.progress*100)}%</span></div>
-      {state.currentActive > tasks.length && <span className="mt-1 block">另有 {state.currentActive-tasks.length} 个任务</span>}
-    </footer>}
-    {finished && <div className="flex items-start gap-2.5 px-3.5 py-3">
+    {finished && <div className="min-h-0 overflow-y-auto overscroll-contain flex items-start gap-2.5 px-3.5 py-3">
       {finished.failed ? <CircleAlert size={17} className="mt-0.5 shrink-0 text-danger-soft-ink"/> : finished.cancelled ? <Square size={14} className="mt-1 shrink-0 text-muted"/> : <Check size={17} className="mt-0.5 shrink-0 text-success"/>}
       <div className="min-w-0 flex-1" role="status" aria-live="polite">
         <strong className="block text-sm font-semibold text-ink">{finished.failed ? '部分任务未完成' : finished.cancelled ? '已停止' : '已完成'}</strong>
@@ -99,8 +117,6 @@ export const CanvasTaskList = memo(function CanvasTaskList({activity, pages, pen
           : `本次操作已完成${finished.total>1 ? `，共 ${finished.total} 个任务` : ''}。`}</p>
         {!!finished.failed && <details className="mt-2 text-xs text-danger-soft-ink"><summary className="cursor-pointer">查看错误</summary>{finished.failures.map(task => <p key={task.id} className="mb-0 mt-1 break-words whitespace-pre-wrap">{task.image_id ? pageDetails.get(task.image_id)?.filename || '漫画页面' : '任务'}：{task.error_message || '处理失败，请核对页面状态。'}</p>)}</details>}
       </div>
-      <button type="button" className="grid size-6 shrink-0 cursor-pointer place-items-center rounded-md border-0 bg-transparent p-0 text-muted outline-none hover:bg-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-accent/40"
-        aria-label="关闭本次操作提示" title="关闭提示" onClick={() => activity.dismissCompletion(finished.id)}><X size={14}/></button>
     </div>}
   </aside>
 })

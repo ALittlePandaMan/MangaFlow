@@ -21,7 +21,38 @@ it('recovers five tasks with one batched monitor and keeps them while the visibl
   await waitFor(()=>expect(activity.getSnapshot().completion).toMatchObject({total:5,completed:5}))
   expect(statuses).toHaveBeenCalledOnce()
   expect(get).not.toHaveBeenCalled()
-  expect(api.tasks.list).toHaveBeenCalledWith('project', undefined, {limit:5,offset:0,activeFirst:true})
+  expect(api.tasks.list).toHaveBeenCalledWith('project', undefined, {limit:400,offset:0,activeFirst:true})
+})
+
+it('restores all 67 live activities before any completes instead of only the five visible rows', async () => {
+  const running=Array.from({length:67},(_,i) => taskFixture(`${i}`))
+  const list=vi.spyOn(api.tasks,'list').mockResolvedValueOnce(running).mockResolvedValue([])
+  let finish!:(tasks:ReturnType<typeof taskFixture>[]) => void
+  const statuses=vi.spyOn(api.tasks,'statuses').mockReturnValue(new Promise(resolve => {finish=resolve}))
+  const {result}=renderHook(() => useEditorTasks('project',vi.fn()))
+  await waitFor(() => expect(result.current.activity.getSnapshot().tasks).toHaveLength(67))
+  expect(list).toHaveBeenCalledOnce()
+  expect(statuses).toHaveBeenCalledExactlyOnceWith(running.map(task => task.id))
+  await act(async () => finish(running.map(task => ({...task,status:'COMPLETED',progress:1}))))
+  await waitFor(() => expect(result.current.activity.getSnapshot().completion).toMatchObject({total:67,completed:67}))
+})
+
+it('paginates recovery and status requests for books over 400 tasks without polling history', async () => {
+  const running=Array.from({length:401},(_,i) => taskFixture(`${i}`))
+  const list=vi.spyOn(api.tasks,'list').mockResolvedValueOnce(running.slice(0,400))
+    .mockResolvedValueOnce([running[400],taskFixture('old',{status:'FAILED'})]).mockResolvedValue([])
+  let finish!:(tasks:ReturnType<typeof taskFixture>[]) => void
+  const statuses=vi.spyOn(api.tasks,'statuses').mockReturnValueOnce(new Promise(resolve => {finish=resolve}))
+    .mockResolvedValueOnce([{...running[400],status:'COMPLETED'}])
+  const {result}=renderHook(() => useEditorTasks('project',vi.fn()))
+  await waitFor(() => expect(result.current.activity.getSnapshot().tasks).toHaveLength(401))
+  expect(list).toHaveBeenNthCalledWith(1,'project',undefined,{limit:400,offset:0,activeFirst:true})
+  expect(list).toHaveBeenNthCalledWith(2,'project',undefined,{limit:400,offset:400,activeFirst:true})
+  expect(result.current.activity.getSnapshot().completion).toBeNull()
+  await act(async () => finish(running.slice(0,400).map(task => ({...task,status:'COMPLETED'}))))
+  await waitFor(() => expect(result.current.activity.getSnapshot().completion).toMatchObject({total:401,completed:401,failed:0}))
+  expect(statuses.mock.calls.map(([ids]) => ids.length)).toEqual([400,1])
+  expect(statuses.mock.calls.flatMap(([ids]) => ids)).not.toContain('old')
 })
 
 it('does not start a second poller for locally owned task ids', async () => {

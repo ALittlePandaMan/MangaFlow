@@ -36,10 +36,19 @@ def test_single_lowercase_glyph_is_not_limited_to_em_height(engine):
     assert max(result.width/98, result.height/48) > .96
 
 
-def test_visible_frame_not_polygon_area_controls_size(engine):
-    reference = fitted(engine, "漫画翻译")
-    triangle = fitted(engine, "漫画翻译", polygon=[[0, 0], [160, 0], [80, 140]])
-    assert triangle.font_size == reference.font_size
+def test_visible_frame_not_polygon_area_controls_size(tmp_path):
+    region = simple_render_region()
+    region.bbox = region.translated_bbox = [40, 40, 160, 140]
+    region.polygon = region.translated_polygon = [[40, 40], [200, 40], [200, 180], [40, 180]]
+    region.translated_text = "漫画翻译"
+    background, output, layer = (tmp_path/name for name in ("bg.png", "out.png", "layer.png"))
+    Image.new("RGB", (240, 220), "white").save(background)
+    renderer = PillowRenderer()
+    reference = renderer.render(background, [region], output, layer)["layouts"][region.id]
+    region.polygon = region.translated_polygon = [[40, 40], [200, 40], [120, 180]]
+    triangle = renderer.render(background, [region], output, layer)["layouts"][region.id]
+    assert triangle["font_size"] == reference["font_size"]
+    assert not triangle["render_skipped"]
 
 
 @pytest.mark.parametrize("orientation", ["horizontal", "vertical"])

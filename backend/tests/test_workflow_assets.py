@@ -18,9 +18,8 @@ from app.models import (
 )
 from app.services.workflow_assets import collect_project_workflow_assets
 from app.storage import StorageManager
-from sqlalchemy import select, update
+from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
-from test_database_migration import target as target  # noqa: F401
 
 
 @pytest.fixture
@@ -144,7 +143,7 @@ def test_sweep_is_bounded_and_scanning_eventually_reaches_later_pages(scene):
     assert first.exists() and not any(path.exists() for path in others)
 
 
-def test_external_symlink_is_never_followed_and_sqlite_timeout_is_restored(scene,tmp_path):
+def test_external_symlink_is_never_followed_and_transaction_settings_are_restored(scene,tmp_path):
     sessions,storage,project,page,_ = scene
     generated(scene,"orphan.png")
     outside = tmp_path.parent / f"outside-{uuid4().hex}.png"
@@ -156,8 +155,7 @@ def test_external_symlink_is_never_followed_and_sqlite_timeout_is_restored(scene
         collect(scene)
         assert outside.read_bytes() == b"do not delete" and link.is_symlink()
         with sessions() as db:
-            if db.bind.dialect.name == "sqlite":
-                assert db.connection().exec_driver_sql("PRAGMA busy_timeout").scalar() == 30000
+            assert db.connection().exec_driver_sql("SHOW statement_timeout").scalar() == "0"
             assert db.scalar(select(Project.id).where(Project.id == project)) == project
     finally:
         outside.unlink()
@@ -167,10 +165,7 @@ def test_page_edit_lock_defers_collection_immediately_instead_of_waiting(scene):
     sessions,_,_,page,_ = scene
     path = generated(scene,"orphan.png")
     with sessions() as writer:
-        if writer.bind.dialect.name == "sqlite":
-            writer.execute(update(ImagePage).where(ImagePage.id == page).values(updated_at=ImagePage.updated_at))
-        else:
-            writer.execute(select(ImagePage.id).where(ImagePage.id == page).with_for_update())
+        writer.execute(select(ImagePage.id).where(ImagePage.id == page).with_for_update())
         started = time.monotonic()
         assert collect(scene)["deferred"] and path.exists()
         assert time.monotonic()-started < 2

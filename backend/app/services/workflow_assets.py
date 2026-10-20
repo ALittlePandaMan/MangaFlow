@@ -161,19 +161,9 @@ def collect_project_workflow_assets(project_id: str, *, sessions=SessionLocal, s
         return result
     with sessions() as db:
         engine = db.get_bind()
-    # Own the connection so SQLite's temporary fail-fast busy timeout is
-    # restored before it is returned to the pool, including on rollback.
     with engine.connect() as connection:
-        sqlite = connection.dialect.name == "sqlite"
-        timeout = connection.exec_driver_sql("PRAGMA busy_timeout").scalar() if sqlite else None
-        if sqlite:
-            connection.exec_driver_sql("PRAGMA busy_timeout=0")
-            connection.commit()
         try:
-            if sqlite:
-                connection.exec_driver_sql("BEGIN IMMEDIATE")
-            else:
-                connection.execute(text("SET LOCAL statement_timeout = '1000ms'"))
+            connection.execute(text("SET LOCAL statement_timeout = '1000ms'"))
             with Session(bind=connection) as db:
                 project = db.scalar(select(Project.id).where(Project.id == project_id).with_for_update(nowait=True))
                 if project is None:
@@ -207,9 +197,6 @@ def collect_project_workflow_assets(project_id: str, *, sessions=SessionLocal, s
         finally:
             # SELECT FOR UPDATE does not mutate project/user timestamps.
             connection.rollback()
-            if sqlite:
-                connection.exec_driver_sql(f"PRAGMA busy_timeout={int(timeout)}")
-                connection.commit()
     return result
 
 

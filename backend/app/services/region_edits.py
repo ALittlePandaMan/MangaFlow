@@ -134,8 +134,7 @@ def apply_page_edit(db, page_id: str, operation, action: str, *, scope=None, pre
             return entry.id
         return None
     entry_id = retry_write(db,save)
-    # SQLite reloads naive UTC whereas PostgreSQL reloads aware UTC. Return
-    # the database representation consistently so mask optimistic-version
-    # tokens match the subsequent mask-history response byte-for-byte.
+    # Reload database timestamps so mask optimistic-version tokens match the
+    # subsequent mask-history response byte-for-byte.
     db.expire_all()
     return metadata,entry_id

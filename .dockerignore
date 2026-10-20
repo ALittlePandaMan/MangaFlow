@@ -23,7 +23,5 @@ dist
 data
 models
 tmp
-*.db
-*.sqlite*
 *.log
 *.md

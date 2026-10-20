@@ -167,8 +167,7 @@ def list_images(project_id: str, db: Session = Depends(get_db)) -> list[ImageRea
         .where(ImagePage.project_id == project_id).order_by(ImagePage.order_index)).all()
     # One aggregate query, not a region-list request (or ORM lazy load) per page.
     counts = dict(db.execute(
-        # COUNT(*) uses the covering image_id index. COUNT(id) forces SQLite
-        # to visit every large text-region row just to read its non-null PK.
+        # Count rows without loading large text-region payloads.
         select(TextRegion.image_id, func.count())
         .join(ImagePage, ImagePage.id == TextRegion.image_id)
         .where(ImagePage.project_id == project_id).group_by(TextRegion.image_id)
@@ -297,16 +296,12 @@ def _needs_export_render(page, formats, storage):
 
 
 def _export_snapshot(db, project_id):
-    # selectinload executes several SELECTs. PostgreSQL READ COMMITTED (and
-    # sqlite3's legacy implicit transaction mode) can otherwise mix revisions.
+    # selectinload executes several SELECTs; READ COMMITTED can mix revisions.
     # Hold a consistent read only for the ORM reads, never for ZIP/file I/O.
     db.rollback()
     try:
         connection = db.connection()
-        if connection.dialect.name == "postgresql":
-            connection.exec_driver_sql("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
-        else:
-            connection.exec_driver_sql("BEGIN")
+        connection.exec_driver_sql("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
         project = db.scalar(select(Project).where(Project.id == project_id).execution_options(populate_existing=True)
             .options(selectinload(Project.pages).selectinload(ImagePage.regions)))
         if project is None:

@@ -54,12 +54,6 @@ data/
 # Downloaded model weights and provider caches
 /models/
 
-# Local databases
-*.db
-*.db-journal
-*.sqlite
-*.sqlite3
-
 # Logs and temporary files
 *.log
 *.tmp

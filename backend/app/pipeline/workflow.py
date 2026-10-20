@@ -11,6 +11,7 @@ from sqlalchemy import select, update
 
 from app.core.config import get_settings
 from app.core.database import SessionLocal
+from app.core.serialization import file_digest
 from app.core.transactions import retry_write
 from app.models import EditorHistoryEntry, ImagePage, ModelConfig, ProcessingTask, Project, TaskWorkflow, TextRegion
 from app.pipeline.processor import PipelineProcessor, TaskCancelled, TaskPaused
@@ -18,7 +19,6 @@ from app.pipeline.staged import run_stage
 from app.services.batch_context import POLICY_SETTINGS, batch_policy
 from app.services.checkpoints import CheckpointStore, StaleExecution
 from app.services.cloud_results import CloudResultCache, current_cloud_results
-from app.services.database_transfer import file_digest
 from app.services.execution import execution_runtime
 from app.services.task_metrics import flush_task_timings
 from app.services.translation.context import page_context

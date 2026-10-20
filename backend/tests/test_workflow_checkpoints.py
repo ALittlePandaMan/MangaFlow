@@ -19,7 +19,6 @@ from app.services.workflow_state import (
 from app.storage import StorageManager
 from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
-from test_database_migration import target as target  # noqa: F401
 
 
 @pytest.fixture

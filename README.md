@@ -21,7 +21,7 @@ Docker 默认只绑定 `127.0.0.1`。确需可信局域网访问时，可显式�
 ```mermaid
 flowchart LR
     UI[React / Konva 编辑器] --> API[FastAPI API]
-    API --> DB[(SQLite)]
+    API --> DB[(PostgreSQL)]
     API --> FS[原图与派生资源]
     API --> Q[后台任务管理器]
     Q --> P[可恢复 Pipeline]
@@ -80,11 +80,14 @@ MangaFlow 使用 [MIT License](LICENSE)。
 
 - Python 3.11 或 3.12
 - Node.js 20+
+- PostgreSQL 18 与 psycopg 3（Docker 启动会自动创建数据库服务）
 - 推荐安装 Noto Sans CJK 字体；Docker 镜像已包含
 - OpenCV fallback 仅需 CPU。MangaOCR 或其他深度模型可使用 CUDA；具体 CUDA/PyTorch 版本应与显卡驱动匹配安装
 - Docker 24+ 与 NVIDIA Container Toolkit（Docker GPU 推理）
 
 ## 本地安装与启动
+
+本地开发需先准备可连接的 PostgreSQL，设置 `MANGAFLOW_DATABASE_URL` 和进程环境中的 `PGPASSWORD`，详见[数据库配置](docs/configuration.md#postgresql-数据库)。默认 Compose 数据库仅供容器内部连接，不发布宿主机端口；完整容器运行可直接使用下文的 Docker 启动方式。
 
 ```bash
 ./scripts/bootstrap.sh
@@ -112,9 +115,9 @@ cd frontend && npm run dev
 
 “设置 → 性能与并发”可选择自动调节、固定上限或串行。默认自动模式最多处理 4 个不同页面，CPU 蒙版计算最多使用 4 个工作线程；实际放行数量根据内存余量、CPU 负载和处理耗时调整。同一页的任务保持有序，本地共享模型推理暂时统一限制为 1 路，云端请求遵守 Provider 限流。减少上限不会中断正在执行的任务。设置保存在 `data/execution-policy.json`，重启后保留。
 
-页面任务池与 CPU 计算池互相独立，子线程只计算蒙版、返回普通数据；页面任务负责数据库与撤销记录。模型加载、推理和异常回退共用保护锁；图片写入采用临时文件原子替换。SQLite 使用 WAL 和等待写锁，项目历史提交保持有序。自动调节属于保守试探，并发增加不保证每一种任务都更快。
+页面任务池与 CPU 计算池互相独立，子线程只计算蒙版、返回普通数据；页面任务负责数据库与撤销记录。模型加载、推理和异常回退共用保护锁；图片写入采用临时文件原子替换。PostgreSQL 使用短事务与行锁，项目历史提交保持有序。自动调节属于保守试探，并发增加不保证每一种任务都更快。
 
-开发环境需安装 `backend/requirements/dev.txt`（包含性能监测依赖）；生产环境安装 `base.txt` 和 `execution.txt`。可使用 `scripts/benchmark_execution.py` 在独立数据库与页面副本中对比串行和自动模式，参数见 `--help`。加上 `--ocr`、`--repair` 执行本地模型测试；脚本不调用云端 Provider，保存文本供人工核对，不把旧 OCR 当作准确率标注。
+开发环境需安装 `backend/requirements/dev.txt`（包含性能监测依赖）；生产环境安装 `base.txt` 和 `execution.txt`。使用 `bash scripts/test-backend.sh -q` 在独立 PostgreSQL 数据库运行回归；不会调用真实云端 Provider。
 
 当前可迁移配置位于 `config.yaml`，里面保存文字检测、图像修复、OCR、排版、云端翻译与字体六项活动配置，不包含数据库 ID、运行数据或任何 API Key。在设置页面安装、切换或编辑 Provider 后，后端会自动把当前生效配置原子写回该文件。Docker 后端每次启动都会幂等读取它：已有网页配置保持不变，只补齐缺失阶段；废弃的 Paddle 文字检测配置会迁移为 RF-DETR，现有页面不自动重检。配置中启用 `preload` 后会加载本地模型；MangaOCR、PaddleOCR 识字与 LaMa 可以自动下载，RF-DETR 权重需先显式安装。
 
@@ -219,4 +222,4 @@ Paddle Provider 会自动将保存的 `cuda:0` 转换为 Paddle 使用的 `gpu:0
 - **MangaOCR 首次很慢**：首次会下载和加载权重；确认缓存目录可写，GPU 环境确认 PyTorch 能识别 CUDA。
 - **OpenAI-compatible 返回解析错误**：确认服务支持 chat completions，并让模型只返回以 `R001` 等 ID 为键的 JSON 对象。
 - **修复破坏气泡边框**：在蒙版视图用橡皮擦缩小擦除范围。Inpainting 是依据上下文生成合理背景，不是恢复已不可见的真实像素。
-- **SQLite 锁冲突**：先排查长事务与额外写入进程；可暂时降低页面并发。项目已提供可选 PostgreSQL、Alembic 和离线迁移工具，切换前按[配置与迁移](docs/configuration.md)备份、演练并校验。仍只支持一个后台服务进程，不能因换库就增加 workers。
+- **数据库连接或锁冲突**：默认使用 PostgreSQL，先检查数据库健康状态与连接配置，再排查长事务或额外写入进程。配置和备份见[数据库配置](docs/configuration.md)。任务调度仍只支持一个后端服务进程，不能因换库增加 workers。

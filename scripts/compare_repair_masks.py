@@ -9,7 +9,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import sqlite3
 import subprocess
 import types
 from collections import Counter
@@ -17,6 +16,8 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+from app.core.config import get_settings
+from app.core.db_engine import read_only_connection
 from app.services.detection.artifacts import bubble_geometry_items, load_balloon_mask
 from app.services.inpainting import masking
 from app.services.inpainting.local_text import (
@@ -31,6 +32,7 @@ from app.services.inpainting.text_segmentation import text_probability
 from app.services.inpainting.verification import verify_and_retry
 from app.storage.files import StorageManager
 from PIL import Image, ImageDraw
+from sqlalchemy import text
 
 
 def render_prepared(root: Path, out: Path, device: str, model_dir: Path, verify: bool = False) -> None:
@@ -133,18 +135,20 @@ def main() -> None:
     exec(compile(baseline_source, "baseline_masking.py", "exec"), baseline.__dict__)
     baseline_revision = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
     storage = StorageManager(root)
-    connection = sqlite3.connect(f"file:{(root / 'mangaflow.db').as_posix()}?mode=ro", uri=True)
-    connection.row_factory = sqlite3.Row
+    with read_only_connection(get_settings().database_url) as connection:
+        source_pages = list(connection.execute(text("SELECT * FROM image_pages ORDER BY updated_at DESC")).mappings())
+        source_regions = {page["id"]: list(connection.execute(text(
+            "SELECT * FROM text_regions WHERE image_id=:page ORDER BY reading_order"), {"page": page["id"]}).mappings()) for page in source_pages}
     provider = SimpleLaMaInpainter({"device": args.device}) if args.inpaint else None
     results = []
     pages = []
     inference_plan = []
-    for page in connection.execute("SELECT * FROM image_pages ORDER BY updated_at DESC").fetchall():
+    for page in source_pages:
         if args.page_id and page["id"] != args.page_id:
             continue
         if args.filename and page["filename"] != args.filename:
             continue
-        manifest = json.loads(page["metadata_json"] or "{}")
+        manifest = (page["metadata_json"] or {})
         geometry = manifest.get("bubble_geometry", {})
         expected_source = {"path": page["original_path"], "width": page["width"], "height": page["height"]}
         if geometry.get("source") != expected_source:
@@ -156,14 +160,12 @@ def main() -> None:
         image, lab = masking.load_text_mask_source(source)
         probability, segmentation = (text_probability(source, args.model_dir, out / "probability-cache")
                                      if args.text_segmentation else (None, {"status": "disabled"}))
-        rows = connection.execute(
-            "SELECT * FROM text_regions WHERE image_id=? ORDER BY reading_order", (page["id"],)
-        ).fetchall()
+        rows = source_regions[page["id"]]
         exclusion = np.zeros(image.shape[:2], np.uint8)
         boxes = []
         for row in rows:
-            data = json.loads(row["layout_data"] or "{}").get("detection", {})
-            polygons = data.get("line_grouping", {}).get("source_polygons") or [json.loads(row["polygon"])]
+            data = (row["layout_data"] or {}).get("detection", {})
+            polygons = data.get("line_grouping", {}).get("source_polygons") or [row["polygon"]]
             boxes.extend(polygon_boxes(polygons))
             for polygon in polygons:
                 cv2.fillPoly(exclusion, [np.rint(polygon).astype(np.int32)], 255)
@@ -178,7 +180,7 @@ def main() -> None:
         tiles = []
         stem = f"{Path(page['filename']).stem}-{page['id'][:8]}"
         for row in rows:
-            detection = json.loads(row["layout_data"] or "{}").get("detection", {})
+            detection = (row["layout_data"] or {}).get("detection", {})
             assignment = detection.get("balloon_assignment", {})
             reference = detection.get("balloon_constraint", {}).get("instance_id")
             trusted = (
@@ -194,7 +196,7 @@ def main() -> None:
                 if trusted
                 else None
             )
-            polygons = detection.get("line_grouping", {}).get("source_polygons") or [json.loads(row["polygon"])]
+            polygons = detection.get("line_grouping", {}).get("source_polygons") or [row["polygon"]]
             key = f"{stem}-{row['region_key']}"
             old_path, new_path = out / f"{key}-old.png", out / f"{key}-new.png"
             conservative = not trusted and assignment.get("status") != "disabled"
@@ -283,7 +285,6 @@ def main() -> None:
         pages.append(stem)
         if len(pages) >= args.pages:
             break
-    connection.close()
     (out / "inference-plan.json").write_text(json.dumps(inference_plan, indent=2), encoding="utf-8")
     report = {
         "baseline_revision": baseline_revision,

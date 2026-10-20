@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import sqlite3
 import sys
 import time
 from pathlib import Path
@@ -15,9 +14,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]/"backend"))
 
 import cv2  # noqa: E402
 from app.core.config import get_settings  # noqa: E402
+from app.core.db_engine import read_only_connection  # noqa: E402
 from app.services.detection.layout import RFDetrTextDetector  # noqa: E402
 from app.services.detection.text_roles import partition_text_roles  # noqa: E402
 from PIL import Image, ImageDraw  # noqa: E402
+from sqlalchemy import text  # noqa: E402
 
 
 def main():
@@ -29,12 +30,12 @@ def main():
     parser.add_argument("--output", type=Path, default=Path("tmp/unified-layout"))
     args = parser.parse_args()
     settings = get_settings()
-    with sqlite3.connect(f"file:{(settings.data_dir/'mangaflow.db').as_posix()}?mode=ro", uri=True) as db:
+    with read_only_connection(settings.database_url) as db:
         rows = []
         for project in args.project_id:
-            rows.extend(db.execute("SELECT id,filename,original_path FROM image_pages WHERE project_id=? ORDER BY order_index LIMIT ?", (project, args.pages)).fetchall())
+            rows.extend(db.execute(text("SELECT id,filename,original_path FROM image_pages WHERE project_id=:project ORDER BY order_index LIMIT :limit"), {"project": project, "limit": args.pages}).fetchall())
         for page in args.page_id:
-            rows.extend(db.execute("SELECT id,filename,original_path FROM image_pages WHERE id=?", (page,)).fetchall())
+            rows.extend(db.execute(text("SELECT id,filename,original_path FROM image_pages WHERE id=:page"), {"page": page}).fetchall())
     if not rows:
         raise ValueError("No selected sample pages")
     args.output.mkdir(parents=True, exist_ok=True)

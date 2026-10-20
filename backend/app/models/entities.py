@@ -30,8 +30,7 @@ class Project(TimestampMixin, Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid4_str)
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     description: Mapped[str] = mapped_column(Text, default="")
-    # Retain the legacy cover reference during cross-database transfers and
-    # rollback; current API cover selection still comes from ordered pages.
+    # Historical project metadata; current covers are selected from ordered pages.
     cover_path: Mapped[str | None] = mapped_column(Text)
     source_language: Mapped[str] = mapped_column(String(32), default="ja")
     target_language: Mapped[str] = mapped_column(String(32), default="zh-CN")

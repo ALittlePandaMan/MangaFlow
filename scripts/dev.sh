@@ -6,8 +6,7 @@ repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 if [[ ! -x "$repo_dir/.venv/bin/python" || ! -d "$repo_dir/frontend/node_modules" ]]; then
   "$repo_dir/scripts/bootstrap.sh"
 else
-  [[ -f "$repo_dir/.env" ]] || cp "$repo_dir/.env.example" "$repo_dir/.env"
-  [[ -f "$repo_dir/config.yaml" ]] || cp "$repo_dir/config.example.yaml" "$repo_dir/config.yaml"
+  source "$repo_dir/scripts/prepare-config.sh"
 fi
 
 cleanup() {

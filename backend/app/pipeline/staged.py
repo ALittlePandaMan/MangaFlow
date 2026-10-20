@@ -122,7 +122,7 @@ def _run_stage(stage, state, policy, output, storage, check, progress):
             processor.inpaint(page, provider, region_id=region_id, region_ids=region_ids,
                               rebuild_clean=bool(options.get("rebuild_clean", False)))
         elif stage == "rendering":
-            processor.render(page, provider, region_id=region_id)
+            processor.render(page, provider)
         else:
             raise ValueError("Unknown staged pipeline operation")
         if stage == request.get("end_stage"):

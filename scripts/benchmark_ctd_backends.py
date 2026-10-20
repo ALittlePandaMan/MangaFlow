@@ -9,15 +9,14 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import sqlite3
 import statistics
 import time
-from contextlib import closing
 from pathlib import Path
 
 import cv2
 import numpy as np
 from app.core.config import get_settings
+from app.core.db_engine import read_only_connection
 from app.services.execution import configure_native_threads
 from app.services.inpainting.local_text import focus_windows, polygon_boxes
 from app.services.inpainting.masking import create_text_mask, load_text_mask_source
@@ -27,6 +26,7 @@ from app.services.inpainting.text_segmentation import (
     ComicTextSegmenter,
     learned_text_mask,
 )
+from sqlalchemy import text
 
 
 def main():
@@ -40,12 +40,12 @@ def main():
     if args.output.exists() or args.count < 1:
         parser.error("Use a new output directory and a positive page count")
     args.output.mkdir(parents=True)
-    with closing(sqlite3.connect(f"file:{(args.data_dir / 'mangaflow.db').as_posix()}?mode=ro", uri=True)) as db:
-        db.row_factory = sqlite3.Row
-        pages = [dict(row) for row in db.execute(
-            "SELECT id, original_path, width, height, order_index FROM image_pages WHERE project_id=? ORDER BY order_index,id", (args.project,))]
-        regions = {page["id"]: [dict(row) for row in db.execute(
-            "SELECT id,polygon,layout_data FROM text_regions WHERE image_id=? ORDER BY reading_order,created_at,id", (page["id"],))] for page in pages}
+    with read_only_connection(get_settings().database_url) as db:
+        pages = list(db.execute(text(
+            "SELECT id, original_path, width, height, order_index FROM image_pages WHERE project_id=:project ORDER BY order_index,id"), {"project": args.project}).mappings())
+        pages = [dict(row) for row in pages]
+        regions = {page["id"]: list(db.execute(text(
+            "SELECT id,polygon,layout_data FROM text_regions WHERE image_id=:page ORDER BY reading_order,created_at,id"), {"page": page["id"]}).mappings()) for page in pages}
     if len(pages) < args.count:
         raise ValueError("Not enough source pages")
     # Include low/high text density, dark backgrounds and evenly spread pages.
@@ -84,7 +84,7 @@ def main():
         digest = hashlib.sha256(source.read_bytes()).hexdigest()
         image, lab = load_text_mask_source(source)
         rows = regions[page["id"]]
-        polygons = [json.loads(row["polygon"]) if isinstance(row["polygon"], str) else row["polygon"] for row in rows]
+        polygons = [row["polygon"] for row in rows]
         boxes = polygon_boxes(polygons)
         scale = 1024 / max(image.shape[:2])
         small = [box for box in boxes if 0 < min(box[2:]) * scale < 24]
@@ -107,7 +107,7 @@ def main():
             raise RuntimeError("CUDA fell back during acceptance")
         masks, glyphs, manual = [], [], 0
         for row, polygon in zip(rows,polygons,strict=True):
-            layout = json.loads(row["layout_data"]) if isinstance(row["layout_data"],str) else row["layout_data"] or {}
+            layout = row["layout_data"] or {}
             generation = layout.get("mask_generation", {})
             if generation.get("method") == "manual_mask":
                 manual += 1

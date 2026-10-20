@@ -22,13 +22,8 @@ def upgrade():
         )
     columns = {item["name"] for item in sa.inspect(bind).get_columns("processing_tasks")}
     if "batch_id" not in columns:
-        if bind.dialect.name == "sqlite":
-            # Nullable inline REFERENCES is supported without rebuilding the
-            # parent task table (a rebuild could cascade-delete its checkpoints).
-            op.execute("ALTER TABLE processing_tasks ADD COLUMN batch_id VARCHAR(36) REFERENCES processing_batches(id)")
-        else:
-            op.add_column("processing_tasks", sa.Column("batch_id", sa.String(36),
-                sa.ForeignKey("processing_batches.id"), nullable=True))
+        op.add_column("processing_tasks", sa.Column("batch_id", sa.String(36),
+            sa.ForeignKey("processing_batches.id"), nullable=True))
     for column in (
         sa.Column("dependency_task_id", sa.String(36), nullable=True),
         sa.Column("dependency_context", sa.JSON(), nullable=True),

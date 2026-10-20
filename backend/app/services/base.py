@@ -110,7 +110,6 @@ class DetectionResult:
     balloon_mask: Any | None = field(default=None, repr=False, compare=False)
     balloon_mask_origin: tuple[int, int] | None = None
     balloon_mask_id: str | None = None
-    balloon_mask_parent_id: str | None = None
     balloon_mask_confidence: float | None = None
     # Transient line alternatives for a reconstructed prose block. If a user
     # frame covers one line, keep the other lines instead of dropping the block.

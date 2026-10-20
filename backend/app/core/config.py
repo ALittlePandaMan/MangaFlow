@@ -30,7 +30,7 @@ class Settings(BaseSettings):
     model_dir: Path = REPOSITORY_ROOT / "models"
     model_manifest_path: Path | None = None
     environment_file_path: Path = REPOSITORY_ROOT / ".env"
-    database_url: str | None = None
+    database_url: str = "postgresql+psycopg://mangaflow@127.0.0.1:5432/mangaflow"
     max_upload_mb: int = 100
     ocr_review_threshold: float = 0.65
     task_concurrency: int = Field(default=4, ge=1, le=8)
@@ -64,12 +64,6 @@ class Settings(BaseSettings):
     @classmethod
     def parse_optional_path(cls, value: Any) -> Any:
         return None if value is None or (isinstance(value, str) and not value.strip()) else value
-
-    @property
-    def resolved_database_url(self) -> str:
-        if self.database_url:
-            return self.database_url
-        return f"sqlite:///{(self.data_dir / 'mangaflow.db').as_posix()}"
 
     def ensure_directories(self) -> None:
         for directory in (

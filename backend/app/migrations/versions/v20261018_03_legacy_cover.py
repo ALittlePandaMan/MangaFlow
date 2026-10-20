@@ -1,4 +1,4 @@
-"""Preserve the legacy project cover pointer on both database backends."""
+"""Preserve the project cover pointer while upgrading PostgreSQL."""
 import sqlalchemy as sa
 from alembic import op
 

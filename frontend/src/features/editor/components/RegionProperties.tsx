@@ -24,7 +24,9 @@ interface Props {
 
 export function RegionProperties({page,regions,region,selectedRegions,selectedCount,fontOptions,busyAction,onUpdate,onUpdateMany,onAction}:Props) {
   const [layersExpanded,setLayersExpanded]=useState(true)
+  const [textExpanded,setTextExpanded]=useState(true)
   const layerListId=useId()
+  const textListId=useId()
   const layers=useEditorStore(state => state.layers), toggleLayer=useEditorStore(state => state.toggleLayer)
   const targets=selectedRegions.length ? selectedRegions : region && selectedCount === 1 ? [region] : []
   const sourceItems=regions || targets
@@ -50,7 +52,7 @@ export function RegionProperties({page,regions,region,selectedRegions,selectedCo
   },[])
   const deleteRow=useCallback(() => latest.current.onAction('delete'),[])
   useLayoutEffect(() => {
-    if(!layersExpanded || selectedCount !== 1) return
+    if(!layersExpanded || !textExpanded || selectedCount !== 1) return
     const container=list.current
     const current=container?.querySelector<HTMLElement>('[data-region-row].is-selected')
     if(!container || !current) return
@@ -60,14 +62,21 @@ export function RegionProperties({page,regions,region,selectedRegions,selectedCo
     const box=current.getBoundingClientRect(), bounds=scroller.getBoundingClientRect()
     if(box.top<bounds.top) scroller.scrollTop+=box.top-bounds.top
     else if(box.bottom>bounds.bottom) scroller.scrollTop+=Math.min(box.bottom-bounds.bottom,box.top-bounds.top)
-  },[selectionKey,selectedCount,layersExpanded])
+  },[selectionKey,selectedCount,layersExpanded,textExpanded])
   return <aside className="region-inspector">
     <TextTypesettingPanel regions={targets} fontOptions={fontOptions} busy={!!busyAction} onChange={updateMany}/>
     <h3 className="inspector-section-heading inspector-layer-heading"><button type="button" className="inspector-section-toggle" aria-expanded={layersExpanded} aria-controls={layerListId} onClick={() => setLayersExpanded(value => !value)}><Layers3 size={15}/><span>图层</span><small>{items.length+(page ? 1 : 0)}</small><ChevronDown size={15} className="inspector-section-chevron"/></button></h3>
     <div id={layerListId} ref={list} hidden={!layersExpanded} className={cn('inspector-layer-list',scrollbarClass)}>
-      <div className="inspector-group-row"><Folder size={17}/><span className="inspector-layer-title"><strong>文本</strong><small>文本组</small></span><span className="inspector-layer-opacity">100%</span><button type="button" className="inspector-icon-button inspector-eye" aria-label={layers.translated ? '隐藏文本组' : '显示文本组'} disabled={!!busyAction} onClick={() => toggleLayer('translated')}>{layers.translated ? <Eye size={16}/> : <EyeOff size={16}/>}</button></div>
-      {items.map(item => <RegionLayerRow key={item.id} region={item} selected={selected.has(item.id)} expanded={selectedCount===1 && selected.has(item.id)} disabled={!!busyAction} onSelect={selectRow} onUpdate={update} onDelete={deleteRow}/>)}
-      {!items.length && <p className="inspector-empty">暂无文本区域，识别或创建文本框后会显示在这里。</p>}
+      <div className="inspector-group-row">
+        <button type="button" className="inspector-group-toggle" aria-label={textExpanded ? '折叠文本组' : '展开文本组'} aria-expanded={textExpanded} aria-controls={textListId} onClick={() => setTextExpanded(value => !value)}>
+          <Folder size={17}/><span className="inspector-layer-title"><strong>文本</strong><small>文本组</small></span><ChevronDown size={14} className="inspector-group-chevron"/>
+        </button>
+        <span className="inspector-layer-opacity">100%</span><button type="button" className="inspector-icon-button inspector-eye" aria-label={layers.translated ? '隐藏文本组' : '显示文本组'} disabled={!!busyAction} onClick={() => toggleLayer('translated')}>{layers.translated ? <Eye size={16}/> : <EyeOff size={16}/>}</button>
+      </div>
+      <div id={textListId} hidden={!textExpanded}>
+        {items.map(item => <RegionLayerRow key={item.id} region={item} selected={selected.has(item.id)} expanded={selectedCount===1 && selected.has(item.id)} disabled={!!busyAction} onSelect={selectRow} onUpdate={update} onDelete={deleteRow}/>)}
+        {!items.length && <p className="inspector-empty">暂无文本区域，识别或创建文本框后会显示在这里。</p>}
+      </div>
       {page && <div className="inspector-image-row"><Layers3 size={17}/><span className="inspector-layer-title"><strong>Mask</strong><small>蒙版叠加</small></span><button type="button" className="inspector-icon-button inspector-eye" disabled={!!busyAction} aria-label={layers.mask ? '隐藏 Mask 图层' : '显示 Mask 图层'} aria-pressed={!!layers.mask} onClick={() => toggleLayer('mask')}>{layers.mask ? <Eye size={16}/> : <EyeOff size={16}/>}</button></div>}
     </div>
   </aside>

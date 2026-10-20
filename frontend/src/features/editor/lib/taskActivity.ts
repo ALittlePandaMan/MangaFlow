@@ -20,12 +20,10 @@ export interface TaskCompletion {
 }
 
 interface ActivitySnapshot {
+  operationId: number
   tasks: ProcessingTask[]
   active: number
   total: number
-  completed: number
-  currentActive: number
-  progress: number
   recovering: boolean
   completion: TaskCompletion | null
   connectionIssue: boolean
@@ -40,8 +38,8 @@ export class TaskActivity {
   private listeners = new Set<() => void>()
   private operation = 0
   private dismissed = false
-  private snapshot: ActivitySnapshot = {tasks:[], active:0, total:0, completed:0, currentActive:0,
-    progress:0, recovering:false, completion:null, connectionIssue:false}
+  private snapshot: ActivitySnapshot = {operationId:0, tasks:[], active:0, total:0,
+    recovering:false, completion:null, connectionIssue:false}
   constructor(private projectId: string) {}
 
   subscribe = (listener: () => void) => {this.listeners.add(listener); return () => {this.listeners.delete(listener)}}
@@ -141,9 +139,9 @@ export class TaskActivity {
     const completion = current.length && !pending.length && !this.snapshot.recovering && !this.dismissed
       ? {id:this.operation, total:current.length, completed, failed:failed.length, cancelled, failures:failed.slice(0, MAX_VISIBLE_TASKS)} : null
     this.snapshot = {...this.snapshot,
-      tasks:pending.sort((a,b) => priority(a)-priority(b) || newestFirst(a,b)).slice(0, MAX_VISIBLE_TASKS),
-      active:all.filter(isActiveTask).length, total:current.length, completed, currentActive:pending.length,
-      progress:current.length ? current.reduce((sum, task) => sum + taskProgress(task), 0) / current.length : 0,
+      operationId:this.operation,
+      tasks:pending.sort((a,b) => priority(a)-priority(b) || newestFirst(a,b)),
+      active:all.filter(isActiveTask).length, total:current.length,
       completion,
     }
     this.emit()

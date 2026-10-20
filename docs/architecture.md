@@ -39,7 +39,7 @@ flowchart LR
   MASK --> INPAINT[Inpainting]
   INPAINT --> LAYOUT[Layout]
   LAYOUT --> RENDER[Rendering]
-  API --> DB[(SQLite / PostgreSQL)]
+  API --> DB[(PostgreSQL)]
   API --> STORE[Project storage]
 ```
 
@@ -47,12 +47,12 @@ flowchart LR
 
 ## 数据所有权
 
-- SQLite 或 PostgreSQL 保存 Project、ImagePage、TextRegion、任务、检查点和 Provider 配置元数据。
+- PostgreSQL 保存 Project、ImagePage、TextRegion、任务、检查点和 Provider 配置元数据。
 - `data/projects/` 保存用户原图与派生文件，`data/exports/` 保存导出结果。
 - `models/` 保存可重新下载的本地模型缓存。
 - `config.yaml` 保存六项生效配置；`.env` 保存密钥和环境覆盖项。
 
-数据库 schema 由 Alembic 版本迁移维护；已提供可选 PostgreSQL Compose 和停写状态下的双向离线复制、资源核验工具。切库步骤见[配置与迁移](configuration.md)，不能直接改 URL 后忽略原数据和密钥。
+数据库只使用 PostgreSQL，schema 由 Alembic 版本迁移维护，默认 Compose 包含数据库服务及独立持久卷。跨设备迁移需同时恢复 PostgreSQL 备份、图片资产和密钥，步骤见[配置与迁移](configuration.md)。
 
 ## 前端加载策略
 
@@ -73,3 +73,5 @@ GPU 指标使用 [NVIDIA 官方选择性查询](https://docs.nvidia.com/deploy/n
 - [FastAPI Full Stack Template](https://github.com/fastapi/full-stack-fastapi-template)：保留清晰的 `backend/`、`frontend/`、`scripts/` 与 Compose 边界。
 - [manga-image-translator](https://github.com/zyddnys/manga-image-translator)：按检测、OCR、修复、翻译和渲染拆分漫画处理能力。
 - [GitHub Community Profile](https://docs.github.com/en/communities/setting-up-your-project-for-healthy-contributions/about-community-profiles-for-public-repositories)：组织贡献、安全与协作文件。
+
+阶段执行副本使用连接私有的 PostgreSQL 临时表，连接只允许搜索 `pg_temp`，不能回落读取正式业务表。提交与回滚不会丢失临时表，物理连接关闭后自动清除；不会为工作副本创建持久化 schema。模型计算仍不持有正式页面的写事务。

@@ -9,7 +9,6 @@ from types import SimpleNamespace
 import httpx
 import pytest
 from app.api import models as model_api
-from app.core.database import Base
 from app.models import ModelConfig
 from app.services.base import ProviderError
 from app.services.infra import model_manifest as manifests
@@ -18,7 +17,7 @@ from app.services.ocr import cloud
 from app.services.ocr.cloud import CloudMultimodalOCRProvider
 from app.services.ocr.prompts import DEFAULT_OCR_PROMPT
 from PIL import Image
-from sqlalchemy import create_engine, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 from test_model_manifest import manifest_payload
 from test_pipeline import manga_page, wait_for_task
@@ -152,15 +151,13 @@ def test_cloud_ocr_config_roundtrip_and_independent_key(client, monkeypatch, tmp
     assert manifests.load_model_manifest(tmp_path / "config.yaml").stages["ocr"].api_key_env is None
 
 
-def test_manifest_cloud_ocr_reload_and_setup_never_call_network(monkeypatch):
+def test_manifest_cloud_ocr_reload_and_setup_never_call_network(monkeypatch, model_engine):
     monkeypatch.setattr(cloud.httpx, "Client", lambda **kwargs: pytest.fail("Setup must not upload images"))
     monkeypatch.setenv("MANGAFLOW_OCR_API_KEY", "ocr-environment-key")
     monkeypatch.setenv("MANGAFLOW_TRANSLATION_API_KEY", "translation-environment-key")
     payload = manifest_payload(lightweight=True)
     payload["stages"]["ocr"] = {"provider": "cloud-multimodal", "api_key_env": "MANGAFLOW_OCR_API_KEY", "config": {"base_url": CONFIG["base_url"], "model": "vision-model"}}
-    engine = create_engine("sqlite:///:memory:")
-    Base.metadata.create_all(engine)
-    with Session(engine) as db:
+    with Session(model_engine) as db:
         manifests.apply_model_manifest(db, payload)
         stage = next(item for item in setup_status_report(db, validate_models=True)["stages"] if item["kind"] == "ocr")
         assert stage["status"] == "ready"
@@ -170,7 +167,6 @@ def test_manifest_cloud_ocr_reload_and_setup_never_call_network(monkeypatch):
         ocr.encrypted_api_key = None
         db.commit()
         assert next(item for item in setup_status_report(db)["stages"] if item["kind"] == "ocr")["status"] == "error"
-    engine.dispose()
 
 
 def test_pipeline_can_rerun_selected_cloud_provider_and_preserve_source_on_failure(client, monkeypatch):

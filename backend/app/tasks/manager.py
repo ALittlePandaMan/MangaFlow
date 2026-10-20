@@ -234,7 +234,7 @@ class TaskManager:
                     await asyncio.shield(future)
                     raise
             except Exception as exc:
-                # The failure handler can itself fail (e.g. SQLite is locked).
+                # The failure handler can itself fail (e.g. the database is unavailable).
                 # Keep ownership of this page until the terminal state is saved;
                 # expose the failure immediately instead of polling stale RUNNING.
                 error = str(exc)

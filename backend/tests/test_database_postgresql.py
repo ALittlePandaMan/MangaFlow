@@ -13,7 +13,6 @@ from app.services.editor_history import begin_task_history, finish_task_history
 from sqlalchemy import select, text, update
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
-from test_database_migration import target as target  # noqa: F401
 
 
 def test_read_transactions_are_clean_but_flushed_core_and_raw_writes_are_not(target):
@@ -52,7 +51,7 @@ def test_nested_retry_is_rejected_and_outer_write_is_rolled_back(target):
         assert retry_write(db, lambda: 42) == 42
 
 
-def test_tied_reading_order_survives_updates_and_history_on_both_engines(target):
+def test_tied_reading_order_survives_updates_and_history_on_postgresql(target):
     from datetime import datetime, timedelta, timezone
 
     from app.api.regions import list_regions
@@ -81,8 +80,6 @@ def test_tied_reading_order_survives_updates_and_history_on_both_engines(target)
 
 
 def test_postgresql_lock_timeout_retries_transaction_and_restores_local_timeout(target):
-    if target.dialect.name != "postgresql":
-        pytest.skip("PostgreSQL-specific lock test")
     upgrade_database(target)
     with Session(target) as db:
         project = Project(name="before")
@@ -118,8 +115,6 @@ def test_postgresql_lock_timeout_retries_transaction_and_restores_local_timeout(
 
 
 def test_postgresql_pool_recovers_dead_idle_and_inflight_connections(target):
-    if target.dialect.name != "postgresql":
-        pytest.skip("PostgreSQL-specific connection recovery test")
     upgrade_database(target)
     with Session(target) as db:
         project = Project(name="committed before disconnect")

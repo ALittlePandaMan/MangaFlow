@@ -10,7 +10,7 @@ import {EditorWorkspace} from '../features/editor/components/EditorWorkspace'
 import {ClassificationStatus} from '../features/editor/components/ClassificationStatus'
 import {EditorHeaderActions} from '../features/editor/components/EditorHeaderActions'
 import {ImmersiveReader} from '../features/editor/components/ImmersiveReader'
-import { Archive, BookOpenText, CheckCircle2, ChevronDown, Download, Eraser, Image as ImageIcon, ImagePlus, Languages, Layers3, Maximize, RotateCcw, ScanText, Trash2, Upload } from 'lucide-react'
+import { Archive, BookOpenText, CheckCircle2, ChevronDown, Download, Eraser, Image as ImageIcon, ImagePlus, Images, Languages, Layers3, Maximize, RotateCcw, ScanText, Trash2, Upload } from 'lucide-react'
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
 import type { MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, SetStateAction } from 'react'
 import { createPortal } from 'react-dom'
@@ -1885,7 +1885,12 @@ export function EditorPage() {
       onPreviousPage={!pageNavigationBusy && previousPage ? () => navigatePage(previousPage.id) : undefined}
       onNextPage={!pageNavigationBusy && nextPage ? () => navigatePage(nextPage.id) : undefined} pages={
       <aside className="flex min-h-0 flex-col border-r border-line-subtle bg-panel">
-        <div className="flex h-12 shrink-0 items-center justify-between border-b border-line-subtle px-3.5 text-[13px] font-semibold text-secondary"><span>页面</span><button className={cn(buttonClass, '!size-8 !min-h-8 !p-0 border-0 bg-transparent')} disabled={editorBusy} title={`导入图片 (${formatShortcut(shortcuts['page.import'])})`} aria-label="导入图片" aria-keyshortcuts={shortcutToAria(shortcuts['page.import'])} onClick={openImagePicker}>{uploadingPages ? <ButtonLoading compact label="正在导入图片"/> : <ImagePlus aria-hidden="true" size={16}/>}</button></div>
+        <header className="editor-pages-heading">
+          <div className="editor-pages-heading-row">
+            <h3 className="editor-pages-title"><Images aria-hidden="true" size={15}/><span>页面</span></h3>
+            <button type="button" className="editor-pages-import" disabled={editorBusy} title={`导入图片 (${formatShortcut(shortcuts['page.import'])})`} aria-label="导入图片" aria-keyshortcuts={shortcutToAria(shortcuts['page.import'])} onClick={openImagePicker}>{uploadingPages ? <ButtonLoading compact label="正在导入图片"/> : <ImagePlus aria-hidden="true" size={15}/>}</button>
+          </div>
+        </header>
         <VirtualPageList items={pages} selectedPageId={selectedPageId} listRef={pageListRef} className={cn('min-h-0 flex-1 overflow-auto p-2.5', scrollbarClass)} onContextMenu={openImagePickerFromBlank}
           empty={<div className="flex min-h-full items-center justify-center"><button className={`${buttonClass} min-h-[140px] w-full flex-col border-dashed bg-transparent text-[12px] text-muted`} disabled={editorBusy} onClick={openImagePicker}><Upload size={22}/>导入漫画图片</button></div>}>{(item, index) => {
           const dropDirection = pageDrag && pageDrag.overIndex === index && pageDrag.fromIndex !== index

@@ -796,7 +796,7 @@ function MangaCanvasComponent({ page, regions, onCreate, onUpdate, onUpdateMany,
       <button className={cn(contextButtonClass, runningAction === 'translate' && 'bg-accent/10 text-ink')} role="menuitem" disabled={!!runningAction} title={`重新翻译 (${formatShortcut(shortcuts['region.translate'])})`} aria-keyshortcuts={shortcutToAria(shortcuts['region.translate'])} onClick={() => runRegionContextAction('translate')}>{runningAction === 'translate' ? <ButtonLoading label="翻译处理中…"/> : <><Languages size={15}/>重新翻译</>}</button>
     </div>}
     <span className="canvas-touch-hint pointer-events-none absolute bottom-3 left-3 rounded-md bg-panel/90 px-2 py-1 text-[11px] text-muted">双指缩放 / 移动</span>
-    <div className="pointer-events-none absolute bottom-3 right-3 min-w-12 rounded-lg border border-line-strong bg-canvas/90 px-2.5 py-1.5 text-center font-mono text-[11px] font-semibold text-ink shadow-soft backdrop-blur-md">{Math.round(zoom * 100)}%</div>
+    <span aria-label="画布缩放比例" className="pointer-events-none absolute bottom-3 right-3 font-mono text-[11px] font-semibold text-ink">{Math.round(zoom * 100)}%</span>
   </div>
 }
 

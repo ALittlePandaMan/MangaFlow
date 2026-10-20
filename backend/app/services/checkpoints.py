@@ -7,9 +7,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
+from app.core.serialization import file_digest
 from app.core.transactions import retry_write
 from app.models import ProcessingTask, StageCheckpoint, TaskWorkflow
-from app.services.database_transfer import file_digest
 from app.services.workflow_state import fingerprint, page_version
 from sqlalchemy import func, select
 

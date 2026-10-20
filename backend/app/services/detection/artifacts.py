@@ -8,6 +8,7 @@ from typing import Any
 
 import cv2
 import numpy as np
+from app.core.serialization import file_digest
 from app.storage.files import StorageManager
 from PIL import Image
 
@@ -27,7 +28,6 @@ def persist_balloon_mask(
     origin: tuple[int, int] | None,
     image_shape: tuple[int, int],
     confidence: float | None,
-    parent_instance_id: str | None,
 ) -> dict[str, Any]:
     """Persist one exact compact instance mask and return its JSON manifest entry."""
 
@@ -65,7 +65,7 @@ def persist_balloon_mask(
     destination = directory / f"{safe_id}-{digest[:16]}.png"
     temporary = directory / f".{safe_id}.{uuid.uuid4().hex}.tmp.png"
     try:
-        if not destination.is_file() or hashlib.sha256(destination.read_bytes()).hexdigest() != digest:
+        if not destination.is_file() or file_digest(destination) != digest:
             temporary.write_bytes(payload)
             temporary.replace(destination)
     finally:
@@ -77,8 +77,8 @@ def persist_balloon_mask(
         "size": [width, height],
         "bbox": [float(origin_x), float(origin_y), float(width), float(height)],
         "confidence": round(float(confidence or 0.0), 4),
-        "kind": "split_child" if parent_instance_id else "instance",
-        "parent_bubble_id": parent_instance_id,
+        "kind": "instance",
+        "parent_bubble_id": None,
         "sha256": digest,
     }
 
@@ -141,12 +141,7 @@ def load_balloon_mask(
         raise ValueError("Balloon constraint file is missing")
     expected_sha256 = entry.get("sha256")
     if isinstance(expected_sha256, str) and expected_sha256:
-        digest = hashlib.sha256()
-        with path.open("rb") as stream:
-            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-                digest.update(chunk)
-        actual_sha256 = digest.hexdigest()
-        if actual_sha256 != expected_sha256:
+        if file_digest(path) != expected_sha256:
             raise ValueError("Balloon constraint checksum mismatch")
 
     try:

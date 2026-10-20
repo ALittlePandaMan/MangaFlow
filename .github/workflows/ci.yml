@@ -20,6 +20,19 @@ jobs:
       fail-fast: false
       matrix:
         python-version: ['3.11', '3.12']
+    env:
+      MANGAFLOW_TEST_POSTGRES_URL: postgresql+psycopg://postgres:ci-isolated-only@127.0.0.1:5432/mangaflow_test_ci
+    services:
+      postgres:
+        image: postgres:18-bookworm
+        env:
+          POSTGRES_PASSWORD: ci-isolated-only
+          POSTGRES_DB: mangaflow_test_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d mangaflow_test_ci"
+          --health-interval 5s --health-timeout 3s --health-retries 12
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
@@ -30,43 +43,9 @@ jobs:
       - name: Install dependencies
         run: python -m pip install -r backend/requirements/dev.txt
       - name: Lint
-        run: ruff check backend/app backend/tests
+        run: ruff check backend/app backend/tests scripts
       - name: Test
         run: pytest -q
-
-  postgresql:
-    name: PostgreSQL migration and concurrency
-    runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:18-bookworm
-        env:
-          POSTGRES_PASSWORD: ci-isolated-only
-          POSTGRES_DB: mangaflow_test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres -d mangaflow_test"
-          --health-interval 5s --health-timeout 3s --health-retries 12
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
-        with:
-          python-version: '3.12'
-      - name: Install dependencies
-        run: python -m pip install -r backend/requirements/dev.txt
-      - name: Verify forward/reverse migration and transaction safety
-        env:
-          MANGAFLOW_TEST_POSTGRES_URL: postgresql+psycopg://postgres:ci-isolated-only@127.0.0.1:5432/mangaflow_test
-        run: pytest -q backend/tests/test_database_migration.py backend/tests/test_database_postgresql.py
-      - name: Create isolated application test database
-        run: python -c "import psycopg; c=psycopg.connect('host=127.0.0.1 dbname=mangaflow_test user=postgres password=ci-isolated-only',autocommit=True); c.execute('CREATE DATABASE mangaflow_test_app'); c.close()"
-      - name: Verify pipeline, masks and undo on PostgreSQL
-        env:
-          MANGAFLOW_TEST_APP_POSTGRES_URL: postgresql+psycopg://postgres:ci-isolated-only@127.0.0.1:5432/mangaflow_test_app
-        # These two suites explicitly exercise SQLite PRAGMA/write locks;
-        # the regular backend matrix runs them against SQLite instead.
-        run: pytest -q --ignore=backend/tests/test_database_contention.py --ignore=backend/tests/test_performance_foundation.py
 
   frontend:
     name: Frontend / Node 20
@@ -111,11 +90,10 @@ jobs:
           with ZipFile(next(Path('/tmp/mangaflow-wheel').glob('*.whl'))) as wheel:
               names = wheel.namelist()
               assert not any(name.startswith('tests/') for name in names), 'Tests belong in the source tree, not the runtime wheel'
+              assert 'app/services/database_transfer.py' not in names, 'Deleted migration tools must not return via build caches'
               assert any(name.startswith('app/migrations/versions/v') for name in names), 'Database migrations must ship with the application'
           PY
-      - name: Validate Docker Compose
-        run: docker compose config --quiet
-      - name: Validate optional PostgreSQL Compose
+      - name: Validate PostgreSQL Docker Compose
         env:
           MANGAFLOW_POSTGRES_PASSWORD: ci-config-validation-only
-        run: docker compose -f docker-compose.yml -f docker-compose.postgres.yml config --quiet
+        run: docker compose config --quiet

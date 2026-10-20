@@ -6,7 +6,6 @@ import json
 
 import httpx
 import pytest
-from app.core.database import Base
 from app.core.secrets import get_secret_store
 from app.models import ModelConfig
 from app.services.base import ProviderError
@@ -15,7 +14,6 @@ from app.services.ocr import generic
 from app.services.ocr.generic import GenericCloudOCRProvider
 from app.services.ocr.prompts import DEFAULT_OCR_PROMPT
 from PIL import Image
-from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 CONFIG = {"base_url": "https://ocr.example/recognize", "api_key": "ocr-test-key", "retries": 0}
@@ -123,14 +121,11 @@ def test_truncation_and_refusal_rejected(source, monkeypatch):
         monkeypatch.undo()
 
 
-def test_generic_setup_without_key_when_auth_disabled():
-    engine = create_engine("sqlite:///:memory:")
-    Base.metadata.create_all(engine)
-    with Session(engine) as db:
+def test_generic_setup_without_key_when_auth_disabled(model_engine):
+    with Session(model_engine) as db:
         db.add(ModelConfig(kind="ocr", name="generic", provider="cloud-ocr", enabled=True, is_default=True, config={"base_url": CONFIG["base_url"], "auth_mode": "none"}))
         db.commit()
         assert next(item for item in setup_status_report(db)["stages"] if item["kind"] == "ocr")["status"] == "ready"
-    engine.dispose()
 
 
 def test_reuse_translation_copies_only_connection_and_never_leaks_key(client):

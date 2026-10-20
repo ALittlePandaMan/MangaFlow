@@ -15,7 +15,7 @@ def test_checkpoint_balloon_artifact_is_accepted_only_within_its_page_and_checks
     page = storage.page_dir("project","page")
     output = page/"workflows"/str(uuid4())/str(uuid4())
     entry = persist_balloon_mask(storage,output,instance_id="bubble",mask=np.ones((10,12),np.uint8),
-        origin=(2,3),image_shape=(40,50),confidence=.99,parent_instance_id=None)
+        origin=(2,3),image_shape=(40,50),confidence=.99)
     loaded = load_balloon_mask(storage,page,entry,image_shape=(40,50))
     assert loaded.shape==(40,50) and cv2.countNonZero(loaded)==120
     with pytest.raises(ValueError,match="does not belong"):
@@ -44,7 +44,6 @@ def test_balloon_mask_png_round_trip_is_pixel_exact(tmp_path: Path) -> None:
         origin=(29, 41),
         image_shape=(120, 140),
         confidence=0.93726,
-        parent_instance_id=None,
     )
     restored = load_balloon_mask(
         storage,
@@ -59,6 +58,11 @@ def test_balloon_mask_png_round_trip_is_pixel_exact(tmp_path: Path) -> None:
     assert entry["origin"] == [29, 41]
     assert entry["size"] == [53, 37]
     assert entry["confidence"] == 0.9373
+    assert entry["kind"] == "instance" and entry["parent_bubble_id"] is None
+    # Retired split metadata in existing projects remains readable, even though
+    # the unified detector only creates independent balloon instances now.
+    legacy = {**entry, "kind": "split_child", "parent_bubble_id": "retired-parent"}
+    assert np.array_equal(load_balloon_mask(storage, page_directory, legacy, image_shape=(120, 140)), expected)
     assert storage.absolute(entry["path"]).name.startswith("bubble_ellipse_1-")
 
 
@@ -73,7 +77,6 @@ def test_balloon_mask_rejects_corrupted_png(tmp_path: Path) -> None:
         origin=(4, 6),
         image_shape=(40, 50),
         confidence=0.9,
-        parent_instance_id=None,
     )
     storage.absolute(entry["path"]).write_bytes(b"not-a-png")
 
@@ -92,7 +95,6 @@ def test_balloon_mask_rejects_checksum_valid_empty_png(tmp_path: Path) -> None:
         origin=(4, 6),
         image_shape=(40, 50),
         confidence=0.9,
-        parent_instance_id=None,
     )
     path = storage.absolute(entry["path"])
     assert cv2.imwrite(str(path), np.zeros((8, 12), dtype=np.uint8))
@@ -118,7 +120,6 @@ def test_changed_balloon_mask_keeps_previous_content_addressed_artifact(tmp_path
         origin=(4, 6),
         image_shape=(40, 50),
         confidence=0.9,
-        parent_instance_id=None,
     )
     second = persist_balloon_mask(
         storage,
@@ -128,7 +129,6 @@ def test_changed_balloon_mask_keeps_previous_content_addressed_artifact(tmp_path
         origin=(4, 6),
         image_shape=(40, 50),
         confidence=0.9,
-        parent_instance_id=None,
     )
 
     assert first["path"] != second["path"]
@@ -154,7 +154,6 @@ def test_balloon_mask_rejects_geometry_outside_page(tmp_path: Path) -> None:
             origin=(39, 33),
             image_shape=(40, 50),
             confidence=0.9,
-            parent_instance_id=None,
         )
 
     entry = persist_balloon_mask(
@@ -165,7 +164,6 @@ def test_balloon_mask_rejects_geometry_outside_page(tmp_path: Path) -> None:
         origin=(4, 6),
         image_shape=(40, 50),
         confidence=0.9,
-        parent_instance_id=None,
     )
     entry["origin"] = [45, 35]
     with pytest.raises(ValueError, match="escapes the source image"):
@@ -178,7 +176,7 @@ def archived_balloon(tmp_path: Path):
     compact = np.zeros((20, 24), dtype=np.uint8)
     cv2.ellipse(compact, (12, 10), (10, 8), 0, 0, 360, 255, -1)
     entry = persist_balloon_mask(storage, page_directory, instance_id="bubble-history",
-        mask=compact, origin=(4, 6), image_shape=(40, 50), confidence=.95, parent_instance_id=None)
+        mask=compact, origin=(4, 6), image_shape=(40, 50), confidence=.95)
     live = load_balloon_mask(storage, page_directory, entry, image_shape=(40, 50))
     directory = storage.project_dir("project") / "history" / "assets"
     directory.mkdir(parents=True, exist_ok=True)

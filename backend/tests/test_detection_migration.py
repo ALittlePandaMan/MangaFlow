@@ -1,18 +1,14 @@
 from copy import deepcopy
 
-from app.core.database import Base
 from app.models import ModelConfig
 from app.services.infra.detection_migration import migrate_retired_detection_configs
 from app.services.infra.model_manifest import ModelManifest, load_model_manifest
 from app.services.registry import ProviderRegistry
-from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 
-def test_migrates_only_retired_detectors_preserving_defaults_ids_and_ocr():
-    engine = create_engine("sqlite:///:memory:")
-    Base.metadata.create_all(engine)
-    with Session(engine, expire_on_commit=False) as db:
+def test_migrates_only_retired_detectors_preserving_defaults_ids_and_ocr(model_engine):
+    with Session(model_engine, expire_on_commit=False) as db:
         legacy = ModelConfig(kind="detection", name="old detector", provider="paddleocr", is_default=True,
                              config={"device": "cpu", "bubble_grouping": True, "text_classification": False})
         ocr = ModelConfig(kind="ocr", name="Paddle OCR", provider="paddleocr", config={"language": "japan"})
@@ -29,7 +25,6 @@ def test_migrates_only_retired_detectors_preserving_defaults_ids_and_ocr():
         assert ocr.provider == "paddleocr" and ocr.config == {"language": "japan"}
         assert native.config == {"text_threshold": .7} and not native.is_default
         assert migrate_retired_detection_configs(db) == 0
-    engine.dispose()
 
 
 def test_old_manifest_migrates_before_provider_validation(tmp_path):

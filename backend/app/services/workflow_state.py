@@ -1,8 +1,8 @@
 """Value-only page snapshots and conflict-detecting branch merges.
 
 No session, ORM identity, provider instance, or mutable image crosses a worker
-boundary. Existing stage algorithms can operate on a private in-memory database
-adapter; its transactions cannot lock the application's database.
+boundary. Stages use connection-private PostgreSQL temporary tables, with no
+business schema on their search path. Closing the connection removes all rows.
 """
 from __future__ import annotations
 
@@ -12,12 +12,15 @@ from contextlib import contextmanager
 from copy import deepcopy
 from datetime import datetime
 
+from app.core.config import get_settings
 from app.core.database import Base
 from app.core.db_engine import create_database_engine
+from app.core.serialization import normalized
 from app.models import ImagePage, Project, RegionRevision, TextRegion, Translation
-from app.services.database_transfer import normalized
 from sqlalchemy import DateTime, select
 from sqlalchemy.orm import Session
+from sqlalchemy.pool import NullPool
+from sqlalchemy.schema import CreateTable
 
 COLLECTIONS = {"regions": TextRegion, "translations": Translation, "revisions": RegionRevision}
 GEOMETRY_HISTORY = {"bbox", "polygon", "translated_bbox", "translated_polygon", "rotation", "perspective_warp"}
@@ -102,21 +105,31 @@ def current_page_version(db: Session, page_id: str) -> str:
 
 @contextmanager
 def private_page(state: dict):
-    """Single-thread, disposable adapter; never migrates or starts workers."""
-    engine = create_database_engine("sqlite://")
-    Base.metadata.create_all(engine)
+    """Disposable ORM adapter that cannot fall through to business tables.
+
+    Temporary tables survive stage commits/rollbacks, but never their physical
+    connection. NullPool guarantees cleanup on success, failure or cancellation.
+    All mapped tables are shadowed, including configuration and task relations.
+    """
+    engine = create_database_engine(get_settings().database_url, poolclass=NullPool,
+        connect_args={"options": "-c timezone=UTC -c search_path=pg_temp"})
     try:
-        with Session(engine, expire_on_commit=False, autoflush=False) as db:
-            db.add(Project(**decode(Project, state["project"])))
-            db.flush()
-            page = ImagePage(**decode(ImagePage, state["page"]))
-            db.add(page)
-            db.flush()
-            for name, model in COLLECTIONS.items():
-                db.add_all(model(**decode(model, row)) for row in state[name].values())
+        with engine.connect() as connection:
+            for table in Base.metadata.sorted_tables:
+                ddl = str(CreateTable(table).compile(dialect=engine.dialect))
+                connection.exec_driver_sql(ddl.replace("CREATE TABLE", "CREATE TEMPORARY TABLE", 1))
+            connection.commit()  # Rollbacks inside a stage must not drop its tables.
+            with Session(bind=connection, expire_on_commit=False, autoflush=False) as db:
+                db.add(Project(**decode(Project, state["project"])))
                 db.flush()
-            db.commit()
-            yield db, page
+                page = ImagePage(**decode(ImagePage, state["page"]))
+                db.add(page)
+                db.flush()
+                for name, model in COLLECTIONS.items():
+                    db.add_all(model(**decode(model, row)) for row in state[name].values())
+                    db.flush()
+                db.commit()
+                yield db, page
     finally:
         engine.dispose()
 

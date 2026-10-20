@@ -8,6 +8,6 @@ if [[ ! -x "$repo_dir/.venv/bin/ruff" || ! -d "$repo_dir/frontend/node_modules" 
   exit 1
 fi
 
-"$repo_dir/.venv/bin/ruff" check "$repo_dir/backend/app" "$repo_dir/backend/tests"
-"$repo_dir/.venv/bin/pytest" -q
+"$repo_dir/.venv/bin/ruff" check "$repo_dir/backend/app" "$repo_dir/backend/tests" "$repo_dir/scripts"
+bash "$repo_dir/scripts/test-backend.sh" -q
 (cd "$repo_dir/frontend" && npm run lint && npm test && npm run build)

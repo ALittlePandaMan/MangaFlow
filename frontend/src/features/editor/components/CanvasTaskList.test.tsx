@@ -5,24 +5,91 @@ import {COMPLETION_NOTICE_MS, TaskActivity} from '../lib/taskActivity'
 import {taskFixture} from '../lib/taskActivity.testUtils'
 import {CanvasTaskList} from './CanvasTaskList'
 
-afterEach(()=>vi.useRealTimers())
+afterEach(()=>{vi.useRealTimers();vi.restoreAllMocks();vi.unstubAllGlobals()})
 const pages=[{id:'page-0',filename:'00000003.jpg',order_index:2} as ImagePage]
 
-it('shows the reference activity layout, page, provider and progress for at most five current jobs',()=>{
+it('keeps all current jobs in the scrollable list without a batch-summary footer',()=>{
   const activity=new TaskActivity('project')
   activity.begin(Array.from({length:6},(_,i)=>taskFixture(`${i}`,{status:i===0?'RUNNING':'QUEUED',current_stage:'inpainting',progress:.5,payload:{provider:'openai-compatible'}})))
   render(<CanvasTaskList activity={activity} pages={pages} onCancelTask={vi.fn()}/>)
   const panel=screen.getByRole('complementary',{name:'任务进度'})
   expect(within(panel).getByRole('heading',{name:'活动'})).toBeInTheDocument()
-  expect(within(panel).getAllByRole('listitem')).toHaveLength(5)
+  expect(within(panel).getAllByRole('listitem')).toHaveLength(6)
   expect(screen.getByText('第 3 页：00000003.jpg')).toBeInTheDocument()
-  expect(within(panel).getAllByText('openai-compatible')).toHaveLength(5)
+  expect(within(panel).getAllByText('openai-compatible')).toHaveLength(6)
   expect(screen.getByRole('progressbar',{name:'00000003.jpg任务进度'})).toHaveAttribute('aria-valuenow','50')
   expect(screen.getByRole('button',{name:'停止 00000003.jpg 的任务'})).toHaveClass('cursor-pointer')
   expect(panel).toHaveTextContent('修复')
-  expect(panel).toHaveTextContent('另有 1 个任务')
+  expect(within(panel).getByRole('list',{name:'本次操作的活动任务'})).toHaveClass('canvas-task-items')
+  expect(panel.querySelector('footer')).toBeNull()
+  expect(panel).not.toHaveTextContent('本次完成')
+  expect(panel).not.toHaveTextContent(/另有.*任务/)
   expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   expect(screen.queryByRole('button',{name:/折叠|清除已结束/})).not.toBeInTheDocument()
+  expect(screen.queryByRole('button',{name:'关闭本次操作提示'})).not.toBeInTheDocument()
+})
+
+it('sizes the scroll viewport to five measured rows and follows provider/error row height changes',()=>{
+  let rowHeight=82, resize!:() => void
+  vi.spyOn(HTMLElement.prototype,'getBoundingClientRect').mockImplementation(function(this:HTMLElement) {
+    return new DOMRect(0,0,288,this.tagName==='LI' ? rowHeight : 0)
+  })
+  const disconnect=vi.fn()
+  vi.stubGlobal('ResizeObserver',class {
+    constructor(callback:() => void) {resize=callback}
+    observe() {}
+    disconnect() {disconnect()}
+  })
+  const activity=new TaskActivity('project')
+  activity.begin(Array.from({length:8},(_,i) => taskFixture(`${i}`)))
+  const {unmount}=render(<CanvasTaskList activity={activity} pages={pages}/>)
+  const list=screen.getByRole('list',{name:'本次操作的活动任务'})
+  expect(list).toHaveStyle({maxHeight:'410px'})
+  expect(within(list).getAllByRole('listitem')).toHaveLength(8)
+  rowHeight=100
+  act(() => resize())
+  expect(list).toHaveStyle({maxHeight:'500px'})
+  act(() => activity.update(Array.from({length:5},(_,i) => taskFixture(`${i}`,{status:'COMPLETED'}))))
+  expect(list).toHaveStyle({maxHeight:'300px'})
+  unmount()
+  expect(disconnect).toHaveBeenCalled()
+})
+
+it('preserves native scrolling during progress updates, isolates the wheel from the canvas and resets new operations',()=>{
+  const activity=new TaskActivity('project'),canvasWheel=vi.fn()
+  activity.begin(Array.from({length:8},(_,i) => taskFixture(`${i}`)))
+  render(<div onWheel={canvasWheel}><CanvasTaskList activity={activity} pages={pages}/></div>)
+  const list=screen.getByRole('list',{name:'本次操作的活动任务'})
+  expect(list).toHaveAttribute('tabindex','0')
+  list.scrollTop=240
+  const wheel=new WheelEvent('wheel',{deltaY:100,bubbles:true,cancelable:true})
+  fireEvent(list,wheel)
+  expect(canvasWheel).not.toHaveBeenCalled()
+  expect(wheel.defaultPrevented).toBe(false)
+  act(() => activity.update([taskFixture('7',{status:'RUNNING',progress:.5})]))
+  expect(screen.getByRole('list',{name:'本次操作的活动任务'})).toBe(list)
+  expect(list.scrollTop).toBe(240)
+  act(() => activity.begin([taskFixture('new')]))
+  const next=screen.getByRole('list',{name:'本次操作的活动任务'})
+  expect(next).not.toBe(list)
+  expect(next.scrollTop).toBe(0)
+})
+
+it('can stop a task beyond the first five and waits for it before reporting completion',async()=>{
+  const activity=new TaskActivity('project'),cancel=vi.fn(async()=>{})
+  const jobs=Array.from({length:7},(_,i) => taskFixture(`${i}`))
+  activity.begin(jobs)
+  render(<CanvasTaskList activity={activity} pages={jobs.map(task => ({id:task.image_id,filename:`page-${task.id}.png`,order_index:Number(task.id)} as ImagePage))} onCancelTask={cancel}/>)
+  screen.getByRole('list').scrollTop=500
+  const stop=screen.getByRole('button',{name:'停止 page-0.png 的任务'})
+  await act(async()=>fireEvent.click(stop))
+  expect(cancel).toHaveBeenCalledExactlyOnceWith('0')
+  act(()=>activity.update(jobs.slice(1).map(task => ({...task,status:'COMPLETED'}))))
+  expect(screen.queryByText('已完成')).not.toBeInTheDocument()
+  expect(screen.getAllByRole('listitem')).toHaveLength(1)
+  act(()=>activity.update([{...jobs[0],status:'CANCELLED'}]))
+  expect(screen.getByText('已停止')).toBeInTheDocument()
+  expect(screen.queryByRole('list')).not.toBeInTheDocument()
 })
 
 it('does not display previously completed or failed recognition history',()=>{
@@ -51,7 +118,14 @@ it('manually closes completion without cancelling or resurrecting a finished tas
   const done=taskFixture('0',{status:'COMPLETED'})
   activity.begin([done])
   render(<CanvasTaskList activity={activity} pages={pages} onCancelTask={cancel}/>)
-  fireEvent.click(screen.getByRole('button',{name:'关闭本次操作提示'}))
+  const heading=screen.getByRole('heading',{name:'活动'})
+  const header=heading.closest('header')!
+  expect(heading).toHaveClass('text-base')
+  expect(header).toHaveClass('justify-between')
+  const close=within(header).getByRole('button',{name:'关闭本次操作提示'})
+  expect(screen.getAllByRole('button',{name:'关闭本次操作提示'})).toHaveLength(1)
+  expect(screen.getByRole('status')).not.toContainElement(close)
+  fireEvent.click(close)
   act(()=>activity.update([{...done}]))
   expect(screen.queryByRole('complementary')).not.toBeInTheDocument()
   expect(cancel).not.toHaveBeenCalled()

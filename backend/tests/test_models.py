@@ -6,29 +6,22 @@ import pytest
 import yaml
 from app.api import models as model_api
 from app.api.models import _extract_model_ids, _model_endpoint_candidates
-from app.core.database import Base, get_db
+from app.core.database import get_db
 from app.main import app
 from app.services.infra.paddle import extract_paddle_lines
-from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 
 @pytest.fixture
-def fresh_model_database(monkeypatch, tmp_path):
+def fresh_model_database(monkeypatch, model_engine):
     # First-run defaults must not inherit deliberate CPU/custom selections
     # from earlier integration tests sharing the main test database.
-    engine = create_engine(f"sqlite:///{tmp_path / 'models.db'}")
-    Base.metadata.create_all(engine)
-
     def database():
-        with Session(engine) as db:
+        with Session(model_engine) as db:
             yield db
 
     monkeypatch.setitem(app.dependency_overrides, get_db, database)
-    try:
-        yield
-    finally:
-        engine.dispose()
+    yield
 
 
 class FakePaddleResult:

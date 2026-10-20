@@ -1,4 +1,4 @@
-import {fireEvent, render, screen, within} from '@testing-library/react'
+import {act, fireEvent, render, screen, within} from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import {beforeEach, describe, expect, it, vi} from 'vitest'
 
@@ -296,6 +296,90 @@ describe('RegionProperties coordinate rotation', () => {
     expect(useEditorStore.getState().layers.translated).toBe(false)
     fireEvent.click(screen.getByRole('button',{name:'显示文本组'}))
     expect(useEditorStore.getState().layers.translated).toBe(true)
+  })
+
+  it('collapses only text rows without hiding canvas text, clearing selection or hiding the Mask layer', () => {
+    useEditorStore.getState().select('region-1')
+    const onUpdate=vi.fn(),onAction=vi.fn()
+    render(<LayerInspectorHarness onUpdate={onUpdate} onAction={onAction}/>)
+    const toggle=screen.getByRole('button',{name:'折叠文本组'})
+    const list=document.getElementById(toggle.getAttribute('aria-controls')!)!
+    const row=screen.getByRole('button',{name:'选择 R001：translated'})
+    expect(toggle).toHaveAttribute('aria-expanded','true')
+    fireEvent.click(toggle)
+    expect(screen.getByRole('button',{name:'展开文本组'})).toHaveAttribute('aria-expanded','false')
+    expect(list).not.toBeVisible()
+    expect(row).toBeInTheDocument()
+    expect(screen.queryByRole('button',{name:/^选择 R00/})).not.toBeInTheDocument()
+    expect(screen.getByRole('button',{name:'显示 Mask 图层'})).toBeVisible()
+    expect(screen.getByRole('region',{name:'排版设置'})).toBeVisible()
+    expect(useEditorStore.getState().layers.translated).toBe(true)
+    expect(useEditorStore.getState().selectedIds).toEqual(['region-1'])
+    expect(onUpdate).not.toHaveBeenCalled()
+    expect(onAction).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button',{name:'展开文本组'}))
+    expect(screen.getByRole('button',{name:'选择 R001：translated'})).toBe(row)
+    expect(screen.getByRole('textbox',{name:'译文'})).toHaveValue('translated')
+  })
+
+  it('keeps group visibility and collapse independent in either direction', () => {
+    render(<LayerInspectorHarness onUpdate={vi.fn()} onAction={vi.fn()}/>)
+    fireEvent.click(screen.getByRole('button',{name:'隐藏文本组'}))
+    expect(screen.getByRole('button',{name:'折叠文本组'})).toHaveAttribute('aria-expanded','true')
+    expect(screen.getAllByRole('button',{name:/^选择 R00/})).toHaveLength(3)
+    fireEvent.click(screen.getByRole('button',{name:'折叠文本组'}))
+    fireEvent.click(screen.getByRole('button',{name:'显示文本组'}))
+    expect(useEditorStore.getState().layers.translated).toBe(true)
+    expect(screen.getByRole('button',{name:'展开文本组'})).toHaveAttribute('aria-expanded','false')
+    expect(screen.queryByRole('button',{name:/^选择 R00/})).not.toBeInTheDocument()
+  })
+
+  it('preserves the mounted coordinate draft and expanded position details when folding text rows', () => {
+    useEditorStore.getState().select('region-1')
+    const onUpdate=vi.fn()
+    render(<LayerInspectorHarness onUpdate={onUpdate} onAction={vi.fn()}/>)
+    fireEvent.click(screen.getByText('位置与旋转 · 原文框坐标'))
+    const coordinate=screen.getByRole('textbox',{name:'X 坐标'})
+    fireEvent.focus(coordinate)
+    fireEvent.change(coordinate,{target:{value:'27'}})
+    fireEvent.click(screen.getByRole('button',{name:'折叠文本组'}))
+    fireEvent.click(screen.getByRole('button',{name:'展开文本组'}))
+    expect(screen.getByRole('textbox',{name:'X 坐标'})).toBe(coordinate)
+    expect(coordinate).toHaveValue('27')
+    expect(onUpdate).not.toHaveBeenCalled()
+  })
+
+  it('supports keyboard folding while edits are busy and remembers it across the outer layer fold', async () => {
+    const user=userEvent.setup()
+    render(<LayerInspectorHarness onUpdate={vi.fn()} onAction={vi.fn()} busyAction="ocr"/>)
+    const toggle=screen.getByRole('button',{name:'折叠文本组'})
+    expect(toggle).toBeEnabled()
+    toggle.focus()
+    await user.keyboard('{Enter}')
+    expect(screen.getByRole('button',{name:'展开文本组'})).toHaveAttribute('aria-expanded','false')
+    fireEvent.click(screen.getByRole('button',{name:/^图层/}))
+    fireEvent.click(screen.getByRole('button',{name:/^图层/}))
+    expect(screen.getByRole('button',{name:'展开文本组'})).toHaveAttribute('aria-expanded','false')
+    screen.getByRole('button',{name:'展开文本组'}).focus()
+    await user.keyboard(' ')
+    expect(screen.getAllByRole('button',{name:/^选择 R00/})).toHaveLength(3)
+  })
+
+  it('does not scroll to hidden selected rows and reveals the selection when the group reopens', () => {
+    const {container}=render(<LayerInspectorHarness onUpdate={vi.fn()} onAction={vi.fn()}/>)
+    const list=container.querySelector<HTMLElement>('.inspector-layer-list')!
+    list.style.overflowY='auto'
+    const row=screen.getByRole('button',{name:'选择 R003：third source'}).closest('article')!
+    vi.spyOn(list,'getBoundingClientRect').mockReturnValue(new DOMRect(0,100,280,300))
+    const bounds=vi.spyOn(row,'getBoundingClientRect').mockReturnValue(new DOMRect(0,450,280,180))
+    fireEvent.click(screen.getByRole('button',{name:'折叠文本组'}))
+    // Selection can change via the canvas while the list is folded.
+    act(() => useEditorStore.getState().select('region-3'))
+    expect(bounds).not.toHaveBeenCalled()
+    expect(list.scrollTop).toBe(0)
+    fireEvent.click(screen.getByRole('button',{name:'展开文本组'}))
+    expect(bounds).toHaveBeenCalled()
+    expect(list.scrollTop).toBe(230)
   })
 
   it('shows all text rows without a selection and expands only the clicked row', () => {

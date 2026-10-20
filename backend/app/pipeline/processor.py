@@ -264,7 +264,7 @@ class PipelineProcessor:
                     rebuild_clean=bool(options.get("rebuild_clean", False)),
                 )
             elif stage == "rendering":
-                self.render(page, stage_provider, region_id=region_id)
+                self.render(page, stage_provider)
             self.db.refresh(task)
             if task.status in {TaskStatus.CANCELLING.value, TaskStatus.CANCELLED.value}:
                 self._finish_interrupted_page(page)
@@ -349,7 +349,6 @@ class PipelineProcessor:
                         origin=result.balloon_mask_origin,
                         image_shape=(page.height, page.width),
                         confidence=result.balloon_mask_confidence,
-                        parent_instance_id=result.balloon_mask_parent_id,
                     )
                     detection_metadata["balloon_constraint"] = {
                         "schema_version": BUBBLE_GEOMETRY_SCHEMA_VERSION,
@@ -548,11 +547,7 @@ class PipelineProcessor:
             region = self.db.get(TextRegion, identifier)
             if region is None:
                 return False
-            # SQLite reloads datetime values without tzinfo, while a freshly
-            # inserted frame still carries its UTC-aware Python default. The
-            # atomic SQL version predicate in _apply_ocr_result compares their
-            # stored values and rejects actual edits without mistaking that
-            # representation change for a concurrent user modification.
+            # Compare the stored version atomically to reject concurrent edits.
             applied = self._apply_ocr_result(region, result, expected_version=expected_version)
             if applied:
                 self._invalidate_outputs(page, clean=False)
@@ -1242,7 +1237,7 @@ class PipelineProcessor:
         return combined
 
     @measured("stage.rendering")
-    def render(self, page: ImagePage, provider_name: str | None, *, region_id: str | None, output_tag: str | None = None) -> None:
+    def render(self, page: ImagePage, provider_name: str | None, *, output_tag: str | None = None) -> None:
         if output_tag is not None and (len(output_tag) != 32 or any(c not in "0123456789abcdef" for c in output_tag)):
             raise ValueError("Invalid immutable render output tag")
         provider, _ = self._provider("rendering", provider_name)

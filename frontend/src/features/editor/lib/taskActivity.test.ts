@@ -3,12 +3,12 @@ import {TaskActivity} from './taskActivity'
 import {taskFixture} from './taskActivity.testUtils'
 
 describe('current-operation task snapshots', () => {
-  it('shows at most five live tasks and retains hidden jobs for page locks', () => {
+  it('keeps every current live task available for scrolling and page locks', () => {
     const activity=new TaskActivity('project')
     const tasks=Array.from({length:8},(_,i)=>taskFixture(`${i}`))
     tasks[0]={...tasks[0],status:'RUNNING'}
     activity.update([...tasks,taskFixture('99',{status:'COMPLETED'})])
-    expect(activity.getSnapshot().tasks.map(task=>task.id)).toEqual(['0','7','6','5','4'])
+    expect(activity.getSnapshot().tasks.map(task=>task.id)).toEqual(['0','7','6','5','4','3','2','1'])
     expect(activity.getSnapshot().active).toBe(8)
     expect(activity.getPageTask('page-1')?.id).toBe('1')
     expect(activity.getSnapshot().total).toBe(8)
@@ -71,7 +71,7 @@ describe('current-operation task snapshots', () => {
     activity.update(Array.from({length:336},(_,i)=>taskFixture(`${i}`,{status:'COMPLETED',progress:1})))
     expect(activity.getSnapshot().tasks).toHaveLength(0)
     expect(activity.getSnapshot().completion).toMatchObject({total:336,completed:336})
-    expect(activity.getSnapshot().progress).toBe(1)
+    expect(activity.getSnapshot().total).toBe(336)
   })
   it('waits for all recovery chunks before reporting that an operation is complete', () => {
     const activity=new TaskActivity('project')

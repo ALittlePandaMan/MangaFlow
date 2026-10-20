@@ -222,6 +222,26 @@ describe('EditorPage page snapshot revalidation', () => {
     document.body.append(headerSlots.editorTarget)
   }
 
+  it('matches the page heading and icons to the inspector header while keeping the import action', async () => {
+    const current=page('page-a')
+    vi.spyOn(api.projects,'images').mockResolvedValue([current])
+    vi.spyOn(api.images,'get').mockResolvedValue(current)
+    renderEditor()
+    const heading=await screen.findByRole('heading',{name:'页面'})
+    const header=heading.closest('header')!
+    expect(header).toHaveClass('editor-pages-heading')
+    expect(heading.parentElement).toHaveClass('editor-pages-heading-row')
+    expect(heading.querySelector('svg')).toHaveAttribute('width','15')
+    expect(heading.querySelector('svg')).toHaveAttribute('height','15')
+    const button=within(header).getByRole('button',{name:'导入图片'})
+    expect(button).toBeEnabled()
+    expect(button).toHaveClass('editor-pages-import')
+    expect(button.querySelector('svg')).toHaveAttribute('width','15')
+    const picker=vi.spyOn(HTMLInputElement.prototype,'click')
+    fireEvent.click(button)
+    expect(picker).toHaveBeenCalledOnce()
+  })
+
   it('opens the requested page before a slow book index or font list has finished', async () => {
     const current = page('page-a')
     const index = deferred<ImagePage[]>(), fonts = deferred<never[]>()
@@ -908,7 +928,7 @@ describe('EditorPage page snapshot revalidation', () => {
     const initial = region({}), journal = mockDocumentHistory(snapshot,[initial])
     const saved = deferred<TextRegion>()
     let edited: TextRegion
-    vi.spyOn(api.regions,'update').mockImplementation(async (id,patch) => {
+    vi.spyOn(api.regions,'update').mockImplementation(async (_id,patch) => {
       edited = {...initial,...patch}
       return saved.promise
     })
