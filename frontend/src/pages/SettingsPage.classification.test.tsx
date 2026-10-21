@@ -1,4 +1,4 @@
-import {fireEvent, render, screen} from '@testing-library/react'
+import {fireEvent, render, screen, waitFor} from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import {beforeEach, describe, expect, it, vi} from 'vitest'
 import {GlobalDialogProvider} from '../components/GlobalDialog'
@@ -28,7 +28,8 @@ describe('classification model form', () => {
     vi.mocked(api.models.list).mockResolvedValue({available:[rfdetr],configured:[configured]})
     const user=userEvent.setup()
     render(<GlobalDialogProvider><SettingsPage/></GlobalDialogProvider>)
-    await user.click(await screen.findByRole('button',{name:'编辑文字检测配置'}))
+    await waitFor(() => expect(screen.getByRole('button',{name:'编辑文字检测配置'})).toBeEnabled())
+    await user.click(screen.getByRole('button',{name:'编辑文字检测配置'}))
     const margins={top:0,bottom:8,left:12,right:4}
     for(const [side,label] of [['top','上'],['bottom','下'],['left','左'],['right','右']] as const) {
       const input=screen.getByRole('textbox',{name:`文本框${label}扩边像素`})

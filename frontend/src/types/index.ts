@@ -1,4 +1,23 @@
 export type ViewMode = 'original' | 'clean' | 'translated' | 'comparison' | 'mask'
+
+export interface TextStyleDefaults {
+  font_family: string
+  font_size: number
+  font_weight: number
+  auto_font_size: boolean
+  orientation: 'auto' | 'horizontal' | 'vertical'
+  text_color: string
+  stroke_color: string
+  stroke_width: number
+  alignment: 'left' | 'center' | 'right'
+  line_spacing: number
+  character_spacing: number
+}
+
+export interface EditorPreferences {
+  shortcuts: Record<string, string>
+  text_style?: TextStyleDefaults
+}
 export type Tool = 'pan' | 'select' | 'rectangle' | 'polygon' | 'lasso' | 'brush' | 'eraser'
 export type RegionStageAction = 'ocr' | 'translate' | 'inpaint'
 

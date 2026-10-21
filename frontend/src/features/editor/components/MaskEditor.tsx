@@ -2,7 +2,7 @@ import {Focus, Layers3, ZoomIn, ZoomOut} from 'lucide-react'
 import {forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState, type MutableRefObject, type PointerEvent as ReactPointerEvent} from 'react'
 import {createPortal} from 'react-dom'
 import type {ImagePage, TextRegion, Tool} from '../../../types'
-import {buttonClass, cn, iconButtonClass} from '../../../ui'
+import {buttonClass, cn, compactIconButtonClass} from '../../../ui'
 import {MaskBitmap, type MaskBounds, type MaskPatch, type MaskPoint, type MaskTool} from '../lib/maskBitmap'
 import {MaskEncoder} from '../lib/maskEncoder'
 import {loadMaskHistory} from '../lib/maskHistory'
@@ -431,9 +431,9 @@ export const MaskEditor = forwardRef<MaskEditorHandle, Props>(function MaskEdito
     <div ref={viewport} className="relative min-h-0 flex-1 overflow-hidden bg-canvas">
       <canvas ref={canvas} aria-label="蒙版编辑画布" className={cn('block size-full touch-none', disabled ? 'pointer-events-none' : tool === 'pan' ? 'cursor-grab' : tool === 'select' ? 'cursor-pointer' : 'cursor-crosshair')} onPointerDown={down} onPointerMove={move} onPointerUp={event => up(event)} onPointerCancel={event => up(event,true)} onLostPointerCapture={event => {panning.current = null; event.currentTarget.style.cursor = ''; if (stroke.current?.id === event.pointerId) cancelStroke()}} onPointerLeave={() => {cursor.current = null; schedule()}} onContextMenu={event => event.preventDefault()}/>
       <div className="mask-zoom" aria-label="蒙版画布缩放">
-        <button className={iconButtonClass} disabled={controlsDisabled} aria-label="缩小蒙版画布" onClick={() => zoomAt(1/1.25)}><ZoomOut size={16} aria-hidden="true"/></button>
-        <button className={iconButtonClass} disabled={controlsDisabled} aria-label="查看整页" title="查看整页" onClick={() => fit()}><Focus size={16} aria-hidden="true"/></button>
-        <button className={iconButtonClass} disabled={controlsDisabled} aria-label="放大蒙版画布" onClick={() => zoomAt(1.25)}><ZoomIn size={16} aria-hidden="true"/></button>
+        <button className={compactIconButtonClass} disabled={controlsDisabled} aria-label="缩小蒙版画布" onClick={() => zoomAt(1/1.25)}><ZoomOut size={16} aria-hidden="true"/></button>
+        <button className={compactIconButtonClass} disabled={controlsDisabled} aria-label="查看整页" title="查看整页" onClick={() => fit()}><Focus size={16} aria-hidden="true"/></button>
+        <button className={compactIconButtonClass} disabled={controlsDisabled} aria-label="放大蒙版画布" onClick={() => zoomAt(1.25)}><ZoomIn size={16} aria-hidden="true"/></button>
         <span>{zoom}%</span>
       </div>
       <div className="mask-active-region"><Layers3 size={14} aria-hidden="true"/><span>{region.region_key}</span>{region.locked && <span className="mask-caption">已锁定</span>}</div>

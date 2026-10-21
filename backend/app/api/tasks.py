@@ -118,7 +118,7 @@ def task_statuses(task_ids: list[str], db: Session = Depends(get_db)) -> list[Ta
 
 @router.post("/tasks/{task_id}/pause", response_model=TaskRead)
 def pause_task(task_id: str, db: Session = Depends(get_db)) -> ProcessingTask:
-    task = require_task(db, task_id)
+    task = require_task(db, task_id, for_update=True)
     if task.status not in {TaskStatus.QUEUED.value, TaskStatus.RUNNING.value}:
         raise HTTPException(409, f"Cannot pause a {task.status} task")
     task.pause_requested = True
@@ -137,7 +137,7 @@ def pause_task(task_id: str, db: Session = Depends(get_db)) -> ProcessingTask:
 
 @router.post("/tasks/{task_id}/resume", response_model=TaskRead, status_code=202)
 def resume_task(task_id: str, allow_unknown_cloud_retry: bool = Query(default=False), db: Session = Depends(get_db)) -> ProcessingTask:
-    task = require_task(db, task_id)
+    task = require_task(db, task_id, for_update=True)
     if task.status != TaskStatus.PAUSED.value:
         raise HTTPException(409, "Only paused tasks can be resumed")
     if task_manager.is_active(task_id):
@@ -156,7 +156,7 @@ def resume_task(task_id: str, allow_unknown_cloud_retry: bool = Query(default=Fa
 
 @router.post("/tasks/{task_id}/retry", response_model=TaskRead, status_code=202)
 def retry_task(task_id: str, allow_unknown_cloud_retry: bool = Query(default=False), db: Session = Depends(get_db)) -> ProcessingTask:
-    task = require_task(db, task_id)
+    task = require_task(db, task_id, for_update=True)
     if task.status not in {TaskStatus.FAILED.value, TaskStatus.CANCELLED.value}:
         raise HTTPException(409, "Only failed or cancelled tasks can be retried")
     if task_manager.is_active(task_id):
@@ -189,7 +189,7 @@ def _confirm_unknown_requests(db: Session, task_id: str, allow: bool) -> None:
 
 @router.post("/tasks/{task_id}/cancel", response_model=TaskRead)
 def cancel_task(task_id: str, db: Session = Depends(get_db)) -> ProcessingTask:
-    task = require_task(db, task_id)
+    task = require_task(db, task_id, for_update=True)
     if task.status in {TaskStatus.COMPLETED.value, TaskStatus.CANCELLING.value, TaskStatus.CANCELLED.value}:
         raise HTTPException(409, f"Cannot cancel a {task.status} task")
     # Publish the cooperative state before touching the in-memory queue. A

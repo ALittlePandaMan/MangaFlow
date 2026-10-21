@@ -4,9 +4,43 @@ import { useNavigate } from 'react-router-dom'
 import { EmptyState } from '../components/AppShell'
 import { useGlobalDialog } from '../components/GlobalDialog'
 import {ButtonLoading, ProjectsSkeleton} from '../components/LoadingUI'
+import {SelectControl} from '../components/FormControls'
 import { api } from '../services/api'
 import type { Project } from '../types'
-import {buttonClass, dangerButtonClass, eyebrowClass, inputClass, pageClass, primaryButtonClass, textareaClass} from '../ui'
+import {buttonClass, eyebrowClass, iconButtonClass, inputClass, pageClass, primaryButtonClass} from '../ui'
+import './ProjectsPage.css'
+
+const PROJECT_LANGUAGES = [
+  {value:'ja',label:'日语'}, {value:'zh-CN',label:'简体中文'}, {value:'zh-TW',label:'繁体中文'},
+  {value:'en',label:'英语'}, {value:'ko',label:'韩语'}, {value:'fr',label:'法语'},
+  {value:'de',label:'德语'}, {value:'es',label:'西班牙语'}, {value:'pt',label:'葡萄牙语'}, {value:'ru',label:'俄语'},
+]
+
+type ProjectDetailsPayload = Pick<Project,'name' | 'source_language' | 'target_language'>
+
+function languageLabel(code: string): string {
+  return PROJECT_LANGUAGES.find(language => language.value.toLowerCase() === code.toLowerCase())?.label
+    || (code === 'zh' ? '简体中文' : code)
+}
+
+function languageOptions(current: string) {
+  return PROJECT_LANGUAGES.some(language => language.value === current)
+    ? PROJECT_LANGUAGES : [...PROJECT_LANGUAGES,{value:current,label:languageLabel(current)}]
+}
+
+function ProjectLanguageFields({source, target, disabled, onSourceChange, onTargetChange}: {
+  source: string; target: string; disabled: boolean
+  onSourceChange: (value: string) => void; onTargetChange: (value: string) => void
+}) {
+  return <fieldset className="project-language-fields" disabled={disabled}>
+    <legend>翻译方向</legend>
+    <div className="project-language-options">
+      <SelectControl ariaLabel="原文语言" name="source_language" value={source} options={languageOptions(source)} onChange={onSourceChange} disabled={disabled}/>
+      <ArrowRight size={18} aria-hidden="true"/>
+      <SelectControl ariaLabel="译文语言" name="target_language" value={target} options={languageOptions(target)} onChange={onTargetChange} disabled={disabled}/>
+    </div>
+  </fieldset>
+}
 
 export function ProjectsPage() {
   const [projects, setProjects] = useState<Project[]>([])
@@ -24,12 +58,12 @@ export function ProjectsPage() {
   const openCreateProjectDialog = () => {
     openDialog({
       title:'新建项目',
-      description:'创建漫画翻译工作区，创建后可在工作台继续导入 JPG、PNG 或 WebP 原稿。',
+      className:'project-dialog',
       size:'small',
       content:({close}) => <CreateProjectForm
         onCancel={close}
-        onCreate={async name => {
-          const project = await api.projects.create({name, source_language:'ja', target_language:'zh-CN'})
+        onCreate={async payload => {
+          const project = await api.projects.create(payload)
           await refresh()
           close()
           navigate(`/projects/${project.id}/editor`)
@@ -56,13 +90,13 @@ export function ProjectsPage() {
   const openEditProjectDialog = (project: Project) => {
     openDialog({
       title:'编辑项目',
-      description:'修改项目名称和项目说明。项目封面会自动使用排序第一的漫画图片。',
+      className:'project-dialog',
       size:'small',
       content:({close}) => <EditProjectForm
         project={project}
         onCancel={close}
         onSave={async payload => {
-          const updated = await api.projects.update(project.id, {name:payload.name, description:payload.description})
+          const updated = await api.projects.update(project.id, payload)
           setProjects(current => current.map(item => item.id === updated.id ? updated : item))
           close()
         }}
@@ -94,15 +128,15 @@ export function ProjectsPage() {
     </div>
     {error && <div className="my-3 rounded-[10px] border border-danger/20 bg-danger/10 px-4 py-3 text-[13px] text-danger-soft-ink" role="alert">{error}</div>}
     {!projects.length ? <EmptyState title="还没有漫画项目" detail="创建第一个项目，然后批量导入 JPG、PNG 或 WebP 原稿。" action={<button className={primaryButtonClass} onClick={openCreateProjectDialog}>开始创建</button>} /> :
-      <div className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,320px),1fr))] gap-6">{projects.map((project, index) => <article className="overflow-hidden rounded-2xl border border-line bg-panel [box-shadow:var(--shadow-card)] transition-[transform,border-color,box-shadow] duration-200 hover:-translate-y-0.5 hover:border-line-strong hover:[box-shadow:var(--shadow-card-hover)]" key={project.id}>
-        <div className="relative grid h-[150px] place-items-center overflow-hidden bg-surface text-secondary before:absolute before:size-40 before:rotate-[19deg] before:rounded-full before:border-[16px] before:border-double before:border-line before:opacity-60">{project.cover_url ? <img className="absolute inset-0 size-full object-cover" src={project.cover_thumbnail_url || project.cover_url} alt={`${project.name} 封面`} loading={index < 3 ? 'eager' : 'lazy'} decoding="async" {...{fetchpriority: index < 3 ? 'high' : 'low'}} onError={event => {if (project.cover_url && event.currentTarget.getAttribute('src') !== project.cover_url) event.currentTarget.src = project.cover_url}}/> : <span className="-rotate-[5deg] text-[68px] font-extrabold text-muted">漫</span>}<i className="absolute bottom-2.5 right-3 rounded bg-canvas px-2 py-1 text-[10px] not-italic text-accent">{project.page_count || '—'} PAGES</i></div>
-        <div className="p-5.5">
-          <div className="flex items-center gap-2 text-[10px] text-meta"><Languages size={14}/> 日本語 <ArrowRight size={12}/> 简体中文</div>
-          <h2 className="mb-1 mt-3 text-[21px] font-semibold tracking-[-.3px]">{project.name}</h2><p className="m-0 min-h-[40px] text-[13px] leading-5 text-muted line-clamp-2">{project.description || '尚未填写项目说明'}</p>
-          <div className="mt-5 flex gap-2.5">
+      <div className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,320px),1fr))] gap-6">{projects.map((project, index) => <article className="flex min-w-0 flex-col overflow-hidden rounded-2xl border border-line bg-panel [box-shadow:var(--shadow-card)] transition-[transform,border-color,box-shadow] duration-200 hover:-translate-y-0.5 hover:border-line-strong hover:[box-shadow:var(--shadow-card-hover)]" key={project.id}>
+        <div className="relative grid h-[150px] shrink-0 place-items-center overflow-hidden bg-surface text-secondary before:absolute before:size-40 before:rotate-[19deg] before:rounded-full before:border-[16px] before:border-double before:border-line before:opacity-60">{project.cover_url ? <img className="absolute inset-0 size-full object-cover" src={project.cover_thumbnail_url || project.cover_url} alt={`${project.name} 封面`} loading={index < 3 ? 'eager' : 'lazy'} decoding="async" {...{fetchpriority: index < 3 ? 'high' : 'low'}} onError={event => {if (project.cover_url && event.currentTarget.getAttribute('src') !== project.cover_url) event.currentTarget.src = project.cover_url}}/> : <span className="-rotate-[5deg] text-[68px] font-extrabold text-muted">漫</span>}<i className="absolute bottom-2.5 right-3 rounded bg-canvas px-2 py-1 text-[10px] not-italic text-accent">{project.page_count || '—'} PAGES</i></div>
+        <div className="flex min-w-0 flex-1 flex-col p-5.5">
+          <div className="flex min-w-0 flex-wrap items-center gap-2 text-[13px] text-meta"><Languages size={14} className="shrink-0"/><span className="min-w-0 break-words">{languageLabel(project.source_language)}</span><ArrowRight size={12} className="shrink-0"/><span className="min-w-0 break-words">{languageLabel(project.target_language)}</span></div>
+          <h2 className="mb-1 mt-3 min-h-[3em] text-[21px] font-semibold leading-normal tracking-[-.3px] line-clamp-2 [overflow-wrap:anywhere]" title={project.name}>{project.name}</h2>
+          <div className="mt-auto flex gap-2.5 pt-5">
             <button className={`${primaryButtonClass} mr-auto`} onClick={() => navigate(`/projects/${project.id}/editor`)}>打开工作台 <ArrowRight size={15}/></button>
-            <button className={buttonClass} title="编辑项目" aria-label={`编辑项目 ${project.name}`} onClick={() => openEditProjectDialog(project)}><Pencil size={16}/></button>
-            <button className={dangerButtonClass} disabled={Boolean(deletingProjectId)} title="删除项目" aria-label={`删除项目 ${project.name}`} onClick={() => removeProject(project)}>{deletingProjectId === project.id ? <ButtonLoading compact label="正在删除项目"/> : <Trash2 size={16}/>}</button>
+            <button className={iconButtonClass} title="编辑项目" aria-label={`编辑项目 ${project.name}`} onClick={() => openEditProjectDialog(project)}><Pencil aria-hidden="true" size={17}/></button>
+            <button className={iconButtonClass+' icon-button-danger'} disabled={Boolean(deletingProjectId)} title="删除项目" aria-label={`删除项目 ${project.name}`} onClick={() => removeProject(project)}>{deletingProjectId === project.id ? <ButtonLoading compact label="正在删除项目"/> : <Trash2 aria-hidden="true" size={17}/>}</button>
           </div>
         </div>
       </article>)}</div>}
@@ -127,10 +161,10 @@ function ImportProjectForm({onCancel, onImport}: {onCancel: () => void; onImport
     <div className="p-6">
       <button type="button" disabled={submitting} className="flex min-h-[118px] w-full cursor-pointer flex-col items-center justify-center gap-3 rounded-xl border border-dashed border-line-strong bg-canvas px-5 text-center text-secondary outline-none transition-colors hover:border-accent/60 hover:bg-accent/[.03] hover:text-ink focus-visible:ring-3 focus-visible:ring-accent/15 disabled:cursor-not-allowed disabled:opacity-50" onClick={() => input.current?.click()}>
         <span className="grid size-10 place-items-center rounded-xl bg-accent/10 text-accent"><Upload size={19}/></span>
-        <span className="max-w-full"><strong className="block truncate text-xs">{file?.name || '选择 MangaFlow 项目包'}</strong><small className="mt-1 block text-[10px] text-muted">仅支持“导出源项目”生成的 ZIP 文件</small></span>
+        <span className="max-w-full"><strong className="block truncate text-sm">{file?.name || '选择 MangaFlow 项目包'}</strong><small className="mt-1 block text-[13px] leading-relaxed text-muted">仅支持“导出源项目”生成的 ZIP 文件</small></span>
       </button>
       <input ref={input} hidden type="file" accept=".zip,application/zip" disabled={submitting} onChange={event => setFile(event.target.files?.[0] || null)}/>
-      {error && <div className="mt-3 rounded-lg bg-danger/15 px-3 py-2 text-xs text-danger-soft-ink">{error}</div>}
+      {error && <div className="mt-3 break-words rounded-lg bg-danger/15 px-3 py-2 text-[13px] text-danger-soft-ink">{error}</div>}
     </div>
     <div className="flex justify-end gap-2 border-t border-line-subtle px-6 py-4">
       <button className={buttonClass} disabled={submitting} onClick={onCancel} type="button">取消</button>
@@ -139,14 +173,10 @@ function ImportProjectForm({onCancel, onImport}: {onCancel: () => void; onImport
   </form>
 }
 
-interface EditProjectPayload {
-  name: string
-  description: string
-}
-
-function EditProjectForm({project, onCancel, onSave}: {project: Project; onCancel: () => void; onSave: (payload: EditProjectPayload) => Promise<void>}) {
+function EditProjectForm({project, onCancel, onSave}: {project: Project; onCancel: () => void; onSave: (payload: ProjectDetailsPayload) => Promise<void>}) {
   const [name, setName] = useState(project.name)
-  const [description, setDescription] = useState(project.description || '')
+  const [source, setSource] = useState(project.source_language)
+  const [target, setTarget] = useState(project.target_language)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')
   const submit = async () => {
@@ -154,7 +184,7 @@ function EditProjectForm({project, onCancel, onSave}: {project: Project; onCance
     if (!projectName || submitting) return
     setSubmitting(true); setError('')
     try {
-      await onSave({name:projectName, description:description.trim()})
+      await onSave({name:projectName, source_language:source, target_language:target})
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason))
       setSubmitting(false)
@@ -163,12 +193,10 @@ function EditProjectForm({project, onCancel, onSave}: {project: Project; onCance
 
   return <form onSubmit={event => {event.preventDefault(); void submit()}}>
     <div className="p-6">
-      <label className="block text-xs text-secondary" htmlFor="edit-project-name">项目名称</label>
-      <input autoFocus className={`${inputClass} mt-2 min-h-[44px]`} disabled={submitting} id="edit-project-name" maxLength={200} value={name} onChange={event => setName(event.target.value)} placeholder="输入项目名称"/>
-      <label className="mt-4 block text-xs text-secondary" htmlFor="edit-project-description">项目说明</label>
-      <textarea className={`${textareaClass} mt-2 min-h-[126px] resize-none`} disabled={submitting} id="edit-project-description" maxLength={2000} value={description} onChange={event => setDescription(event.target.value)} placeholder="简单说明章节、剧情或翻译要求"/>
-      <p className="mb-0 mt-3 text-[10px] leading-relaxed text-muted">项目封面自动使用页面列表中排序第一的原图。</p>
-      {error && <div className="mt-3 rounded-lg bg-danger/15 px-3 py-2 text-xs text-danger-soft-ink">{error}</div>}
+      <label className="block text-sm text-secondary" htmlFor="edit-project-name">项目标题</label>
+      <input autoFocus className={`${inputClass} mt-2 min-h-[44px]`} disabled={submitting} id="edit-project-name" maxLength={200} value={name} onChange={event => setName(event.target.value)} placeholder="输入项目标题"/>
+      <ProjectLanguageFields source={source} target={target} onSourceChange={setSource} onTargetChange={setTarget} disabled={submitting}/>
+      {error && <div className="mt-3 break-words rounded-lg bg-danger/15 px-3 py-2 text-[13px] text-danger-soft-ink" role="alert">{error}</div>}
     </div>
     <div className="flex justify-end gap-2 border-t border-line-subtle px-6 py-4">
       <button className={buttonClass} disabled={submitting} onClick={onCancel} type="button">取消</button>
@@ -177,8 +205,10 @@ function EditProjectForm({project, onCancel, onSave}: {project: Project; onCance
   </form>
 }
 
-function CreateProjectForm({onCancel, onCreate}: {onCancel: () => void; onCreate: (name: string) => Promise<void>}) {
+function CreateProjectForm({onCancel, onCreate}: {onCancel: () => void; onCreate: (payload: ProjectDetailsPayload) => Promise<void>}) {
   const [name, setName] = useState('')
+  const [source, setSource] = useState('ja')
+  const [target, setTarget] = useState('zh-CN')
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')
 
@@ -188,7 +218,7 @@ function CreateProjectForm({onCancel, onCreate}: {onCancel: () => void; onCreate
     setSubmitting(true)
     setError('')
     try {
-      await onCreate(projectName)
+      await onCreate({name:projectName, source_language:source, target_language:target})
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason))
       setSubmitting(false)
@@ -197,10 +227,10 @@ function CreateProjectForm({onCancel, onCreate}: {onCancel: () => void; onCreate
 
   return <form onSubmit={event => {event.preventDefault(); void submit()}}>
     <div className="p-6">
-      <label className="block text-xs text-secondary" htmlFor="new-project-name">项目名称</label>
+      <label className="block text-sm text-secondary" htmlFor="new-project-name">项目标题</label>
       <input
         autoFocus
-        className={`${inputClass} mt-2 min-h-[46px]`}
+        className={`${inputClass} mt-2 min-h-[44px]`}
         disabled={submitting}
         id="new-project-name"
         maxLength={120}
@@ -208,8 +238,8 @@ function CreateProjectForm({onCancel, onCreate}: {onCancel: () => void; onCreate
         placeholder="例如：第一话 · 雨夜"
         value={name}
       />
-      <p className="mb-0 mt-2 text-[11px] leading-relaxed text-muted">项目创建后将直接进入工作台，你可以在那里导入和处理漫画图片。</p>
-      {error && <div className="mt-3 rounded-lg bg-danger/15 px-3 py-2 text-xs text-danger-soft-ink">{error}</div>}
+      <ProjectLanguageFields source={source} target={target} onSourceChange={setSource} onTargetChange={setTarget} disabled={submitting}/>
+      {error && <div className="mt-3 break-words rounded-lg bg-danger/15 px-3 py-2 text-[13px] text-danger-soft-ink" role="alert">{error}</div>}
     </div>
     <div className="flex justify-end gap-2 border-t border-line-subtle px-6 py-4">
       <button className={buttonClass} disabled={submitting} onClick={onCancel} type="button">取消</button>

@@ -16,6 +16,7 @@ from app.services.cloud_results import CloudResultCorrupt, current_cloud_results
 from app.services.translation.context import attach_page_image
 from app.services.translation.prompts import DEFAULT_TRANSLATION_PROMPT
 from app.services.workflow_state import fingerprint
+from app.utils.text import has_text
 
 API_PROTOCOL_ALIASES = {
     "auto": "auto",
@@ -109,6 +110,8 @@ class OpenAICompatibleTranslator(Translator):
             return {}
         if len({key for key, _ in regions}) != len(regions):
             raise ProviderError("Translation region IDs must be unique")
+        if any(not has_text(text) for _, text in regions):
+            raise ProviderError("翻译输入包含空原文，未发送请求；请先核对 OCR 结果。", error_kind="translation_empty_source")
         batches: list[list[tuple[str, str]]] = []
         current: list[tuple[str, str]] = []
         characters = 0
@@ -126,16 +129,27 @@ class OpenAICompatibleTranslator(Translator):
         budget.configure(self.config)
         results: dict[str, str] = {}
         async with httpx.AsyncClient(timeout=float(self.config.get("timeout", 90))) as client:
+            failed = False
             async def worker() -> None:
-                while batches:
-                    if check_interruption:
-                        check_interruption()
-                    batch = batches.pop(0)
-                    results.update(await self._translate_batch(client, batch, source_language=source_language,
-                        target_language=target_language, context=context, check_interruption=check_interruption))
+                nonlocal failed
+                try:
+                    while batches and not failed:
+                        if check_interruption:
+                            check_interruption()
+                        batch = batches.pop(0)
+                        results.update(await self._translate_batch(client, batch, source_language=source_language,
+                            target_language=target_language, context=context, check_interruption=check_interruption))
+                except BaseException:
+                    failed = True  # Do not dispatch further chunks after failure.
+                    raise
             workers = [asyncio.create_task(worker()) for _ in range(min(2, len(batches)))]
             try:
-                await asyncio.gather(*workers)
+                # Drain already sent requests so one bad chunk cannot discard a
+                # sibling's paid response. Its receipt remains reusable on retry.
+                outcomes = await asyncio.gather(*workers, return_exceptions=True)
+                for error in outcomes:
+                    if isinstance(error, BaseException):
+                        raise error
             finally:
                 for task in workers:
                     if not task.done():
@@ -160,8 +174,14 @@ class OpenAICompatibleTranslator(Translator):
         cache_key = fingerprint({"format":1,"kind":"translation","config":self.config,"regions":regions,
             "source_language":source_language,"target_language":target_language,"context":context}) if cache else None
         completed = (cache.get(cache_key) or {}) if cache else {}
-        if (set(completed) - expected_ids or any(not isinstance(value,str) or not value.strip() for value in completed.values())):
-            raise CloudResultCorrupt()
+        if set(completed) - expected_ids or any(not has_text(value) for value in completed.values()):
+            if not cache or not cache.allow_invalid:
+                raise CloudResultCorrupt()
+            valid = {key: value for key, value in completed.items() if key in expected_ids and has_text(value)}
+            cache.archive_received(cache_key)
+            if valid:
+                cache.put(cache_key, valid)
+            completed = valid
         if set(completed)==expected_ids:
             return completed
         self.ensure_loaded()
@@ -172,7 +192,6 @@ class OpenAICompatibleTranslator(Translator):
         api_key = str(self.config.get("api_key") or "")
         retries = int(self.config.get("retries", 2))
         pending_ids = expected_ids - set(completed)
-        region_lines = "\n".join(f"[{region_id}] {text}" for region_id, text in regions if region_id in pending_ids)
         system_prompt = str(
             self.config.get(
                 "prompt",
@@ -190,20 +209,16 @@ class OpenAICompatibleTranslator(Translator):
                       "Use scene, panel order and glossary to resolve pronouns and maintain names; do not invent speakers."],
             "project_context": context,
         }
-        user_prompt = json.dumps(instructions, ensure_ascii=False) + "\n\n" + region_lines
-        endpoint, headers, payload = self._build_request(
-            protocol=protocol,
-            base_url=base_url,
-            api_key=api_key,
-            model=model,
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            expected_ids=pending_ids,
-            temperature=float(self.config.get("temperature", 0.2)),
-            max_tokens=int(self.config.get("max_tokens", 4096)),
-        )
-        if self.config.get("include_page_image") is True and isinstance(page_image, str):
-            attach_page_image(payload, protocol, page_image)
+        def build_pending_request(pending):
+            current_instructions = {**instructions, "required_output": {key: "translated text" for key in sorted(pending)}}
+            lines = "\n".join(f"[{key}] {text}" for key, text in regions if key in pending)
+            endpoint, headers, payload = self._build_request(protocol=protocol, base_url=base_url, api_key=api_key, model=model,
+                system_prompt=system_prompt, user_prompt=json.dumps(current_instructions, ensure_ascii=False)+"\n\n"+lines,
+                expected_ids=pending, temperature=float(self.config.get("temperature", .2)),
+                max_tokens=int(self.config.get("max_tokens", 2048)))
+            if self.config.get("include_page_image") is True and isinstance(page_image, str):
+                attach_page_image(payload, protocol, page_image)
+            return endpoint, headers, payload
         last_error: Exception | None = None
         budget = request_budget(self.config)
         for attempt in range(retries + 1):
@@ -212,44 +227,56 @@ class OpenAICompatibleTranslator(Translator):
             response_key = fingerprint({"kind": "translation-received-v1", "request": cache_key,
                                         "pending": sorted(expected_ids - set(completed))}) if cache else None
             received = cache.get(response_key) if cache else None
-            if received is not None:
+            while received is not None:
                 try:
-                    self._parse(self._extract_content(received.get("body"), protocol))
+                    translations = self._parse(self._extract_content(received.get("body"), protocol))
+                    requested = expected_ids - set(completed)
+                    if set(translations) - requested:
+                        raise ProviderError("已保存响应的区域 ID 不匹配。", error_kind="translation_id_mismatch")
+                    # Save recoverable successes before replacing a partial
+                    # cached response. Explicit retries pay only for missing IDs.
+                    completed.update({key: value.strip() for key, value in translations.items() if has_text(value)})
+                    if completed:
+                        cache.put(cache_key, completed)
+                    if expected_ids == set(completed):
+                        return completed
+                    raise ProviderError(f"Translation response missing or empty IDs: {sorted(expected_ids-set(completed))}",
+                                        error_kind="translation_missing_ids")
                 except ProviderError:
                     if not cache.allow_invalid:
                         raise  # Local replay never silently pays for replacement.
                     cache.archive_received(response_key)
-                    received = None
+                    response_key = fingerprint({"kind": "translation-received-v1", "request": cache_key,
+                                                "pending": sorted(expected_ids-set(completed))})
+                    received = cache.get(response_key)
+            endpoint, headers, payload = build_pending_request(expected_ids - set(completed))
             acquired = False
             started = time.monotonic()
             request_units = max(.1,sum(len(text) for key,text in regions if key not in completed)/1000)
             budget_error = None
             try:
-                if received is None:
-                    with measure("cloud.translation_wait"):
-                        while not budget.try_acquire():
-                            if check_interruption:
-                                check_interruption()
-                            await asyncio.sleep(budget.poll_interval())
-                    acquired = True
-                    started = time.monotonic()
-                    response = await client.post(endpoint, headers=headers, json=payload)
-                    if not 200 <= response.status_code < 300:
-                        status = response.status_code
-                        raise ProviderError(f"翻译请求失败（HTTP {status}），请检查接口配置和服务状态。", retryable=status in {408, 429} or status >= 500,
-                            status_code=status, retry_after=retry_after_seconds(response.headers.get("Retry-After")), error_kind="translation_http_error")
-                    try:
-                        body = response.json()
-                    except (ValueError, UnicodeDecodeError):
-                        raise ProviderError("翻译接口返回的不是有效 JSON；已停止，未自动重复请求。",
-                            retryable=True, error_kind="translation_response_not_json") from None
-                    if cache:
-                        # Allowlist only response content used by our parser;
-                        # never persist request headers or proxy debug fields.
-                        body = self._received_body(body)
-                        cache.put(response_key, {"body": body})
-                else:
-                    body = received.get("body")
+                with measure("cloud.translation_wait"):
+                    while not budget.try_acquire():
+                        if check_interruption:
+                            check_interruption()
+                        await asyncio.sleep(budget.poll_interval())
+                acquired = True
+                started = time.monotonic()
+                response = await client.post(endpoint, headers=headers, json=payload)
+                if not 200 <= response.status_code < 300:
+                    status = response.status_code
+                    raise ProviderError(f"翻译请求失败（HTTP {status}），请检查接口配置和服务状态。", retryable=status in {408, 429} or status >= 500,
+                        status_code=status, retry_after=retry_after_seconds(response.headers.get("Retry-After")), error_kind="translation_http_error")
+                try:
+                    body = response.json()
+                except (ValueError, UnicodeDecodeError):
+                    raise ProviderError("翻译接口返回的不是有效 JSON；已停止，未自动重复请求。",
+                        retryable=True, error_kind="translation_response_not_json") from None
+                if cache:
+                    # Allowlist only response content used by our parser;
+                    # never persist request headers or proxy debug fields.
+                    body = self._received_body(body)
+                    cache.put(response_key, {"body": body})
                 if check_interruption:
                     check_interruption()
                 content = self._extract_content(body, protocol)
@@ -257,8 +284,9 @@ class OpenAICompatibleTranslator(Translator):
                 received_ids = set(translations)
                 requested_ids = expected_ids - set(completed)
                 if received_ids - requested_ids:
-                    raise ProviderError(f"Translation ID mismatch; extra={sorted(received_ids - requested_ids)}", retryable=True)
-                completed.update({key:value.strip() for key,value in translations.items() if isinstance(value,str) and value.strip()})
+                    raise ProviderError(f"Translation ID mismatch; extra={sorted(received_ids - requested_ids)}", retryable=True,
+                                        error_kind="translation_id_mismatch")
+                completed.update({key:value.strip() for key,value in translations.items() if has_text(value)})
                 if cache and completed:
                     cache.put(cache_key,completed)
                 missing = expected_ids - set(completed)
@@ -266,13 +294,6 @@ class OpenAICompatibleTranslator(Translator):
                     return completed
                 # Retain successful entries and retry only missing/empty IDs,
                 # instead of generating the entire dense page again.
-                retry_instructions = {**instructions,"required_output":{key:"translated text" for key in sorted(missing)}}
-                retry_lines = "\n".join(f"[{key}] {text}" for key,text in regions if key in missing)
-                endpoint, headers, payload = self._build_request(protocol=protocol,base_url=base_url,api_key=api_key,model=model,
-                    system_prompt=system_prompt,user_prompt=json.dumps(retry_instructions,ensure_ascii=False)+"\n\n"+retry_lines,
-                    expected_ids=missing,temperature=float(self.config.get("temperature",0.2)),max_tokens=int(self.config.get("max_tokens",4096)))
-                if self.config.get("include_page_image") is True and isinstance(page_image,str):
-                    attach_page_image(payload,protocol,page_image)
                 raise ProviderError(f"Translation response missing or empty IDs: {sorted(missing)}",retryable=True,
                     error_kind="translation_missing_ids")
             except (httpx.HTTPError, KeyError, IndexError, TypeError, json.JSONDecodeError, ProviderError) as exc:
@@ -390,14 +411,19 @@ class OpenAICompatibleTranslator(Translator):
                 content_parts.extend(item["content"])
         choice = (body.get("choices") or [None])[0] if isinstance(body.get("choices"), list) else None
         message = choice.get("message") if isinstance(choice, dict) else None
+        finish = str(choice.get("finish_reason") or "").lower() if isinstance(choice, dict) else ""
         if isinstance(message, dict) and isinstance(message.get("content"), list):
             content_parts.extend(message["content"])
         if (body.get("stop_reason") == "refusal"
-                or isinstance(choice, dict) and str(choice.get("finish_reason") or "").lower() in {
-                    "content_filter", "prohibited_content", "safety"}
+                or finish in {"content_filter", "prohibited_content", "safety"}
                 or isinstance(message, dict) and message.get("refusal")
                 or any(isinstance(part, dict) and part.get("type") == "refusal" for part in content_parts)):
-            raise ProviderError("翻译接口拒绝生成此内容；未自动重复请求。", error_kind="translation_response_refused")
+            # Report this received response, not a permanent judgment about a
+            # page. A subsequent explicit request/context may have a different
+            # outcome. Do not echo arbitrary upstream content or auto-reissue.
+            marker = finish if finish in {"content_filter", "prohibited_content", "safety"} else "refusal"
+            raise ProviderError(f"翻译接口本次返回拒绝标记（{marker}），未返回可用译文；未自动重复请求。",
+                                error_kind="translation_response_refused")
         if protocol == "anthropic":
             content = body.get("content")
             if isinstance(content, list):

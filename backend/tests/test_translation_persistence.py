@@ -84,3 +84,26 @@ def test_failed_translation_keeps_previous_published_paths(client, monkeypatch):
     with SessionLocal() as db:
         row = db.get(ImagePage, page["id"])
         assert (row.rendered_path, row.text_layer_path) == ("prior-render.png", "prior-layer.png")
+
+
+@pytest.mark.parametrize("value", ["", " \n　", "\u200b\ufeff", "\u200d", None, 12])
+def test_provider_empty_values_cannot_overwrite_existing_translation(client, monkeypatch, value):
+    page, regions = setup(client, ["first", "second"])
+    for region in regions:
+        assert client.patch(f"/api/regions/{region['id']}", json={"translated_text": "existing"}).status_code == 200
+
+    class Translator:
+        config = {}
+        async def translate_regions(self, rows, **kwargs):
+            return {key: "valid" if index == 0 else value for index, (key, _) in enumerate(rows)}
+
+    provider = PipelineProcessor._provider
+    monkeypatch.setattr(PipelineProcessor, "_provider", lambda self, kind, requested:
+                        (Translator(), "test") if kind == "translation" else provider(self, kind, requested))
+    result, rows = run_translation(client, page, regions, "page")
+    assert result["status"] == "FAILED", result
+    assert "空白或无效译文" in result["error_message"]
+    assert all(row["translated_text"] == "existing" for row in rows.values())
+    with SessionLocal() as db:
+        assert db.scalar(select(func.count()).select_from(Translation).where(
+            Translation.region_id.in_([region["id"] for region in regions]))) == 0

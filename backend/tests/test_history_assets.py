@@ -2,21 +2,26 @@ import json
 from io import BytesIO
 
 import pytest
-from app.core.database import SessionLocal
+from app.core.database import SessionLocal, engine
+from app.core.transactions import is_retryable_write
 from app.models import (
     EditorHistoryEntry,
     ProcessingTask,
+    Project,
     RegionRevision,
     StageCheckpoint,
     TaskWorkflow,
     TextRegion,
 )
+from app.services import history_assets
 from app.services.history_assets import collect_project_history_assets
 from app.services.regions import region_snapshot
 from app.storage import get_storage
+from db_assertions import assert_rows_unlocked
 from fastapi import HTTPException
 from PIL import Image
-from sqlalchemy import select
+from sqlalchemy import select, update
+from sqlalchemy.exc import OperationalError
 from test_editor_history import apply
 from test_repair_geometry_sync import setup_page
 
@@ -127,3 +132,81 @@ def test_history_collection_preserves_failed_workflow_checkpoint_inputs(client):
         db.commit()
         assert collect_project_history_assets(db, page["project_id"], grace_seconds=0)["removed_files"] == 1
     assert saved_input.exists() and saved_output.exists() and not orphan.exists()
+
+
+def test_history_reference_scan_does_not_hold_project_or_page_row_locks(client, monkeypatch):
+    page, _ = setup_page(client)
+    directory = get_storage().project_dir(page["project_id"]) / "history" / "assets"
+    orphan = directory / "unused.png"
+    orphan.write_bytes(b"asset")
+    original = history_assets._history_references
+    checked = []
+
+    def references(db, project_id, prefix):
+        assert_rows_unlocked(engine, project_id, page["id"])
+        checked.append(True)
+        return original(db, project_id, prefix)
+
+    monkeypatch.setattr(history_assets, "_history_references", references)
+    with SessionLocal() as db:
+        assert collect_project_history_assets(db, page["project_id"], grace_seconds=0)["removed_files"] == 1
+        assert not db.in_transaction()
+    assert checked == [True] and not orphan.exists()
+
+
+def test_history_collection_revalidates_project_after_unlocked_scan(client, monkeypatch):
+    page, regions = setup_page(client)
+    storage = get_storage()
+    orphan = storage.project_dir(page["project_id"]) / "history" / "assets" / "newly-used.png"
+    orphan.write_bytes(b"asset")
+    original = history_assets._history_references
+
+    def references(db, project_id, prefix):
+        result = original(db, project_id, prefix)
+        with SessionLocal() as writer:
+            # Same no-op project update as every application publisher.
+            writer.execute(update(Project).where(Project.id == project_id).values(updated_at=Project.updated_at))
+            writer.get(TextRegion, regions[0]["id"]).pixel_mask_path = storage.relative(orphan)
+            writer.commit()
+        return result
+
+    monkeypatch.setattr(history_assets, "_history_references", references)
+    with SessionLocal() as db:
+        assert collect_project_history_assets(db, page["project_id"], grace_seconds=0)["removed_files"] == 0
+    assert orphan.is_file()
+
+
+def test_history_collection_does_not_wait_on_a_busy_project(client):
+    page, _ = setup_page(client)
+    directory = get_storage().project_dir(page["project_id"]) / "history" / "assets"
+    orphan = directory / "unused.png"
+    orphan.write_bytes(b"asset")
+    with engine.connect() as writer, SessionLocal() as db:
+        writer.execute(update(Project).where(Project.id == page["project_id"]).values(updated_at=Project.updated_at))
+        with pytest.raises(OperationalError) as error:
+            collect_project_history_assets(db, page["project_id"], grace_seconds=0)
+        assert is_retryable_write(error.value)
+        assert not db.in_transaction()
+    assert orphan.is_file()
+
+
+def test_history_collection_rechecks_tasks_created_during_reference_scan(client, monkeypatch):
+    page, _ = setup_page(client)
+    orphan = get_storage().project_dir(page["project_id"]) / "history" / "assets" / "unused.png"
+    orphan.write_bytes(b"asset")
+    original = history_assets._history_references
+
+    def references(db, project_id, prefix):
+        result = original(db, project_id, prefix)
+        with SessionLocal() as writer:
+            # A newly queued task does not update the project's xmin.
+            writer.add(ProcessingTask(project_id=project_id, image_id=page["id"], task_type="ocr", status="PAUSED"))
+            writer.commit()
+        return result
+
+    monkeypatch.setattr(history_assets, "_history_references", references)
+    with SessionLocal() as db:
+        with pytest.raises(HTTPException):
+            collect_project_history_assets(db, page["project_id"], grace_seconds=0)
+        assert not db.in_transaction()
+    assert orphan.is_file()

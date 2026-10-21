@@ -143,6 +143,28 @@ def test_bootstrap_applies_user_selected_providers_and_devices(client) -> None:
     assert translation["status"] == "ready"
 
 
+@pytest.mark.usefixtures("fresh_model_database")
+def test_keyless_translation_bootstrap_needs_no_key_or_model_and_preserves_llm_config(client):
+    created = client.post("/api/models/config", json={"kind": "translation", "provider": "openai-compatible",
+        "name": "saved-llm", "api_key": "saved-test-key", "is_default": True,
+        "config": {"base_url": "https://example.com/v1", "model": "saved-model"}})
+    assert created.status_code == 201, created.text
+    response = client.post("/api/models/bootstrap", json={"preload": False,
+        "selections": [{"kind": "translation", "provider": "google-web"}]})
+    assert response.status_code == 200, response.text
+    assert response.json()["models"][0]["status"] == "configured"
+    payload = client.get("/api/models").json()
+    descriptor = next(item for item in payload["available"] if item["name"] == "google-web")
+    assert descriptor["capabilities"]["keyless"] and not descriptor["is_fallback"]
+    google = next(item for item in payload["configured"] if item["provider"] == "google-web")
+    assert google["is_default"] and not google["has_api_key"]
+    assert not {"model", "base_url"} & google["config"].keys()
+    llm = next(item for item in payload["configured"] if item["provider"] == "openai-compatible")
+    assert llm["has_api_key"] and llm["config"]["model"] == "saved-model"
+    stage = next(item for item in client.get("/api/models/setup-status").json()["stages"] if item["kind"] == "translation")
+    assert stage["status"] == "ready", stage
+
+
 def test_bootstrap_accepts_auto_device_for_all_local_gpu_providers(client):
     response = client.post("/api/models/bootstrap", json={"preload": False, "selections": [
         {"kind": "detection", "provider": "rfdetr", "device": "auto"},

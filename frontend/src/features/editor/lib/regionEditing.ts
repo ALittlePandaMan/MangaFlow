@@ -1,4 +1,5 @@
 import type {TextRegion} from '../../../types'
+import {useTextStyleStore} from '../../settings/textStyle'
 
 export type RegionChange = {id: string, patch: Partial<TextRegion>}
 
@@ -37,10 +38,10 @@ export function draftRegion(imageId: string, polygon: number[][], bbox: number[]
   const keys = new Set(regions.map(region => region.region_key))
   let keyNumber = regions.length+1
   while (keys.has(`R${String(keyNumber).padStart(3,'0')}`)) keyNumber++
+  const {orientation, ...style} = useTextStyleStore.getState().defaults
   return {id,image_id:imageId,region_key:`R${String(keyNumber).padStart(3,'0')}`,polygon,bbox,
     translated_polygon:polygon.map(point => [...point]),translated_bbox:[...bbox],mask_url:null,source_text:'',translated_text:'',confidence:0,
-    orientation:bbox[3] > bbox[2]*1.2 ? 'vertical' : 'horizontal',reading_order:readingOrder,panel_id:null,bubble_id:null,
-    region_type:'background_complex',font_size:28,font_family:'Noto Sans CJK SC',font_weight:400,text_color:'#111111',stroke_color:'#ffffff',stroke_width:0,
-    alignment:'center',line_spacing:1.15,character_spacing:0,rotation:0,perspective_warp:false,opacity:1,locked:false,visible:true,
+    orientation:orientation === 'auto' ? (bbox[3] > bbox[2]*1.2 ? 'vertical' : 'horizontal') : orientation,reading_order:readingOrder,panel_id:null,bubble_id:null,
+    region_type:'background_complex',...style,rotation:0,perspective_warp:false,opacity:1,locked:false,visible:true,
     needs_review:false,review_reasons:[],layout_warning:false,layout_data:{manual:true},updated_at:new Date().toISOString()}
 }

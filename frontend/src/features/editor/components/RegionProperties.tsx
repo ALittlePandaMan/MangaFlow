@@ -2,7 +2,7 @@ import {ChevronDown, Eye, EyeOff, Folder, Layers3} from 'lucide-react'
 import {useCallback, useId, useLayoutEffect, useMemo, useRef, useState} from 'react'
 import type {MouseEvent as ReactMouseEvent} from 'react'
 import type {ImagePage, TextRegion} from '../../../types'
-import {cn, scrollbarClass} from '../../../ui'
+import {cn, compactIconButtonClass, scrollbarClass} from '../../../ui'
 import {useEditorStore} from '../store'
 import {TextTypesettingPanel} from './TextTypesettingPanel'
 import {RegionLayerRow} from './RegionLayerRow'
@@ -71,13 +71,13 @@ export function RegionProperties({page,regions,region,selectedRegions,selectedCo
         <button type="button" className="inspector-group-toggle" aria-label={textExpanded ? '折叠文本组' : '展开文本组'} aria-expanded={textExpanded} aria-controls={textListId} onClick={() => setTextExpanded(value => !value)}>
           <Folder size={17}/><span className="inspector-layer-title"><strong>文本</strong><small>文本组</small></span><ChevronDown size={14} className="inspector-group-chevron"/>
         </button>
-        <span className="inspector-layer-opacity">100%</span><button type="button" className="inspector-icon-button inspector-eye" aria-label={layers.translated ? '隐藏文本组' : '显示文本组'} disabled={!!busyAction} onClick={() => toggleLayer('translated')}>{layers.translated ? <Eye size={16}/> : <EyeOff size={16}/>}</button>
+        <span className="inspector-layer-opacity">100%</span><button type="button" className={cn(compactIconButtonClass,'inspector-eye')} aria-label={layers.translated ? '隐藏文本组' : '显示文本组'} disabled={!!busyAction} onClick={() => toggleLayer('translated')}>{layers.translated ? <Eye aria-hidden="true" size={16}/> : <EyeOff aria-hidden="true" size={16}/>}</button>
       </div>
       <div id={textListId} hidden={!textExpanded}>
         {items.map(item => <RegionLayerRow key={item.id} region={item} selected={selected.has(item.id)} expanded={selectedCount===1 && selected.has(item.id)} disabled={!!busyAction} onSelect={selectRow} onUpdate={update} onDelete={deleteRow}/>)}
         {!items.length && <p className="inspector-empty">暂无文本区域，识别或创建文本框后会显示在这里。</p>}
       </div>
-      {page && <div className="inspector-image-row"><Layers3 size={17}/><span className="inspector-layer-title"><strong>Mask</strong><small>蒙版叠加</small></span><button type="button" className="inspector-icon-button inspector-eye" disabled={!!busyAction} aria-label={layers.mask ? '隐藏 Mask 图层' : '显示 Mask 图层'} aria-pressed={!!layers.mask} onClick={() => toggleLayer('mask')}>{layers.mask ? <Eye size={16}/> : <EyeOff size={16}/>}</button></div>}
+      {page && <div className="inspector-image-row"><Layers3 size={17}/><span className="inspector-layer-title"><strong>Mask</strong><small>蒙版叠加</small></span><button type="button" className={cn(compactIconButtonClass,'inspector-eye')} disabled={!!busyAction} aria-label={layers.mask ? '隐藏 Mask 图层' : '显示 Mask 图层'} aria-pressed={!!layers.mask} onClick={() => toggleLayer('mask')}>{layers.mask ? <Eye aria-hidden="true" size={16}/> : <EyeOff aria-hidden="true" size={16}/>}</button></div>}
     </div>
   </aside>
 }

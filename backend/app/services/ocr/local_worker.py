@@ -11,7 +11,12 @@ import types
 import unicodedata
 from pathlib import Path
 
-from app.services.ocr.local_catalog import LOCAL_OCR_MODELS, verify_code
+from app.services.ocr.local_catalog import (
+    LOCAL_OCR_DEFAULT_MAX_TOKENS,
+    LOCAL_OCR_MAX_TOKENS,
+    LOCAL_OCR_MODELS,
+    verify_code,
+)
 
 PROTOCOL = "mangaflow-local-ocr-v1"
 
@@ -166,8 +171,8 @@ def validated_crop(request):
             or any(isinstance(n, bool) or not isinstance(n, (int, float)) or not math.isfinite(n) for n in box)
             or min(box[2:]) <= 0 or not isinstance(padding, int) or not 0 <= padding <= 50):
         raise ValueError("invalid OCR crop")
-    maximum = request.get("max_new_tokens", 512)
-    if isinstance(maximum, bool) or not isinstance(maximum, int) or not 16 <= maximum <= 1024:
+    maximum = request.get("max_new_tokens", LOCAL_OCR_DEFAULT_MAX_TOKENS)
+    if isinstance(maximum, bool) or not isinstance(maximum, int) or not 16 <= maximum <= LOCAL_OCR_MAX_TOKENS:
         raise ValueError("invalid OCR generation limit")
     image = _crop(Path(request["image_path"]), box, padding)
     if not image.width or not image.height:

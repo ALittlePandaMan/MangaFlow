@@ -13,6 +13,7 @@ from app.services.regions import synchronize_source_geometry_before_repair
 from app.services.translation.context import page_context
 from app.services.workflow_state import capture_page, decode, delta, private_page, requested_stages
 from app.storage import StorageManager
+from app.utils.text import has_text
 
 
 class StageStorage(StorageManager):
@@ -91,8 +92,8 @@ def _run_stage(stage, state, policy, output, storage, check, progress):
             if request.get("start_stage") == "translation":
                 explicit_force = bool((region_id or region_ids) and force)
                 region_ids = {region.id for region in processor._regions(page, region_id, region_ids)
-                              if not region.source_text.strip() and (not region.locked or explicit_force)
-                              and (force or not region.translated_text.strip())}
+                              if not has_text(region.source_text) and (not region.locked or explicit_force)
+                              and (force or not has_text(region.translated_text))}
                 region_id, provider = None, None
                 if region_ids:
                     metadata = dict(page.metadata_json or {})

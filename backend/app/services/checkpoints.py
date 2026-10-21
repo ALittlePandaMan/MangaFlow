@@ -8,7 +8,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from app.core.serialization import file_digest
-from app.core.transactions import retry_write
+from app.core.transactions import task_write
 from app.models import ProcessingTask, StageCheckpoint, TaskWorkflow
 from app.services.workflow_state import fingerprint, page_version
 from sqlalchemy import func, select
@@ -50,14 +50,15 @@ class CheckpointStore:
         self.sessions, self.storage = sessions, storage
 
     @staticmethod
-    def _task(db, task_id: str, generation: int, *, terminal: bool = False):
-        task = db.scalar(select(ProcessingTask).where(ProcessingTask.id == task_id).with_for_update())
+    def _task(db, task_id: str, generation: int, *, terminal: bool = False, lock: bool = True):
+        query = select(ProcessingTask).where(ProcessingTask.id == task_id)
+        task = db.scalar(query.with_for_update() if lock else query)
         if task is None or task.execution_generation != generation or (not terminal and task.status != "RUNNING"):
             raise StaleExecution("Task attempt is no longer allowed to publish results")
         return task
 
-    def _workflow(self, db, lease: WorkflowLease, *, terminal: bool = False):
-        self._task(db, lease.task_id, lease.generation, terminal=terminal)
+    def _workflow(self, db, lease: WorkflowLease, *, terminal: bool = False, lock: bool = True):
+        self._task(db, lease.task_id, lease.generation, terminal=terminal, lock=lock)
         workflow = db.get(TaskWorkflow, lease.id)
         if workflow is None or workflow.generation != lease.generation or workflow.status != "RUNNING":
             raise StaleExecution("Workflow attempt is no longer active")
@@ -94,7 +95,7 @@ class CheckpointStore:
                     prior.generation = generation
                     prior.status = "RUNNING"
                 return WorkflowLease(prior.id, task_id, generation, version)
-            return retry_write(db, save)
+            return task_write(db, task_id, save)
 
     def initial_state(self, lease: WorkflowLease) -> dict:
         with self.sessions() as db:
@@ -132,11 +133,11 @@ class CheckpointStore:
                 db.add(StageCheckpoint(id=identifier, workflow_id=lease.id, stage=stage, attempt=attempt,
                     generation=lease.generation, input_fingerprint=input_fingerprint, cloud_request=cloud))
                 return StageTicket(identifier, lease, stage, attempt, input_fingerprint)
-            return retry_write(db, save)
+            return task_write(db, lease.task_id, save)
 
     def successful(self, lease: WorkflowLease, stage: str, input_fingerprint: str) -> dict | None:
         with self.sessions() as db:
-            self._workflow(db, lease)
+            self._workflow(db, lease, lock=False)
             row = db.scalar(select(StageCheckpoint).where(
                 StageCheckpoint.workflow_id == lease.id, StageCheckpoint.stage == stage,
                 StageCheckpoint.input_fingerprint == input_fingerprint, StageCheckpoint.status == "SUCCEEDED",
@@ -153,7 +154,7 @@ class CheckpointStore:
                 row = db.get(StageCheckpoint, identifier)
                 if row and row.status == "SUCCEEDED":
                     row.status, row.error_kind = "INVALID", "artifact_changed"
-            retry_write(db, invalidate)
+            task_write(db, lease.task_id, invalidate)
         return None
 
     def artifact_manifest(self, ticket: StageTicket) -> dict:
@@ -178,7 +179,7 @@ class CheckpointStore:
     def validate_proofs(self, lease: WorkflowLease, proofs: dict[str, str]) -> list[str]:
         identifiers, artifacts = [], {}
         with self.sessions() as db:
-            self._workflow(db, lease)
+            self._workflow(db, lease, lock=False)
             for stage, expected in proofs.items():
                 row = db.scalar(select(StageCheckpoint).where(
                     StageCheckpoint.workflow_id == lease.id, StageCheckpoint.stage == stage,
@@ -207,7 +208,7 @@ class CheckpointStore:
                     raise StaleExecution("Stage attempt is no longer active")
                 row.status, row.result, row.artifacts = "SUCCEEDED", result, artifacts
                 row.finished_at = datetime.now(timezone.utc)
-            retry_write(db, save)
+            task_write(db, ticket.workflow.task_id, save)
 
     def fail(self, ticket: StageTicket, *, uncertain: bool = False, kind: str = "stage_failed") -> None:
         with self.sessions() as db:
@@ -221,7 +222,7 @@ class CheckpointStore:
                     # whether the received response was empty/refused/truncated.
                     row.error_kind = (kind if kind.startswith("translation_") else "unknown_cloud_outcome") if row.status == "UNKNOWN" else kind
                     row.finished_at = datetime.now(timezone.utc)
-            retry_write(db, save)
+            task_write(db, ticket.workflow.task_id, save)
 
     def acknowledged_cloud(self, lease: WorkflowLease, stage: str, key: str) -> bool:
         with self.sessions() as db:
@@ -235,3 +236,24 @@ def unknown_cloud_outcomes(db, task_id: str) -> list[StageCheckpoint]:
     return list(db.scalars(select(StageCheckpoint).join(TaskWorkflow).where(
         TaskWorkflow.task_id == task_id, StageCheckpoint.status == "UNKNOWN",
     )))
+
+
+def workflow_failure_message(db, task: ProcessingTask, message: str) -> str:
+    """Distinguish saved branch work from an atomically published page.
+
+    Never expose paths/provider contents and never publish a half-translated
+    image merely to clear an error. Successful checkpoints remain reusable by
+    an explicitly authorized retry of this task.
+    """
+    if (task.payload or {}).get("end_stage") not in {"rendering", "full"}:
+        return message
+    stages = set(db.scalars(select(StageCheckpoint.stage).join(TaskWorkflow).where(
+        TaskWorkflow.task_id == task.id, TaskWorkflow.generation == task.execution_generation,
+        StageCheckpoint.status == "SUCCEEDED",
+    )))
+    saved = []
+    if "translation" in stages:
+        saved.append("翻译")
+    if {"mask", "inpainting"} <= stages:
+        saved.append("背景修复")
+    return message + f"\n{'、'.join(saved)}已完成并保留检查点；因本次任务未全部成功，整页结果尚未发布。" if saved else message

@@ -1,0 +1,48 @@
+.translation-context-overlay { position: fixed; inset: 0; z-index: 90; display: grid; place-items: center; padding: 24px; background: var(--color-overlay); backdrop-filter: blur(4px); }
+.translation-context-dialog { display: flex; flex-direction: column; min-width: 0; width: min(720px,100%); max-height: calc(100dvh - 48px); margin: 0; overflow: hidden; border: 1px solid var(--color-line-subtle); border-radius: 16px; background: var(--color-app); color: var(--color-ink); box-shadow: var(--shadow-dialog); }
+.translation-context-header { display: flex; flex-shrink: 0; align-items: center; justify-content: space-between; gap: 16px; padding: 18px 20px 18px 24px; border-bottom: 1px solid var(--color-line-subtle); }
+.translation-context-header h2 { margin: 0; font-size: 22px; line-height: 1.4; font-weight: 600; }
+.translation-context-body { display: flex; flex-direction: column; gap: 24px; min-width: 0; min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 24px; }
+.translation-context-modes { min-width: 0; margin: 0; padding: 0; border: 0; }
+.translation-context-modes legend { padding: 0; font-size: 14px; font-weight: 600; line-height: 1.5; }
+.translation-context-mode-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 12px; margin-top: 12px; }
+.translation-context-mode { display: flex; align-items: flex-start; gap: 12px; min-width: 0; padding: 16px; border: 1px solid var(--color-line); border-radius: 8px; background: var(--color-panel); cursor: pointer; }
+.translation-context-mode:hover { border-color: var(--color-accent); }
+.translation-context-mode.is-selected { border-color: var(--color-accent); background: var(--color-accent-soft); }
+.translation-context-mode input { width: 16px; height: 16px; margin: 3px 0 0; flex-shrink: 0; accent-color: var(--color-accent); cursor: pointer; }
+.translation-context-mode > span { min-width: 0; }
+.translation-context-mode-title { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.translation-context-mode-title strong { font-size: 14px; font-weight: 600; line-height: 1.5; }
+.translation-context-mode-title small { padding: 2px 6px; border-radius: 4px; color: var(--color-accent-soft-ink); background: var(--color-panel); font-size: 11px; line-height: 1.5; }
+.translation-context-mode-description { display: block; margin-top: 8px; font-size: 13px; line-height: 1.7; color: var(--color-muted); overflow-wrap: anywhere; }
+.translation-context-mode-note { margin: 10px 0 0; color: var(--color-muted); font-size: 13px; line-height: 1.7; }
+.translation-context-editor { min-width: 0; }
+.translation-context-editor-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.translation-context-editor-heading label { display: flex; align-items: center; gap: 10px; font-size: 14px; font-weight: 600; cursor: text; }
+.translation-context-editor-heading label span { color: var(--color-muted); font-size: 11px; font-family: var(--font-mono); font-weight: 400; }
+.translation-context-format { display: inline-flex; align-items: center; gap: 6px; min-height: 36px; padding: 0 8px; border-radius: 6px; color: var(--color-secondary); font-size: 13px; cursor: pointer; }
+.translation-context-format:hover { background: var(--color-hover); color: var(--color-ink); }
+.translation-context-help { margin: 2px 0 12px; color: var(--color-muted); font-size: 13px; line-height: 1.7; }
+.translation-context-editor textarea { display: block; box-sizing: border-box; width: 100%; max-width: 100%; min-height: 180px; height: 224px; padding: 16px; resize: vertical; border: 1px solid var(--color-line); border-radius: 8px; outline: none; background: var(--color-panel); color: var(--color-ink); font-family: var(--font-mono); font-size: 14px; line-height: 1.8; white-space: pre-wrap; overflow-wrap: anywhere; }
+.translation-context-editor textarea:hover { border-color: var(--color-line-strong); }
+.translation-context-editor textarea:focus { border-color: var(--color-accent); box-shadow: 0 0 0 3px color-mix(in srgb,var(--color-accent) 15%,transparent); }
+.translation-context-editor textarea[aria-invalid='true'] { border-color: var(--color-danger); }
+.translation-context-error { margin: 12px 0 0; padding: 12px; border-radius: 6px; color: var(--color-danger-soft-ink); background: color-mix(in srgb,var(--color-danger) 10%,transparent); font-size: 13px; line-height: 1.7; overflow-wrap: anywhere; }
+.translation-context-footer { display: flex; flex-shrink: 0; justify-content: flex-end; gap: 12px; padding: 20px 24px; border-top: 1px solid var(--color-line-subtle); }
+.translation-context-footer button { min-height: 44px; }
+.translation-context-footer .translation-context-save { color: white; background: #2867c9; border-color: transparent; }
+.translation-context-footer .translation-context-save:hover { background: #215bb5; }
+.translation-context-dialog button:not(.icon-button):focus-visible, .translation-context-mode:has(input:focus-visible) { outline: 2px solid var(--color-accent); outline-offset: 3px; }
+.translation-context-dialog button:not(.icon-button):disabled, .translation-context-dialog fieldset:disabled label { cursor: not-allowed; opacity: .5; }
+@media (width < 640px) {
+  .translation-context-overlay { padding: 12px; }
+  .translation-context-dialog { max-height: calc(100dvh - 24px); border-radius: 12px; }
+  .translation-context-header { padding: 12px 12px 12px 16px; }
+  .translation-context-header h2 { font-size: 20px; }
+  .translation-context-body { gap: 20px; padding: 20px 16px; }
+  .translation-context-mode-grid { grid-template-columns: minmax(0,1fr); }
+  .translation-context-mode { padding: 14px; }
+  .translation-context-format { min-height: 44px; }
+  .translation-context-editor textarea { height: 200px; min-height: 160px; font-size: 16px; }
+  .translation-context-footer { padding: 16px; }
+}

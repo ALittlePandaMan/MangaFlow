@@ -1,7 +1,7 @@
 import {MoreHorizontal} from 'lucide-react'
 import {useEffect, useRef, useState, type ReactNode} from 'react'
 import {useCompactLayout} from '../../../hooks/useCompactLayout'
-import {buttonClass, cn} from '../../../ui'
+import {cn, iconButtonClass} from '../../../ui'
 
 export function EditorHeaderActions({children}: {children: ReactNode}) {
   const compact = useCompactLayout(1600)
@@ -24,7 +24,7 @@ export function EditorHeaderActions({children}: {children: ReactNode}) {
     }
   }, [compact, open])
   return <div ref={root} className="editor-header-actions">
-    {compact && <button ref={trigger} type="button" className={cn(buttonClass, 'app-header-icon')} aria-label="项目操作" aria-expanded={open} aria-controls="editor-project-actions" onClick={() => setOpen(!open)}><MoreHorizontal size={19}/></button>}
+    {compact && <button ref={trigger} type="button" className={cn(iconButtonClass, 'app-header-icon')} aria-label="项目操作" aria-expanded={open} aria-controls="editor-project-actions" onClick={() => setOpen(!open)}><MoreHorizontal aria-hidden="true" size={17}/></button>}
     <div id="editor-project-actions" className="editor-project-actions" hidden={compact && !open}>{children}</div>
   </div>
 }

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from collections.abc import Callable
 from typing import TypeVar
+from weakref import WeakValueDictionary
 
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
@@ -13,6 +15,8 @@ from app.core.timing import measured, record_timing
 
 logger = logging.getLogger(__name__)
 T = TypeVar("T")
+_write_gates = WeakValueDictionary()
+_write_gates_guard = threading.Lock()
 
 
 def has_pending_writes(db: Session) -> bool:
@@ -32,6 +36,41 @@ def is_retryable_write(error: BaseException) -> bool:
     return isinstance(error, OperationalError) and getattr(error.orig, "sqlstate", None) in {
         "40001", "40P01", "55P03",
     }
+
+
+def project_write(db: Session, project_id: str, operation: Callable[[], T]) -> T:  # noqa: UP047 -- Python 3.11
+    """Queue short same-project writes BEFORE opening a database transaction.
+
+    History publication still needs the PostgreSQL project row lock: removing
+    it would race undo/redo and asset collection. The local gate prevents our
+    own workers from exhausting their lock retries against one another; row
+    locks retain cross-process safety. Never put model/file work in operation.
+    Weak values discard gates once their last holder/waiter leaves.
+    """
+    return _queued_write(db, "project", project_id, operation)
+
+
+def task_write(db: Session, task_id: str, operation: Callable[[], T]) -> T:  # noqa: UP047 -- Python 3.11
+    """Serialize a task's branch/checkpoint/progress writes, not its inference."""
+    return _queued_write(db, "task", task_id, operation)
+
+
+def _queued_write(db: Session, scope: str, identifier: str, operation: Callable[[], T]) -> T:  # noqa: UP047 -- Python 3.11
+    if has_pending_writes(db):
+        raise ValueError(f"{scope}_write requires a clean session")
+    db.rollback()  # Waiting must not retain a connection or an old snapshot.
+    key = (db.get_bind(), scope, identifier)
+    with _write_gates_guard:
+        gate = _write_gates.get(key)
+        if gate is None:
+            gate = threading.RLock()
+            _write_gates[key] = gate
+    started = time.monotonic()
+    with gate:
+        record_timing(f"db.{scope}_queue_wait", time.monotonic() - started)
+        # A different process may still briefly own the row. Do not apply the
+        # progress writer's aggressive 1 s timeout to a history publication.
+        return retry_write(db, operation, lock_timeout_ms=5000)
 
 
 @measured("db.transaction_total")

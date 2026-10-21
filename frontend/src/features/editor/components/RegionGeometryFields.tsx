@@ -1,6 +1,7 @@
 import {Lock, LockOpen} from 'lucide-react'
 import type {TextRegion} from '../../../types'
 import {NumberControl} from '../../../components/FormControls'
+import {compactIconButtonClass} from '../../../ui'
 import {useEditorStore} from '../store'
 import {coordinateValue, normalizedAngle, polygonBbox, polygonRotation, rotatePolygon} from '../lib/inspectorFields'
 
@@ -31,6 +32,6 @@ export function RegionGeometryFields({region, onUpdate}: {region:TextRegion; onU
         <label>旋转角度<NumberControl commitOnBlur compact ariaLabel={`${translated ? '译文框' : '原文框'}旋转角度（度）`} min={-180} max={180} step={1} disabled={region.locked} value={coordinateValue(polygonRotation(polygon))} onChange={setRotation}/></label>
       </div>
     </details>
-    <button type="button" className="inspector-icon-button" aria-label={region.locked ? '解除锁定' : '锁定区域'} title={region.locked ? '解除锁定' : '锁定区域'} onClick={() => onUpdate(region.id,{locked:!region.locked})}>{region.locked ? <Lock size={14}/> : <LockOpen size={14}/>}</button>
+    <button type="button" className={compactIconButtonClass} aria-label={region.locked ? '解除锁定' : '锁定区域'} title={region.locked ? '解除锁定' : '锁定区域'} onClick={() => onUpdate(region.id,{locked:!region.locked})}>{region.locked ? <Lock aria-hidden="true" size={16}/> : <LockOpen aria-hidden="true" size={16}/>}</button>
   </div>
 }

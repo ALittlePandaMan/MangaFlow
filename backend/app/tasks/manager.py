@@ -12,7 +12,7 @@ from sqlalchemy import case, select, update
 
 from app.core.config import get_settings
 from app.core.database import SessionLocal
-from app.core.transactions import is_retryable_write, retry_write
+from app.core.transactions import is_retryable_write, retry_write, task_write
 from app.models import ProcessingTask, StageCheckpoint, TaskExecutionRun, TaskWorkflow
 from app.models.enums import TaskStatus
 from app.pipeline.processor import PipelineProcessor, TaskCancelled, TaskPaused
@@ -331,7 +331,7 @@ class TaskManager:
                 task.error_message = None
                 task.error_kind, task.waiting_reason, task.active_stages = None, None, []
                 return True
-            if not retry_write(db, claim):
+            if not task_write(db, task_id, claim):
                 return task.status
             history_entry_id = begin_task_history(db, task)
             from app.pipeline.workflow import PageWorkflow, prepare_target_geometry, supports_checkpoint_pipeline
@@ -389,7 +389,12 @@ class TaskManager:
             logger.exception("Processing task %s failed", task_id)
             # A poisoned transaction must never be reused to record its failure.
             terminal_persisted = False
-            outcome = TaskManager._persist_failure(task_id, str(exc))
+            try:
+                outcome = TaskManager._persist_failure(task_id, str(exc))
+            except Exception as save_error:
+                # Recovery must retry saving the original model/stage error,
+                # not replace it with a secondary terminal-state DB failure.
+                raise RuntimeError(str(exc)) from save_error
             terminal_persisted = True
             return outcome
         finally:
@@ -404,11 +409,27 @@ class TaskManager:
     def _persist_failure(task_id: str, error: str) -> str | None:
         with SessionLocal() as db:
             def save() -> str | None:
-                task = db.get(ProcessingTask, task_id)
+                task = db.scalar(select(ProcessingTask).where(ProcessingTask.id == task_id).with_for_update())
                 if task is None:
                     return None
                 if task.status in {TaskStatus.COMPLETED.value, TaskStatus.FAILED.value, TaskStatus.PAUSED.value}:
                     return task.status
+                # All branches have drained before this terminal handler runs.
+                # A failed checkpoint write must not leave RUNNING work behind
+                # or require an extra failed retry to discover an unknown bill.
+                # Preserve completed results and fence out older generations.
+                db.execute(update(StageCheckpoint).where(
+                    StageCheckpoint.status == "RUNNING",
+                    StageCheckpoint.generation == task.execution_generation,
+                    StageCheckpoint.workflow_id.in_(select(TaskWorkflow.id).where(
+                        TaskWorkflow.task_id == task_id,
+                        TaskWorkflow.generation == task.execution_generation,
+                    )),
+                ).values(
+                    status=case((StageCheckpoint.cloud_request.is_(True), "UNKNOWN"), else_="FAILED"),
+                    error_kind=case((StageCheckpoint.cloud_request.is_(True), "unknown_cloud_outcome"), else_="stage_failed"),
+                    finished_at=datetime.now(timezone.utc),
+                ))
                 if task.status in {TaskStatus.CANCELLING.value, TaskStatus.CANCELLED.value}:
                     if task.page and not task.batch_id and not TaskManager._has_workflow(db, task.id):
                         task.page.status = PipelineProcessor.stable_status_before(task.current_stage, task.page.status)
@@ -417,11 +438,11 @@ class TaskManager:
                     TaskManager._finish_cancelled_task(task)
                 else:
                     task.status = TaskStatus.FAILED.value
-                    task.error_message = error
                     task.message = "Failed"
                     task.current_stage = None
                     task.finished_at = datetime.now(timezone.utc)
-                    from app.services.checkpoints import unknown_cloud_outcomes
+                    from app.services.checkpoints import unknown_cloud_outcomes, workflow_failure_message
+                    task.error_message = workflow_failure_message(db, task, error)
                     task.error_kind = "unknown_cloud_outcome" if unknown_cloud_outcomes(db, task_id) else "processing_failed"
                     task.waiting_reason, task.active_stages = None, []
                     if task.page and not task.batch_id and not TaskManager._has_workflow(db, task.id):
@@ -430,7 +451,7 @@ class TaskManager:
                         task.page.current_stage = None
                 return task.status
 
-            return retry_write(db, save)
+            return task_write(db, task_id, save)
 
     @staticmethod
     def _has_workflow(db, task_id):

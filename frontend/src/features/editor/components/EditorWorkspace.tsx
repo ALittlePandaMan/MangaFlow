@@ -1,7 +1,7 @@
 import {ChevronLeft, ChevronRight, Focus, Images, SlidersHorizontal, X} from 'lucide-react'
 import {useEffect, useRef, useState, type ReactNode} from 'react'
 import {useCompactLayout} from '../../../hooks/useCompactLayout'
-import {cn, iconButtonClass} from '../../../ui'
+import {cn, ghostIconButtonClass} from '../../../ui'
 
 type Panel = 'pages' | 'properties' | null
 
@@ -46,7 +46,7 @@ export function EditorWorkspace({pages, canvas, properties, pageId, selectedCoun
     <div id="editor-properties" className="editor-properties" hidden={compact && panel !== 'properties'}>{properties}</div>
     {compact && panel && <div className="editor-sheet-heading">
       <strong>{panel === 'pages' ? '页面列表' : propertiesTitle}</strong>
-      <button ref={closeButton} type="button" className={iconButtonClass} aria-label="收起面板" onClick={dismiss}><X size={18}/></button>
+      <button ref={closeButton} type="button" className={ghostIconButtonClass} aria-label="收起面板" onClick={dismiss}><X aria-hidden="true" size={17}/></button>
     </div>}
     {compact && <nav className="editor-dock" aria-label="工作台面板">
       <button className="editor-page-step" type="button" aria-label="上一页" title="上一页" disabled={!onPreviousPage} onClick={onPreviousPage}><ChevronLeft size={18}/><span>上一页</span></button>

@@ -5,6 +5,7 @@ import os
 import re
 import uuid
 from pathlib import Path
+from threading import RLock
 from typing import Any, Literal
 
 import yaml
@@ -19,6 +20,7 @@ from sqlalchemy.orm import Session
 MODEL_STAGES = ("detection", "inpainting", "ocr", "rendering", "translation")
 MANIFEST_STAGES = (*MODEL_STAGES, "font")
 FONT_PROVIDERS = {"builtin", "builtin-noto-cjk"}
+_MANIFEST_WRITE_LOCK = RLock()
 _ENVIRONMENT_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _SENSITIVE_CONFIG_KEYS = {
     "api_key",
@@ -60,10 +62,27 @@ class ManifestStage(BaseModel):
         return normalized
 
 
+class TextStyleDefaults(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    font_family: str = Field(default="Noto Sans CJK SC", min_length=1, max_length=200)
+    font_size: int = Field(default=28, ge=1, le=512)
+    font_weight: Literal[100, 200, 300, 400, 500, 600, 700, 800, 900] = 400
+    auto_font_size: bool = True
+    orientation: Literal["auto", "horizontal", "vertical"] = "auto"
+    text_color: str = Field(default="#111111", pattern=r"^#[0-9a-fA-F]{6}$")
+    stroke_color: str = Field(default="#ffffff", pattern=r"^#[0-9a-fA-F]{6}$")
+    stroke_width: float = Field(default=0, ge=0, le=20)
+    alignment: Literal["left", "center", "right"] = "center"
+    line_spacing: float = Field(default=1.15, ge=0.5, le=3)
+    character_spacing: float = Field(default=0, ge=-5, le=20)
+
+
 class ManifestPreferences(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     shortcuts: dict[str, str] = Field(default_factory=dict)
+    text_style: TextStyleDefaults | None = None
 
     @field_validator("shortcuts")
     @classmethod
@@ -136,6 +155,16 @@ def load_model_manifest(path: str | Path) -> ModelManifest:
 
 
 def persist_model_settings(
+    db: Session,
+    path: str | Path | None,
+    *,
+    environment_path: str | Path | None = None,
+) -> ModelManifest | None:
+    with _MANIFEST_WRITE_LOCK:
+        return _persist_model_settings(db, path, environment_path=environment_path)
+
+
+def _persist_model_settings(
     db: Session,
     path: str | Path | None,
     *,
@@ -228,13 +257,25 @@ def persist_model_settings(
 
 
 def persist_shortcut_preferences(path: str | Path | None, shortcuts: dict[str, str]) -> ManifestPreferences:
-    """Persist portable editor shortcuts without changing active model stages."""
+    return persist_editor_preferences(path, ManifestPreferences(shortcuts=shortcuts))
+
+
+def persist_editor_preferences(path: str | Path | None, patch: ManifestPreferences) -> ManifestPreferences:
+    """Merge only explicitly supplied preferences, preserving the other editor settings."""
+
+    with _MANIFEST_WRITE_LOCK:
+        return _persist_editor_preferences(path, patch)
+
+
+def _persist_editor_preferences(path: str | Path | None, patch: ManifestPreferences) -> ManifestPreferences:
 
     if path is None:
-        raise ModelManifestError("Cannot persist shortcuts without a config.yaml path")
+        raise ModelManifestError("Cannot persist editor preferences without a config.yaml path")
     manifest_path = Path(path)
     manifest = load_model_manifest(manifest_path)
-    preferences = ManifestPreferences(shortcuts=shortcuts)
+    preferences = (manifest.preferences or ManifestPreferences()).model_copy(
+        update={key: getattr(patch, key) for key in patch.model_fields_set}, deep=True,
+    )
     manifest.preferences = preferences
     _resolved_manifest_configs(manifest)
     _atomic_write(

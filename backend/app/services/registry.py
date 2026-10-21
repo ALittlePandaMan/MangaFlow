@@ -19,7 +19,7 @@ from app.services.ocr import (
 )
 from app.services.ocr.local import BaberuOCRProvider, HayaiOCRProvider, PaddleOCRVLProvider
 from app.services.rendering import PillowRenderer
-from app.services.translation import OpenAICompatibleTranslator, PassthroughTranslator
+from app.services.translation import GoogleWebTranslator, OpenAICompatibleTranslator, PassthroughTranslator
 
 
 class ProviderRegistry:
@@ -40,6 +40,7 @@ class ProviderRegistry:
     translators: dict[str, type[Translator]] = {
         "passthrough": PassthroughTranslator,
         "openai-compatible": OpenAICompatibleTranslator,
+        "google-web": GoogleWebTranslator,
     }
     inpainters: dict[str, type[Inpainter]] = {
         "opencv": OpenCVInpainter,

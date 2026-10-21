@@ -115,7 +115,7 @@ class CloudResultCache:
                 logger.debug("Deferred completed cloud request cache cleanup",exc_info=True)
 
     def archive_received(self, key: str) -> None:
-        """Preserve a received response before an explicitly authorized retry."""
+        """Preserve a paid response/result before an explicitly authorized retry."""
         if not self.allow_invalid:
             raise ValueError("Replacing a received paid response requires acknowledgement")
         with self.lock:

@@ -2,7 +2,7 @@
 from copy import deepcopy
 from uuid import uuid4
 
-from app.core.transactions import retry_write
+from app.core.transactions import project_write
 from app.models import ImagePage, ModelConfig, Project, RegionRevision, TextRegion
 from app.pipeline.processor import PipelineProcessor
 from app.services.editor_history import _archive_paths, ensure_page_idle
@@ -66,5 +66,5 @@ def refresh_export_page(db, page_id):
                 setattr(region, key, value)
         db.add_all(RegionRevision(**decode(RegionRevision, row)) for row in changes["revisions"]["put"].values())
 
-    retry_write(db, save)
+    project_write(db, project_id, save)
     db.expire_all()

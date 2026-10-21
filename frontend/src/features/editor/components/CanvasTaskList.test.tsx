@@ -18,7 +18,7 @@ it('keeps all current jobs in the scrollable list without a batch-summary footer
   expect(screen.getByText('第 3 页：00000003.jpg')).toBeInTheDocument()
   expect(within(panel).getAllByText('openai-compatible')).toHaveLength(6)
   expect(screen.getByRole('progressbar',{name:'00000003.jpg任务进度'})).toHaveAttribute('aria-valuenow','50')
-  expect(screen.getByRole('button',{name:'停止 00000003.jpg 的任务'})).toHaveClass('cursor-pointer')
+  expect(screen.getByRole('button',{name:'停止 00000003.jpg 的任务'})).toHaveClass('icon-button','icon-button-compact','icon-button-ghost')
   expect(panel).toHaveTextContent('修复')
   expect(within(panel).getByRole('list',{name:'本次操作的活动任务'})).toHaveClass('canvas-task-items')
   expect(panel.querySelector('footer')).toBeNull()
@@ -27,6 +27,23 @@ it('keeps all current jobs in the scrollable list without a batch-summary footer
   expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   expect(screen.queryByRole('button',{name:/折叠|清除已结束/})).not.toBeInTheDocument()
   expect(screen.queryByRole('button',{name:'关闭本次操作提示'})).not.toBeInTheDocument()
+})
+
+it.each([true,false])('extends the progress track below the stop-button column with provider=%s',provider=>{
+  const activity=new TaskActivity('project'),cancel=vi.fn()
+  activity.begin([taskFixture('0',{status:'RUNNING',progress:.6,payload:provider ? {provider:'openai-compatible'} : {}})])
+  const {rerender}=render(<CanvasTaskList activity={activity} pages={pages} onCancelTask={cancel}/>)
+  const row=screen.getByRole('listitem'),track=screen.getByRole('progressbar')
+  const stop=screen.getByRole('button',{name:'停止 00000003.jpg 的任务'})
+  expect(track.parentElement).toBe(row)
+  expect(track).toHaveClass('col-start-2','col-span-2','row-start-2')
+  expect(stop).toHaveClass('col-start-3','row-start-1')
+  expect(track).toHaveAttribute('aria-valuenow','60')
+  expect(track.firstElementChild).toHaveStyle({width:'60%'})
+  expect(screen.getByText('第 3 页：00000003.jpg').parentElement).toHaveClass('col-start-2','row-start-1')
+  rerender(<CanvasTaskList activity={activity} pages={pages}/>)
+  expect(screen.queryByRole('button',{name:/停止.*任务/})).not.toBeInTheDocument()
+  expect(screen.getByRole('progressbar')).toHaveClass('col-start-2','col-span-2','row-start-2')
 })
 
 it('sizes the scroll viewport to five measured rows and follows provider/error row height changes',()=>{

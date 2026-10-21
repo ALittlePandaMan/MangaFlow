@@ -1,6 +1,6 @@
 import { BoxSelect, Eraser, Focus, Hand, LassoSelect, MousePointer2, Paintbrush, PenTool, Redo2, Undo2, ZoomIn, ZoomOut } from 'lucide-react'
 import type { Tool, ViewMode } from '../../../types'
-import {cn} from '../../../ui'
+import {cn, compactIconButtonClass} from '../../../ui'
 import {formatShortcut, shortcutToAria, type ShortcutId, useShortcutStore} from '../../shortcuts/store'
 import { useEditorStore } from '../store'
 
@@ -35,7 +35,7 @@ export function EditorToolbar({ onUndo, onRedo, canUndo, canRedo, disabled = fal
   const view = useEditorStore(state => state.view)
   const setView = useEditorStore(state => state.setView)
   const shortcuts = useShortcutStore(state => state.shortcuts)
-  const toolButton = 'editor-tool-button grid size-8 min-h-8 cursor-pointer place-items-center rounded-lg border border-transparent bg-transparent p-0 text-muted outline-none transition-colors hover:bg-hover hover:text-ink disabled:cursor-not-allowed disabled:opacity-30 focus-visible:ring-2 focus-visible:ring-accent/30'
+  const toolButton = cn(compactIconButtonClass,'editor-tool-button')
   return <div className="editor-toolbar border-b border-line-subtle bg-panel" role="toolbar" aria-label="编辑器顶部工具栏">
     <div className={cn('editor-tools flex items-center', view === 'mask' && 'editor-tools-mask')}>
     {view === 'mask' ? <div className="flex gap-1.5" aria-label="修复蒙版工具">{maskTools.map(item => {
@@ -59,8 +59,8 @@ export function CanvasZoomControls({disabled = false}: {disabled?: boolean}) {
   const setZoom = useEditorStore(state => state.setZoom)
   const resetView = useEditorStore(state => state.resetView)
   const shortcuts = useShortcutStore(state => state.shortcuts)
-  const button = 'grid size-8 min-h-8 cursor-pointer place-items-center rounded-lg border border-transparent bg-transparent p-0 text-secondary outline-none transition-colors hover:bg-hover hover:text-ink disabled:cursor-not-allowed disabled:opacity-30 focus-visible:ring-2 focus-visible:ring-accent/30'
-  return <div className="absolute left-3.5 top-3.5 z-20 flex items-center gap-1 rounded-xl border border-line-strong bg-popover p-1 shadow-soft backdrop-blur-xl" aria-label="画布缩放">
+  const button = compactIconButtonClass
+  return <div className="absolute left-3.5 top-3.5 z-20 flex flex-col items-center gap-1 rounded-xl border border-line-strong bg-popover p-1 shadow-soft backdrop-blur-xl" aria-label="画布缩放">
     <button className={button} disabled={disabled} title={`缩小 (${formatShortcut(shortcuts['zoom.out'])})`} aria-label="缩小画布" aria-keyshortcuts={shortcutToAria(shortcuts['zoom.out'])} onClick={() => setZoom(zoom / 1.15)}><ZoomOut size={16}/></button>
     <button className={button} disabled={disabled} title={`适合画布并居中 (${formatShortcut(shortcuts['zoom.reset'])})`} aria-label="重置画布缩放" aria-keyshortcuts={shortcutToAria(shortcuts['zoom.reset'])} onClick={resetView}><Focus size={16}/></button>
     <button className={button} disabled={disabled} title={`放大 (${formatShortcut(shortcuts['zoom.in'])})`} aria-label="放大画布" aria-keyshortcuts={shortcutToAria(shortcuts['zoom.in'])} onClick={() => setZoom(zoom * 1.15)}><ZoomIn size={16}/></button>

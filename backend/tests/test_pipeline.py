@@ -1218,8 +1218,10 @@ def test_changed_manual_mask_repair_keeps_other_clean_pixels_and_is_reversible(c
         f"/api/projects/{project['id']}/images", files={"files": ("page.png", solid_page(), "image/png")}
     ).json()[0]
     regions = [
-        client.post(f"/api/images/{page['id']}/regions", json={"bbox": box}).json()
-        for box in ([15, 20, 30, 40], [125, 20, 30, 40])
+        # Target deliberately isn't first in API reading order. Match by ID,
+        # never by timestamp order (the host clock can move backwards).
+        client.post(f"/api/images/{page['id']}/regions", json={"bbox": box, "reading_order": 1-index}).json()
+        for index, box in enumerate(([15, 20, 30, 40], [125, 20, 30, 40]))
     ]
     for region, box in zip(regions, [(15, 20, 45, 60), (125, 20, 155, 60)], strict=True):
         mask_file = rectangular_mask(180, 100, box)
@@ -1237,7 +1239,7 @@ def test_changed_manual_mask_repair_keeps_other_clean_pixels_and_is_reversible(c
     assert wait_for_task(client, initial["id"])["status"] == "COMPLETED"
     before_page = client.get(f"/api/images/{page['id']}").json()
     before_bytes = client.get(before_page["clean_url"]).content
-    before_regions = client.get(f"/api/images/{page['id']}/regions").json()
+    before_regions = {row["id"]: row for row in client.get(f"/api/images/{page['id']}/regions").json()}
     if new_box is None:
         encoded = BytesIO()
         Image.new("L", (180, 100), 0).save(encoded, "PNG")
@@ -1260,13 +1262,14 @@ def test_changed_manual_mask_repair_keeps_other_clean_pixels_and_is_reversible(c
         },
     ).json()
     assert wait_for_task(client, task["id"])["status"] == "COMPLETED"
-    after_regions = client.get(f"/api/images/{page['id']}/regions").json()
-    assert after_regions[0]["mask_url"] == edited["mask_url"]
-    assert after_regions[0]["layout_data"]["mask_generation"]["repair_pending"] is False
-    assert {key: value for key, value in after_regions[1].items() if key != "editor_history"} == {
-        key: value for key, value in before_regions[1].items() if key != "editor_history"
+    after_regions = {row["id"]: row for row in client.get(f"/api/images/{page['id']}/regions").json()}
+    assert after_regions.keys() == before_regions.keys()
+    assert after_regions[edited["id"]]["mask_url"] == edited["mask_url"]
+    assert after_regions[edited["id"]]["layout_data"]["mask_generation"]["repair_pending"] is False
+    assert {key: value for key, value in after_regions[regions[1]["id"]].items() if key != "editor_history"} == {
+        key: value for key, value in before_regions[regions[1]["id"]].items() if key != "editor_history"
     }
-    assert client.get(after_regions[0]["mask_url"]).content == saved_mask
+    assert client.get(after_regions[edited["id"]]["mask_url"]).content == saved_mask
     clean_url = client.get(f"/api/images/{page['id']}").json()["clean_url"]
     with Image.open(BytesIO(client.get(clean_url).content)) as clean:
         assert clean.getpixel((140, 40)) == (20, 180, 40)
@@ -1281,7 +1284,7 @@ def test_changed_manual_mask_repair_keeps_other_clean_pixels_and_is_reversible(c
         f"/api/projects/{project['id']}/history/undo",
         json={"expected_entry_id": head["undo_id"], "current_image_id": page["id"]},
     ).json()
-    assert restored["regions"][0]["layout_data"]["mask_generation"]["repair_pending"] is True
+    assert next(row for row in restored["regions"] if row["id"] == edited["id"])["layout_data"]["mask_generation"]["repair_pending"] is True
     assert client.get(restored["page"]["clean_url"]).content == before_bytes
     # Undo restores immutable history assets, not the live clean/clean.png.
     # Repeating the mask-exit repair must reuse that composite as well.

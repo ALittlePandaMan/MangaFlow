@@ -25,12 +25,39 @@ def test_koharu_providers_registered_and_do_not_load_models_when_listed(name, mo
     assert provider.config["revision"] == LOCAL_OCR_MODELS[name].revision
 
 
-@pytest.mark.parametrize("config", [{"max_new_tokens": True}, {"max_new_tokens": 1025}, {"max_new_tokens": float("nan")},
+@pytest.mark.parametrize("config", [{"max_new_tokens": True}, {"max_new_tokens": 2049}, {"max_new_tokens": float("nan")},
                                     {"timeout": 0}, {"timeout": 30.5}, {"model": "untrusted/model"},
                                     {"revision": "main"}, {"device": "cuda:99"}])
 def test_local_ocr_rejects_unsafe_or_unbounded_config(config):
     with pytest.raises(ValueError):
         validate_local_config("paddleocr-vl-1.6", config)
+
+
+@pytest.mark.parametrize("name", list(LOCAL_OCR_MODELS))
+def test_local_ocr_defaults_to_2048_and_keeps_explicit_limits(name, monkeypatch):
+    provider = ProviderRegistry().create("ocr", name, {"device": "cpu"})
+    validate_local_config(name, {})
+    validate_local_config(name, {"max_new_tokens": 2048})
+    monkeypatch.setattr(provider, "ensure_loaded", lambda: None)
+    calls = []
+    monkeypatch.setattr(provider.worker, "recognize", lambda *args: calls.append(args) or {"text": "原文"})
+    provider.recognize(Path("/original.png"), [0, 0, 20, 20], "horizontal")
+    assert calls[-1][-2] == 2048
+    provider.config["max_new_tokens"] = 512
+    provider.recognize(Path("/original.png"), [0, 0, 20, 20], "horizontal")
+    assert calls[-1][-2] == 512
+
+
+def test_worker_accepts_default_2048_and_rejects_unbounded_generation(tmp_path):
+    from PIL import Image
+
+    image_path = tmp_path / "crop.png"
+    Image.new("RGB", (20, 20)).save(image_path)
+    request = {"bbox": [0, 0, 20, 20], "image_path": str(image_path)}
+    assert validated_crop(request)[1] == 2048
+    assert validated_crop({**request, "max_new_tokens": 2048})[1] == 2048
+    with pytest.raises(ValueError, match="generation limit"):
+        validated_crop({**request, "max_new_tokens": 2049})
 
 
 def test_custom_code_must_match_pinned_checksum(tmp_path):

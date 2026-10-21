@@ -1,0 +1,12 @@
+.project-dialog[role='dialog'] { width: min(480px,calc(100vw - 48px)); }
+.project-dialog > header [data-dialog-eyebrow] { display: none; }
+.project-dialog > header h2 { font-size: 22px; line-height: 1.4; font-weight: 600; }
+.project-dialog input:not([type='hidden']), .project-dialog button[aria-haspopup='listbox'] { height: 44px; font-size: 16px; }
+.project-language-fields { min-width: 0; margin: 20px 0 0; padding: 0; border: 0; }
+.project-language-fields legend { padding: 0; color: var(--color-secondary); font-size: 14px; }
+.project-language-options { display: grid; grid-template-columns: minmax(0,1fr) 18px minmax(0,1fr); align-items: center; gap: 10px; margin-top: 10px; }
+.project-language-options > svg { justify-self: center; color: var(--color-muted); }
+@media (width < 380px) {
+  .project-language-options { grid-template-columns: minmax(0,1fr); gap: 8px; }
+  .project-language-options > svg { transform: rotate(90deg); }
+}

@@ -13,8 +13,10 @@ from app.models import ModelConfig
 from app.services.base import ProviderError
 from app.services.infra.device import paddle_cuda_available, torch_cuda_available
 from app.services.ocr.generic import GENERIC_OCR_DEFAULTS, GenericCloudOCRProvider
+from app.services.ocr.local_catalog import LOCAL_OCR_DEFAULT_MAX_TOKENS
 from app.services.ocr.prompts import DEFAULT_OCR_PROMPT
 from app.services.registry import registry
+from app.services.translation.google_web import GOOGLE_WEB_DEFAULTS
 from app.services.translation.prompts import DEFAULT_TRANSLATION_PROMPT
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
@@ -46,7 +48,7 @@ RECOMMENDED_MODELS = {
         "ocr",
         "PaddleOCR-VL 1.6（Koharu 默认）",
         "paddleocr-vl-1.6",
-        {"device": "auto", "max_new_tokens": 512},
+        {"device": "auto", "max_new_tokens": LOCAL_OCR_DEFAULT_MAX_TOKENS},
     ),
     "translation": RecommendedModel(
         "translation", "安全翻译占位（需配置真实模型）", "passthrough", {"review_required": True}
@@ -62,11 +64,14 @@ SELECTABLE_MODELS: dict[tuple[str, str], RecommendedModel] = {
 }
 SELECTABLE_MODELS.update(
     {
+        ("translation", "google-web"): RecommendedModel(
+            "translation", "Google 网页翻译（免配置）", "google-web", dict(GOOGLE_WEB_DEFAULTS)
+        ),
         ("ocr", "manga-ocr"): RecommendedModel(
             "ocr", "MangaOCR 漫画识别", "manga-ocr", {"device": "auto", "model": "kha-white/manga-ocr-base"}
         ),
-        ("ocr", "baberu-ocr"): RecommendedModel("ocr", "Baberu OCR", "baberu-ocr", {"device": "auto", "max_new_tokens": 256}),
-        ("ocr", "hayai-ocr"): RecommendedModel("ocr", "Hayai OCR", "hayai-ocr", {"device": "auto", "max_new_tokens": 256}),
+        ("ocr", "baberu-ocr"): RecommendedModel("ocr", "Baberu OCR", "baberu-ocr", {"device": "auto", "max_new_tokens": LOCAL_OCR_DEFAULT_MAX_TOKENS}),
+        ("ocr", "hayai-ocr"): RecommendedModel("ocr", "Hayai OCR", "hayai-ocr", {"device": "auto", "max_new_tokens": LOCAL_OCR_DEFAULT_MAX_TOKENS}),
         ("detection", "opencv-fallback"): RecommendedModel(
             "detection", "本地 OpenCV 文本检测", "opencv-fallback", {"device": "cpu"}
         ),
@@ -103,6 +108,7 @@ ADDITIONAL_RECOMMENDED_MODELS = (
             "timeout": 90,
             "retries": 2,
             "temperature": 0.2,
+            "max_tokens": 2048,
             "prompt": DEFAULT_TRANSLATION_PROMPT,
         },
     ),
@@ -345,9 +351,9 @@ def setup_status_report(db: Session, *, validate_models: bool = False) -> dict[s
             status, message = "error", f"Provider {item.provider} 未注册"
         elif not registry.is_installed(kind, item.provider):
             status, message = "error", f"Provider {item.provider} 的运行依赖未安装"
-        elif kind == "translation" and item.provider != "openai-compatible":
-            status, message = "error", "必须配置真实的云端翻译接口，原文直通不能用于完整工作台"
-        elif (kind == "translation" or (kind == "ocr" and item.provider == "cloud-multimodal")) and not (
+        elif kind == "translation" and item.provider == "passthrough":
+            status, message = "error", "必须选择可用的翻译服务，原文直通不能用于完整工作台"
+        elif ((kind == "translation" and item.provider == "openai-compatible") or (kind == "ocr" and item.provider == "cloud-multimodal")) and not (
             item.encrypted_api_key and item.config.get("base_url") and item.config.get("model")
         ):
             status, message = "error", f"{'云端 OCR' if kind == 'ocr' else '云端翻译'}缺少 API 地址、密钥或模型"

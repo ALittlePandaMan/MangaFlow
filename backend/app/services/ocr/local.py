@@ -13,7 +13,13 @@ from app.core.config import get_settings
 from app.services.base import OCRProvider, OCRResult, ProviderCapabilities, ProviderError
 from app.services.execution import serialized_model_call
 from app.services.infra.device import is_accelerator_error
-from app.services.ocr.local_catalog import LOCAL_OCR_MODELS, local_ocr_python, resolve_assets, validate_local_config
+from app.services.ocr.local_catalog import (
+    LOCAL_OCR_DEFAULT_MAX_TOKENS,
+    LOCAL_OCR_MODELS,
+    local_ocr_python,
+    resolve_assets,
+    validate_local_config,
+)
 
 PROTOCOL = "mangaflow-local-ocr-v1"
 
@@ -167,7 +173,7 @@ class IsolatedOCRProvider(OCRProvider):
             self.ensure_loaded()
             self._device = self.worker.actual_device
             arguments = (image_path, bbox, orientation, padding,
-                         int(self.config.get("max_new_tokens", 512 if self.capabilities.name == "paddleocr-vl-1.6" else 256)),
+                         int(self.config.get("max_new_tokens", LOCAL_OCR_DEFAULT_MAX_TOKENS)),
                          int(self.config.get("timeout", 180)))
             try:
                 reply = self.worker.recognize(*arguments)

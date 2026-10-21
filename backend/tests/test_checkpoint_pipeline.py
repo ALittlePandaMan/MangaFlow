@@ -260,6 +260,55 @@ def test_partial_paid_translation_survives_acknowledged_task_retry_without_rebil
             db.commit()
 
 
+def test_refused_translation_retains_repair_and_explicit_retry_reuses_it(client, providers, monkeypatch):  # noqa: F811
+    from app.services.translation.providers import OpenAICompatibleTranslator
+
+    _, translator, _ = providers
+    page, _ = setup(client, ["source"])
+    calls, repaired = [], []
+
+    async def translate(rows, **kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            return OpenAICompatibleTranslator._extract_content({"choices": [
+                {"finish_reason": "prohibited_content", "message": {"content": None}},
+            ]}, "openai")
+        return {key: "translated" for key, _ in rows}
+
+    monkeypatch.setattr(translator, "translate_regions", translate)
+    run_stage = workflow.run_stage
+    def stage(name, *args, **kwargs):
+        if name == "inpainting":
+            repaired.append(1)
+        return run_stage(name, *args, **kwargs)
+    monkeypatch.setattr(workflow, "run_stage", stage)
+    with SessionLocal() as db:
+        model = ModelConfig(kind="translation", name=f"refusal-{page['id']}", provider="openai-compatible",
+                            enabled=True, is_default=True, config={})
+        db.add(model)
+        db.commit()
+        model_id = model.id
+    try:
+        task = batch(client, page["project_id"]).json()[0]
+        failed = stopped(client, task["id"], "FAILED")
+        assert calls == repaired == [1]
+        assert "prohibited_content" in failed["error_message"]
+        assert "背景修复已完成并保留检查点" in failed["error_message"]
+        assert client.get(f"/api/images/{page['id']}").json()["clean_url"] is None
+        assert client.post(f"/api/tasks/{task['id']}/retry").status_code == 409
+        retry = client.post(f"/api/tasks/{task['id']}/retry?allow_unknown_cloud_retry=true")
+        assert retry.status_code == 202, retry.text
+        done = stopped(client, task["id"], "COMPLETED")
+        assert done["status"] == "COMPLETED", done
+        assert calls == [1, 1] and repaired == [1]
+        finished = client.get(f"/api/images/{page['id']}").json()
+        assert finished["clean_url"] and finished["rendered_url"]
+    finally:
+        with SessionLocal() as db:
+            db.delete(db.get(ModelConfig, model_id))
+            db.commit()
+
+
 def test_redetection_is_atomic_retries_detection_checkpoint_but_new_request_redetects(client,providers,monkeypatch):  # noqa: F811
     from app.pipeline.processor import PipelineProcessor
     from app.services.base import DetectionResult

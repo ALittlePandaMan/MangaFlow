@@ -10,6 +10,7 @@ import {EditorWorkspace} from '../features/editor/components/EditorWorkspace'
 import {ClassificationStatus} from '../features/editor/components/ClassificationStatus'
 import {EditorHeaderActions} from '../features/editor/components/EditorHeaderActions'
 import {ImmersiveReader} from '../features/editor/components/ImmersiveReader'
+import {TranslationContextDialog} from '../features/editor/components/TranslationContextDialog'
 import { Archive, BookOpenText, CheckCircle2, ChevronDown, Download, Eraser, Image as ImageIcon, ImagePlus, Images, Languages, Layers3, Maximize, RotateCcw, ScanText, Trash2, Upload } from 'lucide-react'
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
 import type { MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, SetStateAction } from 'react'
@@ -26,6 +27,7 @@ import { RegionProperties } from '../features/editor/components/RegionProperties
 import {MaskEditor, type MaskEditorHandle, type MaskEditorPreferences, type MaskEditorState} from '../features/editor/components/MaskEditor'
 import {prepareMaskScene, type PreparedMaskScene} from '../features/editor/lib/prepareMaskScene'
 import {draftRegion, moveRegions, constrainGroupMove} from '../features/editor/lib/regionEditing'
+import {loadTextStyleDefaults} from '../features/settings/textStyle'
 import {invalidateHistoryPreview} from '../features/editor/lib/regionHistory'
 import {RegionCommandQueue,type RegionCommand} from '../features/editor/lib/regionCommandQueue'
 import {preloadImage} from '../features/editor/hooks/useImage'
@@ -38,7 +40,7 @@ import {formatShortcut, shortcutForEvent, shortcutToAria, type ShortcutId, useSh
 import { api } from '../services/api'
 import {ImageUploadError, type ImageUploadProgress} from '../services/imageUpload'
 import type { EditorHistoryState, FontResource, ImagePage, ProcessingTask, Project, RegionStageAction, TextRegion, ViewMode } from '../types'
-import {buttonClass, cn, eyebrowClass, iconButtonClass, primaryButtonClass, scrollbarClass, textareaClass} from '../ui'
+import {buttonClass, cn, compactIconButtonClass, primaryButtonClass, scrollbarClass} from '../ui'
 
 type PendingChange = {pageId: string, before: TextRegion, patch: Partial<TextRegion>, timer: number, version: number, preview:RegionCommand}
 type PageContextMenu = {x: number, y: number, pageId: string, source?: 'canvas' | 'thumbnail'}
@@ -83,6 +85,7 @@ function visiblePageSources(page: ImagePage, view: ViewMode, layers: {original: 
 }
 
 export function EditorPage() {
+  useEffect(() => {void loadTextStyleDefaults().catch(() => undefined)}, [])
   const {projectId = '', imageId} = useParams()
   const navigate = useNavigate()
   const navigateRef = useRef(navigate)
@@ -147,7 +150,7 @@ export function EditorPage() {
   const [showContext, setShowContext] = useState(false)
   const [immersiveReading, setImmersiveReading] = useState(false)
   const closeImmersiveReader = useCallback(() => setImmersiveReading(false), [])
-  const contextDialogRef = useRef<HTMLDivElement>(null)
+  const closeContextDialog = useCallback(() => setShowContext(false), [])
   const [contextText, setContextText] = useState('{}')
   const [contextMode, setContextMode] = useState<'snapshot' | 'previous_page'>('snapshot')
   const [contextError, setContextError] = useState('')
@@ -219,28 +222,6 @@ export function EditorPage() {
   const routeRegionIdRef = useRef(searchParams.get('region'))
   routeImageIdRef.current = imageId
   routeRegionIdRef.current = searchParams.get('region')
-  useEffect(() => {
-    if (!showContext) return
-    const previous = document.activeElement as HTMLElement | null
-    const dialog = contextDialogRef.current
-    dialog?.querySelector<HTMLButtonElement>('button')?.focus()
-    const keydown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && dialog?.dataset.saving !== 'true') {
-        event.preventDefault(); event.stopPropagation(); setShowContext(false)
-      }
-      if (event.key !== 'Tab') return
-      const items = Array.from(dialog?.querySelectorAll<HTMLElement>('button:not(:disabled), textarea:not(:disabled)') || [])
-      const first = items[0], last = items.at(-1)
-      if (!first || !last) {event.preventDefault(); return}
-      if (event.shiftKey && (document.activeElement === first || !dialog?.contains(document.activeElement))) {
-        event.preventDefault(); last.focus()
-      } else if (!event.shiftKey && (document.activeElement === last || !dialog?.contains(document.activeElement))) {
-        event.preventDefault(); first.focus()
-      }
-    }
-    document.addEventListener('keydown', keydown, true)
-    return () => {document.removeEventListener('keydown', keydown, true); previous?.focus()}
-  }, [showContext])
 
   const selectedIds = useEditorStore(state => state.selectedIds)
   const selectedPageId = imageId || page?.id
@@ -1856,7 +1837,7 @@ export function EditorPage() {
               const Icon = option.kind === 'project' ? Archive : option.kind === 'translated' ? ImageIcon : Eraser
               return <button key={option.kind} type="button" role="menuitem" disabled={unavailable} className="flex min-h-[58px] w-full cursor-pointer items-center gap-3 rounded-lg border-0 bg-transparent px-3 py-2 text-left outline-none transition-colors hover:bg-hover disabled:cursor-not-allowed disabled:opacity-35" onClick={() => void exportProject(option.kind)}>
                 <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-accent/10 text-accent"><Icon size={16}/></span>
-                <span className="min-w-0"><strong className="block text-[11px] font-semibold text-ink">{option.label}</strong><small className="mt-1 block text-[9px] leading-relaxed text-muted">{option.detail}</small></span>
+                <span className="min-w-0"><strong className="block text-sm font-semibold text-ink">{option.label}</strong><small className="mt-1 block text-[13px] leading-relaxed text-muted">{option.detail}</small></span>
               </button>
             })}
           </div>}
@@ -1888,7 +1869,7 @@ export function EditorPage() {
         <header className="editor-pages-heading">
           <div className="editor-pages-heading-row">
             <h3 className="editor-pages-title"><Images aria-hidden="true" size={15}/><span>页面</span></h3>
-            <button type="button" className="editor-pages-import" disabled={editorBusy} title={`导入图片 (${formatShortcut(shortcuts['page.import'])})`} aria-label="导入图片" aria-keyshortcuts={shortcutToAria(shortcuts['page.import'])} onClick={openImagePicker}>{uploadingPages ? <ButtonLoading compact label="正在导入图片"/> : <ImagePlus aria-hidden="true" size={15}/>}</button>
+            <button type="button" className={cn(compactIconButtonClass,'editor-pages-import')} disabled={editorBusy} title={`导入图片 (${formatShortcut(shortcuts['page.import'])})`} aria-label="导入图片" aria-keyshortcuts={shortcutToAria(shortcuts['page.import'])} onClick={openImagePicker}>{uploadingPages ? <ButtonLoading compact label="正在导入图片"/> : <ImagePlus aria-hidden="true" size={16}/>}</button>
           </div>
         </header>
         <VirtualPageList items={pages} selectedPageId={selectedPageId} listRef={pageListRef} className={cn('min-h-0 flex-1 overflow-auto p-2.5', scrollbarClass)} onContextMenu={openImagePickerFromBlank}
@@ -1919,7 +1900,7 @@ export function EditorPage() {
           : page ? !immersiveReading && <MangaCanvas page={page} regions={regions} onCreate={createRegion} onUpdate={(id,patch) => updateRegion(id,patch,true)}
             onUpdateMany={updateManyRegions} onRegionAction={(ids, name, options) => {void action(name, options, ids)}} onPageContextMenu={openCanvasPageMenu}
             processingRegionIds={regionProcessing?.ids} runningAction={historyDirection ? 'history' : runningRegionAction || (editorBusy ? 'busy' : null)} interactionKey={`${view}:${tool}:${editorBusy}:${selectedIds.join(',')}`}/>
-          : <div className="flex h-full flex-col items-center justify-center text-muted"><ImagePlus size={36}/><h3 className="mb-1 mt-3 text-base text-secondary">导入漫画页面</h3><p className="mb-4 mt-0 text-xs">支持 JPG、PNG 和 WebP，可一次选择多张。</p><button className={`${primaryButtonClass} !min-h-[34px]`} disabled={editorBusy} onClick={openImagePicker}>选择图片</button></div>}
+          : <div className="flex h-full flex-col items-center justify-center text-muted"><ImagePlus size={36}/><h3 className="mb-1 mt-3 text-base text-secondary">导入漫画页面</h3><p className="mb-4 mt-0 text-[13px]">支持 JPG、PNG 和 WebP，可一次选择多张。</p><button className={`${primaryButtonClass} !min-h-[34px]`} disabled={editorBusy} onClick={openImagePicker}>选择图片</button></div>}
         {!maskSession && <CanvasZoomControls disabled={foregroundBusy || switchingPage || openingMask}/>}
       </main>} properties={
       maskSession ? <div ref={setMaskControlsTarget} className="mask-inspector-host"/> : <RegionProperties page={page} regions={regions} region={selectedIds.length === 1 ? regions.find(region => region.id === selectedIds[0]) : undefined} selectedRegions={regions.filter(region => selectedIds.includes(region.id))} selectedCount={selectedIds.length} fontOptions={[...DEFAULT_FONT_FAMILIES.map(font => font.name), ...fontResources.map(font => font.name)]} busyAction={editorBusy ? historyDirection ? 'history' : runningRegionAction || 'busy' : null} onUpdate={updateRegion} onUpdateMany={changes => {void updateManyRegions(changes).catch(() => undefined)}} onAction={action}/>}/>}
@@ -1941,27 +1922,12 @@ export function EditorPage() {
         {pageContextMenu.source !== 'canvas' && <button className={cn(contextMenuItemClass, '!text-danger-soft-ink hover:!bg-danger/10')} type="button" role="menuitem" disabled={!contextPageReady} onClick={() => void deletePage(pageContextMenu.pageId)}><Trash2 size={15}/>删除图片</button>}
       </div>
     </div>, document.body)}
-    {showContext && createPortal(<div ref={contextDialogRef} data-saving={savingContext} className="fixed inset-0 z-[90] grid place-items-center bg-overlay backdrop-blur-sm" role="dialog" aria-modal="true" aria-labelledby="translation-context-title">
-      <div className="flex max-h-[90dvh] w-[min(680px,calc(100vw-24px))] flex-col overflow-y-auto rounded-2xl border border-line-strong bg-surface shadow-dialog">
-        <header className="flex items-center justify-between border-b border-line-subtle px-6 py-5"><div><span className={eyebrowClass}>PROJECT CONTEXT</span><h2 className="mb-0 mt-1.5 text-xl" id="translation-context-title">翻译上下文</h2></div><button className={cn(iconButtonClass, 'border-0 bg-transparent text-xl')} disabled={savingContext} aria-label="关闭翻译上下文" onClick={() => setShowContext(false)}>×</button></header>
-        <fieldset className="mx-6 mt-5 rounded-xl border border-line p-3 text-sm" disabled={savingContext}>
-          <legend>批量翻译的上下文模式</legend>
-          <label className="flex items-center gap-2"><input type="radio" name="context-mode" value="snapshot" checked={contextMode === 'snapshot'} onChange={() => setContextMode('snapshot')}/>提交时快照（默认）</label>
-          <p className="ml-6 mt-1 text-xs leading-5 text-muted">使用提交批次时已有的上下文，各页可以并发翻译。</p>
-          <label className="flex items-center gap-2"><input type="radio" name="context-mode" value="previous_page" checked={contextMode === 'previous_page'} onChange={() => setContextMode('previous_page')}/>依赖前页翻译</label>
-          <p className="mb-0 ml-6 mt-1 text-xs leading-5 text-muted">等待同一批次中紧邻前页的新译文，不等待它修复完成。连贯性更强，但翻译并行度较低；前页不在本批次时使用提交时快照。只影响新建批次。</p>
-        </fieldset>
-        <p className="px-6 text-[13px] leading-6 text-muted">以 JSON 保存人物名、术语、口癖、称谓和章节背景；整页翻译时会随 Region ID 一起发送。</p>
-        {contextError && <p className="px-6 text-xs text-danger" role="alert">{contextError}</p>}
-        <textarea aria-label="项目翻译上下文 JSON" className={cn(textareaClass, 'mx-6 mb-6 min-h-[120px] flex-1 w-[calc(100%-48px)] font-mono text-[12px] leading-relaxed')} disabled={savingContext} value={contextText} onChange={event => setContextText(event.target.value)} spellCheck={false}/>
-        <footer className="flex justify-end gap-2.5 border-t border-line-subtle px-6 py-4"><button className={buttonClass} disabled={savingContext} onClick={() => setShowContext(false)}>取消</button><button className={primaryButtonClass} disabled={savingContext} onClick={() => void saveTranslationContext()}>{savingContext ? <ButtonLoading label="保存中…"/> : '保存上下文'}</button></footer>
-      </div>
-    </div>, document.body)}
+    {showContext && <TranslationContextDialog text={contextText} mode={contextMode} error={contextError} saving={savingContext} onTextChange={setContextText} onModeChange={setContextMode} onError={setContextError} onClose={closeContextDialog} onSave={() => void saveTranslationContext()}/>}
     {(foregroundBusy || openingMask || switchingPage || maskState.busy) && <BlockingLoader label={recoveringEdits?'正在重新同步编辑状态…':waitingForEdits?'正在保存编辑并离开…':openingMask?'正在准备蒙版…':switchingPage?'正在切换页面…':maskState.busy?'正在保存蒙版并切换…':busyLabel} progress={foregroundBusy?foregroundProgress:undefined} scope={foregroundBusy?processingScope:undefined}
       detail={uploadingPages && uploadProgress ? uploadProgress.batchFiles
         ? `${uploadProgress.resizing ? '请求过大，已自动缩小批次。' : ''}当前批次 ${uploadProgress.batchFiles} 张，${(uploadProgress.batchBytes / 1024 / 1024).toFixed(1)} MiB。将自动继续下一批，请勿关闭页面。`
         : '图片已导入，正在更新页面列表…' : undefined}/>}
-    {editQueue.failed && !recoveringEdits && <div className="fixed inset-0 z-[120] grid place-items-center bg-overlay backdrop-blur-sm" role="dialog" aria-modal="true" aria-label="编辑同步失败"><div className="w-[min(420px,calc(100vw-24px))] rounded-2xl border border-line-strong bg-panel p-6 shadow-dialog"><h2 className="mt-0 text-base">编辑同步失败</h2><p className="text-xs leading-relaxed text-muted">{error}</p><button className={primaryButtonClass} onClick={()=>{void recoverEditingQueue(new Error('编辑状态已重新同步，请核对后继续。'))}}>重试同步</button></div></div>}
+    {editQueue.failed && !recoveringEdits && <div className="fixed inset-0 z-[120] grid place-items-center bg-overlay backdrop-blur-sm" role="dialog" aria-modal="true" aria-label="编辑同步失败"><div className="w-[min(420px,calc(100vw-24px))] rounded-2xl border border-line-strong bg-panel p-6 shadow-dialog"><h2 className="mt-0 text-base">编辑同步失败</h2><p className="break-words text-sm leading-relaxed text-muted">{error}</p><button className={primaryButtonClass} onClick={()=>{void recoverEditingQueue(new Error('编辑状态已重新同步，请核对后继续。'))}}>重试同步</button></div></div>}
     <input ref={fileRef} disabled={editorBusy} hidden type="file" accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp" multiple onChange={event => void upload(event.currentTarget.files)}/>
   </div>
   </>

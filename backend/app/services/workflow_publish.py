@@ -4,7 +4,7 @@ from __future__ import annotations
 from copy import deepcopy
 from datetime import datetime, timezone
 
-from app.core.transactions import retry_write
+from app.core.transactions import project_write
 from app.models import EditorHistoryEntry, ImagePage, ProcessingTask, Project, StageCheckpoint, TaskWorkflow, TextRegion
 from app.services.checkpoints import StaleExecution
 from app.services.editor_history import PAGE_FIELDS, _archive_paths, _finish_entry
@@ -120,4 +120,4 @@ def publish_workflow(store, lease, initial: dict, result: dict, history_entry_id
             task.waiting_reason, task.error_kind, task.active_stages = None, None, []
             task.finished_at = datetime.now(timezone.utc)
             return True
-        return retry_write(db, save)
+        return project_write(db, project_id, save)

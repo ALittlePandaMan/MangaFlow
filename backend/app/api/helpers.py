@@ -31,8 +31,10 @@ def require_region(db: Session, region_id: str) -> TextRegion:
     return region
 
 
-def require_task(db: Session, task_id: str) -> ProcessingTask:
-    task = db.get(ProcessingTask, task_id)
+def require_task(db: Session, task_id: str, *, for_update: bool = False) -> ProcessingTask:
+    task = (db.scalar(select(ProcessingTask).where(ProcessingTask.id == task_id).with_for_update()
+                      .execution_options(populate_existing=True))
+            if for_update else db.get(ProcessingTask, task_id))
     if task is None:
         raise HTTPException(404, "Task not found")
     return task

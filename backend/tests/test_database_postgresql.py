@@ -7,10 +7,10 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 from app.core.db_engine import create_database_engine
 from app.core.migrations import upgrade_database
-from app.core.transactions import has_pending_writes, is_retryable_write, retry_write
+from app.core.transactions import has_pending_writes, is_retryable_write, project_write, retry_write, task_write
 from app.models import EditorHistoryEntry, ImagePage, ProcessingTask, Project, TextRegion
 from app.services.editor_history import begin_task_history, finish_task_history
-from sqlalchemy import select, text, update
+from sqlalchemy import event, select, text, update
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
@@ -49,6 +49,64 @@ def test_nested_retry_is_rejected_and_outer_write_is_rolled_back(target):
             retry_write(db, outer)
         assert db.scalar(select(Project)) is None
         assert retry_write(db, lambda: 42) == 42
+
+
+@pytest.mark.parametrize("write", [project_write, task_write], ids=["project", "task"])
+def test_writes_queue_without_retaining_a_connection_and_do_not_block_other_scopes(target, write):
+    upgrade_database(target)
+    with Session(target) as db:
+        db.add_all([Project(id="first", name="first"), Project(id="other", name="other")])
+        db.commit()
+    held, release, waiting, entered = (threading.Event() for _ in range(4))
+
+    def first():
+        with Session(target) as db:
+            def save():
+                db.execute(update(Project).where(Project.id == "first").values(name="held"))
+                held.set()
+                assert release.wait(5)
+            write(db, "first", save)
+
+    def second():
+        with Session(target) as db:
+            db.execute(select(Project.id))  # Even an existing read must be released.
+            event.listen(db, "after_transaction_end", lambda *args: waiting.set(), once=True)
+            def save():
+                entered.set()
+                db.execute(update(Project).where(Project.id == "first").values(name="second"))
+            write(db, "first", save)
+
+    with ThreadPoolExecutor(2) as pool:
+        first_job = pool.submit(first)
+        second_job = None
+        try:
+            assert held.wait(3)
+            second_job = pool.submit(second)
+            assert waiting.wait(3)
+            assert target.pool.checkedout() == 1  # Only the first writer owns a connection.
+            # A different project can finish while both same-project jobs exist.
+            with Session(target) as db:
+                write(db, "other", lambda: db.execute(update(Project).where(
+                    Project.id == "other").values(name="independent")))
+            assert not entered.is_set()
+        finally:
+            release.set()
+        first_job.result(5)
+        if second_job is not None:
+            second_job.result(5)
+    with Session(target) as db:
+        assert db.get(Project, "first").name == "second"
+        assert db.get(Project, "other").name == "independent"
+
+
+def test_project_write_rejects_pending_changes_without_discarding_them(target):
+    upgrade_database(target)
+    with Session(target) as db:
+        db.add(Project(name="uncommitted"))
+        with pytest.raises(ValueError, match="clean session"):
+            project_write(db, "project", lambda: None)
+        db.commit()
+        assert db.scalar(select(Project.name)) == "uncommitted"
 
 
 def test_tied_reading_order_survives_updates_and_history_on_postgresql(target):

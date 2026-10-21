@@ -23,7 +23,7 @@ from app.core.timing import measured
 from app.core.transactions import has_pending_writes, retry_write
 from app.models import ImagePage, ModelConfig, ProcessingTask, RegionRevision, TextRegion, Translation
 from app.models.enums import PageStatus, PipelineStage, TaskStatus
-from app.services.base import OCRResult
+from app.services.base import OCRResult, ProviderError
 from app.services.cloud_budget import request_budget
 from app.services.detection.artifacts import (
     BUBBLE_GEOMETRY_KEY,
@@ -64,9 +64,11 @@ from app.services.regions import (
 from app.services.registry import registry
 from app.services.task_metrics import flush_task_timings
 from app.services.translation.context import page_context, page_image_data_url
+from app.services.translation.google_web import GoogleWebTranslator
 from app.services.translation.providers import OpenAICompatibleTranslator
 from app.storage import get_storage
 from app.utils.image_metadata import atomic_copy, load_rgb_with_metadata, save_png_with_metadata
+from app.utils.text import has_text
 
 logger = logging.getLogger(__name__)
 
@@ -450,7 +452,7 @@ class PipelineProcessor:
         pending_regions = []
         for region in self._regions(page, region_id, region_ids):
             explicitly_forced = bool((region_id or region_ids) and force)
-            if (region.locked and not explicitly_forced) or (region.source_text.strip() and not force):
+            if (region.locked and not explicitly_forced) or (has_text(region.source_text) and not force):
                 continue
             pending_regions.append(region)
         total = len(pending_regions)
@@ -557,7 +559,7 @@ class PipelineProcessor:
 
     def _apply_ocr_result(self, region: TextRegion, result: OCRResult, *, expected_version=None) -> bool:
         reasons = [reason for reason in (region.review_reasons or []) if reason not in {"low_ocr_confidence", "empty_source_text", "incomplete_ocr_chunks", "ocr_generation_truncated"}]
-        if not result.text.strip():
+        if not has_text(result.text):
             reasons.append("empty_source_text")
         if result.metadata.get("empty_chunks"):
             reasons.append("incomplete_ocr_chunks")
@@ -664,12 +666,12 @@ class PipelineProcessor:
             region
             for region in self._regions(page, region_id, region_ids)
             if (not region.locked or bool((region_id or region_ids) and force))
-            and (force or not region.translated_text.strip())
+            and (force or not has_text(region.translated_text))
         ]
         selected_ids = {region.id for region in selected}
         missing_ids = {
             region.id for region in selected
-            if not region.source_text.strip() and region.id not in self._ocr_attempted_ids
+            if not has_text(region.source_text) and region.id not in self._ocr_attempted_ids
         }
         if missing_ids:
             # Reuse the configured OCR provider, crops, concurrency and edit
@@ -690,9 +692,9 @@ class PipelineProcessor:
             selected = [
                 region for region in page.regions if region.id in selected_ids
                 and (not region.locked or bool((region_id or region_ids) and force))
-                and (force or not region.translated_text.strip())
+                and (force or not has_text(region.translated_text))
             ]
-        selected = [region for region in selected if region.source_text.strip()]
+        selected = [region for region in selected if has_text(region.source_text)]
         if not selected:
             if progress:
                 progress(100, 100, "没有可翻译的原文；空白区域已跳过")
@@ -740,12 +742,12 @@ class PipelineProcessor:
             source_language=source_language,
             target_language=target_language,
             context=context,
-            **({"check_interruption": self._check_interruption} if isinstance(provider, OpenAICompatibleTranslator) else {}),
+            **({"check_interruption": self._check_interruption} if isinstance(provider, (OpenAICompatibleTranslator, GoogleWebTranslator)) else {}),
         )
         self._check_interruption()
         expected = {key for key, _ in inputs}
-        if set(translations) != expected:
-            raise ValueError(f"Translation ID mismatch: expected {sorted(expected)}, got {sorted(translations)}")
+        if not isinstance(translations, dict) or set(translations) != expected:
+            raise ProviderError("翻译返回的区域 ID 不匹配，未覆盖原有译文。", error_kind="translation_id_mismatch")
         self._save_translations(page_id, versions, translations, source_language=source_language,
                                 target_language=target_language, provider=resolved_name, model_name=model_name)
 
@@ -755,16 +757,20 @@ class PipelineProcessor:
     def _save_translations(self, page_id: str, versions: list[tuple], translations: dict[str, str], *,
                            source_language: str, target_language: str, provider: str, model_name: str) -> None:
         """Retry only the computed result's DB write; never repeat cloud work."""
+        if set(translations) != {key for _, key, _ in versions} or any(not has_text(value) for value in translations.values()):
+            raise ProviderError("翻译结果包含缺失、空白或无效译文，未覆盖原有译文。", error_kind="translation_empty_values")
+        translations = {key: value.strip() for key, value in translations.items()}
         def save():
-            page = self.db.scalar(select(ImagePage).where(ImagePage.id == page_id).with_for_update())
-            if page is None:
-                raise ValueError("Translation page no longer exists")
             if self._active_task_id:
                 task = self.db.scalar(select(ProcessingTask).where(
                     ProcessingTask.id == self._active_task_id,
                 ).with_for_update())
                 if task is None or task.status in {TaskStatus.CANCELLING.value, TaskStatus.CANCELLED.value}:
                     raise TaskCancelled("Task cancelled before saving translation")
+            # Same task -> page order as checkpoint publication/recovery.
+            page = self.db.scalar(select(ImagePage).where(ImagePage.id == page_id).with_for_update())
+            if page is None:
+                raise ValueError("Translation page no longer exists")
             for identifier, key, version in sorted(versions):
                 # Reserve every input row with an atomic version predicate.
                 # A deleted/edited input invalidates this result as a whole;

@@ -12,7 +12,7 @@ vi.mock('../components/LoadingUI', async importOriginal => ({
   useMinimumLoadingTime: (value: boolean) => value,
 }))
 
-const descriptors = ['manga-ocr', 'cloud-multimodal', 'cloud-ocr', 'paddleocr-vl-1.6', 'baberu-ocr', 'hayai-ocr'].map(name => ({
+const descriptors = ['manga-ocr', 'cloud-multimodal', 'cloud-ocr', 'paddleocr-vl-1.6', 'baberu-ocr', 'hayai-ocr', 'paddleocr'].map(name => ({
   kind: 'ocr', name, description: name, devices: ['cloud-multimodal', 'cloud-ocr'].includes(name) ? ['remote'] : ['cpu', 'cuda'],
   orientations: ['vertical'], supports_batch: false, capabilities: {}, installed: true, is_fallback: false,
 })) as ModelDescriptor[]
@@ -35,9 +35,10 @@ beforeEach(() => {
 async function openCloud() {
   const user = userEvent.setup()
   render(<GlobalDialogProvider><SettingsPage/></GlobalDialogProvider>)
-  await user.click(await screen.findByRole('button', {name: '编辑OCR 识别配置'}))
+  await waitFor(() => expect(screen.getByRole('button',{name:'编辑OCR 识别配置'})).toBeEnabled())
+  await user.click(screen.getByRole('button',{name:'编辑OCR 识别配置'}))
   if (configuration.provider !== 'cloud-multimodal') {
-    await user.click(screen.getByRole('button', {name: 'Provider 类型'}))
+    await user.click(screen.getByRole('button', {name: '当前模型'}))
     await user.click(screen.getByRole('option', {name: '多模态大模型识字'}))
   }
   return user
@@ -47,7 +48,8 @@ describe('cloud multimodal OCR settings', () => {
   it('offers automatic GPU priority and saves the policy rather than the current hardware', async () => {
     const user = userEvent.setup()
     render(<GlobalDialogProvider><SettingsPage/></GlobalDialogProvider>)
-    await user.click(await screen.findByRole('button', {name: '编辑OCR 识别配置'}))
+    await waitFor(() => expect(screen.getByRole('button',{name:'编辑OCR 识别配置'})).toBeEnabled())
+    await user.click(screen.getByRole('button',{name:'编辑OCR 识别配置'}))
     await user.click(screen.getByRole('button', {name: '运行设备'}))
     await user.click(screen.getByRole('option', {name: '自动（GPU 优先）'}))
     await user.click(screen.getByRole('button', {name: '保存配置'}))
@@ -59,8 +61,8 @@ describe('cloud multimodal OCR settings', () => {
     configuration = {...configuration, config: {device: 'auto', model: 'local-manga'}}
     const user = userEvent.setup()
     render(<GlobalDialogProvider><SettingsPage/></GlobalDialogProvider>)
-    expect(await screen.findByText('自动 GPU / CPU')).toBeVisible()
-    await user.click(screen.getByRole('button', {name: '编辑OCR 识别配置'}))
+    await waitFor(() => expect(screen.getByRole('button',{name:'编辑OCR 识别配置'})).toBeEnabled())
+    await user.click(screen.getByRole('button',{name:'编辑OCR 识别配置'}))
     expect(screen.getByRole('button', {name: '运行设备'})).toHaveTextContent('自动（GPU 优先）')
     await user.click(screen.getByRole('button', {name: '保存配置'}))
     expect(api.models.update).toHaveBeenCalledWith('ocr-1', expect.objectContaining({
@@ -69,10 +71,11 @@ describe('cloud multimodal OCR settings', () => {
   })
   it('switches to Koharu OCR with independent local generation settings and preserves MangaOCR', async () => {
     const user = await openCloud()
-    await user.click(screen.getByRole('button', {name: 'Provider 类型'}))
+    await user.click(screen.getByRole('button', {name: '当前模型'}))
     await user.click(screen.getByRole('option', {name: 'PaddleOCR-VL 1.6'}))
     expect(screen.queryByLabelText('API Key')).not.toBeInTheDocument()
-    expect(screen.getByLabelText('本地 OCR 最大输出 Token 数')).toHaveValue('512')
+    expect(screen.getByLabelText('本地 OCR 最大输出 Token 数')).toHaveValue('2048')
+    expect(screen.getByRole('button',{name:'本地 OCR 最大输出 Token 数增大'})).toBeDisabled()
     fireEvent.change(screen.getByLabelText('本地 OCR 最大输出 Token 数'), {target: {value: '768'}})
     await user.click(screen.getByRole('button', {name: '保存配置'}))
     expect(api.models.update).not.toHaveBeenCalled()
@@ -81,25 +84,32 @@ describe('cloud multimodal OCR settings', () => {
   })
   it('resets generation settings when switching between Baberu and Hayai', async () => {
     const user = await openCloud()
-    await user.click(screen.getByRole('button', {name: 'Provider 类型'}))
+    await user.click(screen.getByRole('button', {name: '当前模型'}))
     await user.click(screen.getByRole('option', {name: 'Baberu OCR'}))
     fireEvent.change(screen.getByLabelText('本地 OCR 最大输出 Token 数'), {target: {value: '512'}})
-    await user.click(screen.getByRole('button', {name: 'Provider 类型'}))
+    await user.click(screen.getByRole('button', {name: '当前模型'}))
     await user.click(screen.getByRole('option', {name: 'Hayai OCR'}))
-    expect(screen.getByLabelText('本地 OCR 最大输出 Token 数')).toHaveValue('256')
+    expect(screen.getByLabelText('本地 OCR 最大输出 Token 数')).toHaveValue('2048')
     await user.click(screen.getByRole('button', {name: '保存配置'}))
-    expect(api.models.create).toHaveBeenCalledWith(expect.objectContaining({provider: 'hayai-ocr', config: expect.objectContaining({max_new_tokens: 256})}))
+    expect(api.models.create).toHaveBeenCalledWith(expect.objectContaining({provider: 'hayai-ocr', config: expect.objectContaining({max_new_tokens: 2048})}))
   })
   it('restores and updates the saved provider instead of overwriting the local OCR config', async () => {
     savedOcr = {...configuration, id: 'saved-cloud', provider: 'cloud-multimodal', is_default: false, has_api_key: true, config: {model: 'saved-vision', base_url: 'https://vision.example/v1', prompt: 'Saved OCR prompt'}}
     const user = await openCloud()
     expect(screen.getByLabelText('识别 Prompt')).toHaveValue('Saved OCR prompt')
     expect(screen.getByLabelText('API Key')).not.toBeRequired()
+    const keyInput = screen.getByLabelText('API Key')
+    expect(keyInput).toHaveValue('')
+    expect(keyInput).toHaveAttribute('placeholder','••••••••')
+    expect(screen.queryByText('密钥已保存')).not.toBeInTheDocument()
+    await user.click(keyInput)
+    expect(keyInput).toHaveAttribute('placeholder','')
     fireEvent.change(screen.getByLabelText('OCR 并发上限'), {target:{value:'5'}})
     fireEvent.change(screen.getByLabelText('OCR 每分钟请求上限'), {target:{value:'90'}})
     await user.click(screen.getByRole('button', {name: '保存配置'}))
     expect(api.models.create).not.toHaveBeenCalled()
     expect(api.models.update).toHaveBeenCalledWith('saved-cloud', expect.objectContaining({provider: 'cloud-multimodal', config: expect.objectContaining({model: 'saved-vision', concurrency_mode:'adaptive', max_concurrency:5, requests_per_minute:90})}))
+    expect(vi.mocked(api.models.update).mock.calls[0][1].api_key).toBeUndefined()
   })
   it('reuses translation credentials server-side while retaining a separate OCR prompt', async () => {
     translation = {...configuration, id: 'translation-1', kind: 'translation', provider: 'openai-compatible', has_api_key: true, config: {base_url: 'https://translation.example/v1', model: 'gemini-3.8-flash-high', prompt: 'Translate, do not transcribe'}}
@@ -113,37 +123,17 @@ describe('cloud multimodal OCR settings', () => {
     expect(vi.mocked(api.models.create).mock.calls[0][0].config).not.toHaveProperty('base_url')
   })
 
-  it('configures generic OCR without a language model and rejects invalid extra JSON', async () => {
+  it('removes classic PaddleOCR and generic cloud OCR while retaining PaddleOCR-VL', async () => {
     const user = await openCloud()
-    await user.click(screen.getByRole('button', {name: 'Provider 类型'}))
-    await user.click(screen.getByRole('option', {name: '云端 OCR（通用接口）'}))
-    expect(screen.queryByLabelText('识别 Prompt')).not.toBeInTheDocument()
-    fireEvent.change(screen.getByLabelText('识别接口 URL'), {target: {value: 'https://ocr.example/recognize'}})
-    fireEvent.change(screen.getByLabelText('API Key'), {target: {value: 'ocr-only-key'}})
-    fireEvent.change(screen.getByLabelText('返回文字字段路径'), {target: {value: 'data.words.*.text'}})
-    fireEvent.change(screen.getByLabelText('附加参数（JSON）'), {target: {value: '{bad'}})
-    await user.click(screen.getByRole('button', {name: '保存配置'}))
-    expect(screen.getByText('附加参数必须是有效的 JSON 对象。')).toBeVisible()
-    expect(api.models.create).not.toHaveBeenCalled()
-    fireEvent.change(screen.getByLabelText('附加参数（JSON）'), {target: {value: '{"language":"ja"}'}})
-    await user.click(screen.getByRole('button', {name: '保存配置'}))
-    expect(api.models.create).toHaveBeenCalledWith(expect.objectContaining({provider: 'cloud-ocr', reuse_translation: false, config: expect.objectContaining({response_text_path: 'data.words.*.text', extra_fields: {language: 'ja'}})}))
-    expect(api.models.discover).not.toHaveBeenCalled()
+    await user.click(screen.getByRole('button', {name: '当前模型'}))
+    expect(screen.queryByRole('option', {name: '云端 OCR（通用接口）'})).not.toBeInTheDocument()
+    expect(screen.queryByRole('option', {name: 'PaddleOCR 文字识别'})).not.toBeInTheDocument()
+    expect(screen.getByRole('option', {name: 'PaddleOCR-VL 1.6'})).toBeVisible()
+    expect(screen.getByRole('option', {name: '多模态大模型识字'})).toBeVisible()
   })
 
-  it('can configure a dedicated OCR model using Chat Completions', async () => {
-    const user = await openCloud()
-    await user.click(screen.getByRole('button', {name: 'Provider 类型'}))
-    await user.click(screen.getByRole('option', {name: '云端 OCR（通用接口）'}))
-    await user.click(screen.getByRole('button', {name: '图片上传方式'}))
-    await user.click(screen.getByRole('option', {name: 'OCR 专用模型（Chat Completions）'}))
-    fireEvent.change(screen.getByLabelText('识别接口 URL'), {target: {value: 'https://api.siliconflow.cn/v1/chat/completions'}})
-    fireEvent.change(screen.getByLabelText('API Key'), {target: {value: 'synthetic-key'}})
-    fireEvent.change(screen.getByLabelText('OCR 模型名称'), {target: {value: 'PaddlePaddle/PaddleOCR-VL-1.5'}})
-    await user.click(screen.getByRole('button', {name: '保存配置'}))
-    expect(api.models.create).toHaveBeenCalledWith(expect.objectContaining({provider: 'cloud-ocr', config: expect.objectContaining({request_format:'chat_completions', model:'PaddlePaddle/PaddleOCR-VL-1.5', prompt:'OCR:', max_tokens:2048})}))
-  })
-  it('supports custom model/prompt even when model discovery fails', async () => {
+  it('keeps a saved model and prompt when discovery fails without offering manual entry', async () => {
+    configuration = {...configuration, provider:'cloud-multimodal', has_api_key:true, config:{base_url:'https://vision.example/v1',model:'saved-vision'}}
     vi.mocked(api.models.discover).mockRejectedValue(new Error('HTTP 404'))
     const user = await openCloud()
     expect(screen.queryByRole('button', {name: '运行设备'})).not.toBeInTheDocument()
@@ -153,16 +143,16 @@ describe('cloud multimodal OCR settings', () => {
     fireEvent.change(screen.getByLabelText('API Key'), {target: {value: 'new-secret'}})
     await user.click(screen.getByRole('button', {name: '重新获取模型列表'}))
     expect(await screen.findByText(/HTTP 404/)).toBeVisible()
-    await user.click(screen.getByRole('button', {name: '手动输入模型'}))
-    fireEvent.change(screen.getByLabelText('模型名称'), {target: {value: 'my-vision-model'}})
+    expect(screen.queryByRole('button', {name: '手动输入模型'})).not.toBeInTheDocument()
+    expect(screen.getByRole('button', {name: '选择 OCR 模型'})).toHaveTextContent('saved-vision')
     fireEvent.change(screen.getByLabelText('识别 Prompt'), {target: {value: '保留日文标点，不翻译'}})
     await user.click(screen.getByRole('button', {name: '保存配置'}))
-    await waitFor(() => expect(api.models.create).toHaveBeenCalledWith(expect.objectContaining({
-      kind: 'ocr', provider: 'cloud-multimodal', api_key: 'new-secret', name: '多模态识字 · my-vision-model',
-      config: expect.objectContaining({model: 'my-vision-model', prompt: '保留日文标点，不翻译', max_tokens: 2048}),
+    await waitFor(() => expect(api.models.update).toHaveBeenCalledWith('ocr-1',expect.objectContaining({
+      kind: 'ocr', provider: 'cloud-multimodal', api_key: 'new-secret', name: '多模态识字 · saved-vision',
+      config: expect.objectContaining({model: 'saved-vision', prompt: '保留日文标点，不翻译', max_tokens: 2048}),
     })))
-    const payload = vi.mocked(api.models.create).mock.calls[0][0]
-    expect(api.models.update).not.toHaveBeenCalled()
+    const payload = vi.mocked(api.models.update).mock.calls[0][1]
+    expect(api.models.create).not.toHaveBeenCalled()
     expect(payload.config).not.toHaveProperty('device')
     expect(payload.config).not.toHaveProperty('temperature')
   })
@@ -180,6 +170,21 @@ describe('cloud multimodal OCR settings', () => {
     expect(api.models.create).toHaveBeenCalledWith(expect.objectContaining({config: expect.objectContaining({model: 'vision-test', api_protocol: 'openai'})}))
   })
 
+  it('requires a discovered model after failure instead of offering manual entry',async()=>{
+    vi.mocked(api.models.discover).mockRejectedValue(new Error('模型列表获取失败'))
+    const user = await openCloud()
+    fireEvent.change(screen.getByLabelText('API Base URL'), {target:{value:'https://vision.example/v1'}})
+    fireEvent.change(screen.getByLabelText('API Key'), {target:{value:'synthetic-key'}})
+    await user.click(screen.getByRole('button',{name:'重新获取模型列表'}))
+    expect(await screen.findByText('模型列表获取失败')).toBeVisible()
+    expect(screen.queryByRole('button',{name:'手动输入模型'})).not.toBeInTheDocument()
+    expect(screen.getByRole('button',{name:'选择 OCR 模型'})).toBeDisabled()
+    await user.click(screen.getByRole('button',{name:'保存配置'}))
+    expect(screen.getByText('请先获取并选择模型。')).toBeVisible()
+    expect(api.models.create).not.toHaveBeenCalled()
+    expect(api.models.update).not.toHaveBeenCalled()
+  })
+
   it('preserves a saved key but requires re-entry after changing the API origin', async () => {
     configuration = {...configuration, provider: 'cloud-multimodal', has_api_key: true, config: {base_url: 'https://vision.example/v1', model: 'saved-vision', prompt: 'custom OCR'}}
     await openCloud()
@@ -187,8 +192,22 @@ describe('cloud multimodal OCR settings', () => {
     expect(screen.getByLabelText('识别 Prompt')).toHaveValue('custom OCR')
     fireEvent.change(screen.getByLabelText('API Base URL'), {target: {value: 'https://other.example/v1'}})
     expect(screen.getByLabelText('API Key')).toBeRequired()
+    expect(screen.getByLabelText('API Key')).toHaveAttribute('placeholder','输入 API 密钥')
     fireEvent.blur(screen.getByLabelText('API Base URL'))
     expect(api.models.discover).not.toHaveBeenCalled()
+  })
+
+  it('does not expose or overwrite a legacy generic OCR configuration',async () => {
+    configuration = {...configuration,provider:'cloud-ocr',has_api_key:true,config:{base_url:'https://ocr.example/recognize',auth_mode:'bearer',request_format:'json'}}
+    const user = userEvent.setup()
+    render(<GlobalDialogProvider><SettingsPage/></GlobalDialogProvider>)
+    await waitFor(() => expect(screen.getByRole('button',{name:'编辑OCR 识别配置'})).toBeEnabled())
+    await user.click(screen.getByRole('button',{name:'编辑OCR 识别配置'}))
+    expect(screen.getByRole('button',{name:'当前模型'})).toHaveTextContent('PaddleOCR-VL 1.6')
+    expect(screen.queryByLabelText('API Key')).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button',{name:'保存配置'}))
+    await waitFor(() => expect(api.models.create).toHaveBeenCalledWith(expect.objectContaining({provider:'paddleocr-vl-1.6',config:expect.objectContaining({max_new_tokens:2048})})))
+    expect(api.models.update).not.toHaveBeenCalled()
   })
 
   it('ignores stale discovery after switching back to local OCR', async () => {
@@ -198,7 +217,7 @@ describe('cloud multimodal OCR settings', () => {
     fireEvent.change(screen.getByLabelText('API Base URL'), {target: {value: 'https://vision.example/v1'}})
     fireEvent.change(screen.getByLabelText('API Key'), {target: {value: 'key'}})
     await user.click(screen.getByRole('button', {name: '重新获取模型列表'}))
-    await user.click(screen.getByRole('button', {name: 'Provider 类型'}))
+    await user.click(screen.getByRole('button', {name: '当前模型'}))
     await user.click(screen.getByRole('option', {name: 'MangaOCR 漫画识别'}))
     await act(async () => resolve({models: ['stale'], base_url: 'https://stale.example', endpoint: 'https://stale.example/models', protocol: 'openai'}))
     expect(screen.getByRole('button', {name: '运行设备'})).toHaveTextContent('CPU')

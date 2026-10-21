@@ -27,13 +27,31 @@ export function SelectControl({value, options, onChange, disabled = false, name,
   const triggerRef = useRef<HTMLButtonElement>(null)
   const popupRef = useRef<HTMLDivElement>(null)
   const menuId = useId()
-  const position = useFloatingPosition(open, triggerRef, Math.min(320, options.length * 44 + 8))
+  // Let the list size naturally, including gaps, borders and wrapped labels.
+  // Only the menu limit and available viewport space should make it scroll.
+  const position = useFloatingPosition(open, triggerRef, 320)
+  const positioned = position !== null
 
   useEffect(() => {
     if (!open) return
     setActiveIndex(Math.max(0, selectedIndex))
     return listenForOutsidePointer(triggerRef, popupRef, () => setOpen(false))
   }, [open, selectedIndex])
+
+  useLayoutEffect(() => {
+    if (!open || !positioned) return
+    const popup = popupRef.current
+    const option = popup?.querySelector<HTMLElement>(`[data-option-index="${activeIndex}"]`)
+    if (!popup || !option) return
+    // Scroll only the menu. Scrolling its fixed portal must not move the form.
+    // Position updates on wheel/scroll deliberately do not retrigger this.
+    const top = option.offsetTop
+    const bottom = top + option.offsetHeight
+    const scrollTop = popup.scrollTop
+    const visibleBottom = scrollTop + popup.clientHeight
+    if (top < scrollTop) popup.scrollTop = top
+    else if (bottom > visibleBottom) popup.scrollTop = bottom - popup.clientHeight
+  }, [activeIndex, open, positioned, options.length])
 
   const move = (direction: 1 | -1) => {
     if (!options.length) return
@@ -71,12 +89,12 @@ export function SelectControl({value, options, onChange, disabled = false, name,
   const selected = options[selectedIndex]
   return <div className={cn('relative w-full min-w-0', disabled && 'opacity-50')}>
     {name && <input type="hidden" name={name} value={value}/>}
-    <button ref={triggerRef} type="button" className={cn('flex w-full cursor-pointer items-center justify-between gap-2 rounded-lg border bg-surface text-left text-ink outline-none transition duration-150 hover:border-line-strong hover:bg-hover focus-visible:ring-3 focus-visible:ring-accent/15 disabled:cursor-not-allowed', compact ? 'h-[34px] px-2 text-[11px]' : 'h-[38px] px-3 text-xs', open ? 'border-accent ring-3 ring-accent/15' : 'border-line')} disabled={disabled} aria-label={ariaLabel} aria-haspopup="listbox" aria-expanded={open} aria-controls={menuId} onClick={() => setOpen(current => !current)} onKeyDown={onKeyDown}>
+    <button ref={triggerRef} type="button" className={cn('flex w-full cursor-pointer items-center justify-between gap-2 rounded-lg border bg-surface text-left text-ink outline-none transition duration-150 hover:border-line-strong hover:bg-hover focus-visible:ring-3 focus-visible:ring-accent/15 disabled:cursor-not-allowed', compact ? 'h-[34px] px-2 text-[13px]' : 'h-[38px] px-3 text-sm', open ? 'border-accent ring-3 ring-accent/15' : 'border-line')} disabled={disabled} aria-label={ariaLabel} aria-haspopup="listbox" aria-expanded={open} aria-controls={menuId} onClick={() => setOpen(current => !current)} onKeyDown={onKeyDown}>
       <span className={cn('min-w-0 truncate', !selected && 'text-disabled')}>{selected?.label || placeholder}</span><ChevronDown className={cn('shrink-0 text-muted transition-transform duration-150', open && 'rotate-180 text-accent')} size={15}/>
     </button>
-    {open && position && createPortal(<div ref={popupRef} id={menuId} className={cn('flex animate-[control-popover-in_.14s_cubic-bezier(.2,.8,.2,1)] flex-col gap-1 overflow-auto rounded-xl border border-line-strong bg-popover p-1 text-xs text-secondary shadow-dialog backdrop-blur-xl', scrollbarClass)} role="listbox" aria-label={ariaLabel} style={position}>
-      {options.map((option, index) => <button type="button" role="option" aria-selected={option.value === value} disabled={option.disabled} className={cn('flex min-h-10 w-full shrink-0 cursor-pointer items-center justify-between gap-2 rounded-lg border-0 bg-transparent px-3 py-0 text-left text-xs font-medium text-secondary outline-none transition-colors hover:bg-hover hover:text-ink disabled:cursor-not-allowed disabled:opacity-35', index === activeIndex && 'bg-hover text-ink', option.value === value && '!bg-accent-soft !text-accent-soft-ink font-semibold')} key={option.value} onMouseDown={event => event.preventDefault()} onClick={() => choose(index)} onMouseEnter={() => setActiveIndex(index)}>
-        <span>{option.label}</span>{option.value === value && <Check size={14}/>}
+    {open && position && createPortal(<div ref={popupRef} id={menuId} className={cn('flex animate-[control-popover-in_.14s_cubic-bezier(.2,.8,.2,1)] flex-col gap-1 overflow-auto overscroll-contain rounded-xl border border-line-strong bg-popover p-1 text-secondary shadow-dialog backdrop-blur-xl', scrollbarClass)} role="listbox" aria-label={ariaLabel} style={position}>
+      {options.map((option, index) => <button type="button" role="option" data-option-index={index} aria-selected={option.value === value} disabled={option.disabled} className={cn('flex min-h-11 w-full shrink-0 cursor-pointer items-center justify-between gap-2 rounded-lg border-0 bg-transparent px-3 py-2 text-left font-medium leading-normal text-secondary outline-none transition-colors hover:bg-hover hover:text-ink disabled:cursor-not-allowed disabled:opacity-35', index === activeIndex && 'bg-hover text-ink', option.value === value && '!bg-accent-soft !text-accent-soft-ink font-semibold')} style={{fontSize:'inherit',borderRadius:'var(--control-radius)',paddingInline:'var(--control-padding-x)'}} key={option.value} onMouseDown={event => event.preventDefault()} onClick={() => choose(index)} onMouseEnter={() => setActiveIndex(index)}>
+        <span className="min-w-0 break-words">{option.label}</span>{option.value === value && <Check className="shrink-0" size={16}/>}
       </button>)}
     </div>, document.body)}
   </div>
@@ -167,7 +185,7 @@ export function NumberControl({value, defaultValue = '', onChange, onCommit, nam
   }
   const numeric = draft.trim() ? Number(draft) : NaN
   return <div ref={controlRef} className={cn('number-control grid min-w-0 overflow-hidden rounded-lg border border-line bg-surface transition hover:border-line-strong hover:bg-hover focus-within:border-accent focus-within:ring-3 focus-within:ring-accent/15', compact ? 'h-[34px] grid-cols-[minmax(0,1fr)_24px]' : 'h-[38px] grid-cols-[minmax(0,1fr)_30px]', disabled && 'opacity-50')}>
-    <input ref={inputRef} className={cn('min-w-0 border-0 bg-transparent font-mono font-medium text-ink outline-none placeholder:text-disabled disabled:cursor-not-allowed', compact ? 'h-8 px-2 text-[10px]' : 'h-9 px-3 text-[11px]')} type="text" inputMode="decimal" name={name} value={draft} disabled={disabled} placeholder={placeholder} aria-label={ariaLabel} onFocus={() => setFocused(true)} onChange={event => changeDraft(event.target.value)} onKeyDown={event => {
+    <input ref={inputRef} className={cn('min-w-0 border-0 bg-transparent font-mono font-medium text-ink outline-none placeholder:text-disabled disabled:cursor-not-allowed', compact ? 'h-8 px-2 text-[13px]' : 'h-9 px-3 text-sm')} type="text" inputMode="decimal" name={name} value={draft} disabled={disabled} placeholder={placeholder} aria-label={ariaLabel} onFocus={() => setFocused(true)} onChange={event => changeDraft(event.target.value)} onKeyDown={event => {
       if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {event.preventDefault(); stepBy(event.key === 'ArrowUp' ? 1 : -1)}
       else if (commitOnBlur && event.key === 'Enter') {event.preventDefault(); finishDraft()}
       else if (commitOnBlur && event.key === 'Escape') {event.preventDefault(); event.stopPropagation(); dirty.current = false; setDraft(mixed ? '' : String(value ?? defaultValue))}
@@ -194,7 +212,7 @@ export function ColorControl({value, onChange, disabled = false, ariaLabel, comp
   const [draft, setDraft] = useState(value)
   const triggerRef = useRef<HTMLButtonElement>(null)
   const popupRef = useRef<HTMLDivElement>(null)
-  const position = useFloatingPosition(open, triggerRef, 224, 218)
+  const position = useFloatingPosition(open, triggerRef, 248, 218)
   useEffect(() => setDraft(value), [value])
   useEffect(() => open ? listenForOutsidePointer(triggerRef, popupRef, () => setOpen(false)) : undefined, [open])
   const applyDraft = () => {
@@ -204,10 +222,10 @@ export function ColorControl({value, onChange, disabled = false, ariaLabel, comp
   }
   return <div className="relative w-full min-w-0">
     <button ref={triggerRef} type="button" className={cn('flex w-full cursor-pointer items-center justify-between rounded-lg border bg-surface text-ink outline-none transition hover:bg-hover focus-visible:ring-3 focus-visible:ring-accent/15 disabled:cursor-not-allowed disabled:opacity-50', compact ? 'h-[34px] px-2 text-[11px]' : 'h-[38px] px-3 text-xs', open ? 'border-accent' : 'border-line hover:border-line-strong')} disabled={disabled} aria-label={`${ariaLabel || '颜色'}，当前 ${value.toUpperCase()}`} title={`${ariaLabel || '颜色'}：${value.toUpperCase()}`} aria-haspopup="dialog" aria-expanded={open} onClick={() => setOpen(current => !current)}><span aria-hidden="true" className={cn('shrink-0 rounded border border-line-strong', compact ? 'size-6' : 'size-[26px]')} style={{background:value}}/><ChevronDown aria-hidden="true" className={cn('shrink-0 text-muted transition-transform', open && 'rotate-180 text-accent')} size={13}/></button>
-    {open && position && createPortal(<div ref={popupRef} className="animate-[control-popover-in_.14s_cubic-bezier(.2,.8,.2,1)] rounded-xl border border-line-strong bg-popover p-3 text-secondary shadow-dialog backdrop-blur-xl" role="dialog" aria-label={ariaLabel} style={position} onKeyDown={event => {if (event.key === 'Escape') {event.preventDefault(); setOpen(false); triggerRef.current?.focus()}}}>
-      <div className="flex items-center gap-3 border-b border-line-subtle pb-3"><span className="size-[34px] rounded-lg border border-line-strong" style={{background:value}}/><div className="flex min-w-0 flex-col gap-1"><small className="text-[9px] text-muted">当前颜色</small><strong className="font-mono text-[11px] font-medium text-ink">{value.toUpperCase()}</strong></div></div>
+    {open && position && createPortal(<div ref={popupRef} className={cn('animate-[control-popover-in_.14s_cubic-bezier(.2,.8,.2,1)] overflow-y-auto overscroll-contain rounded-xl border border-line-strong bg-popover p-3 text-secondary shadow-dialog backdrop-blur-xl', scrollbarClass)} role="dialog" aria-label={ariaLabel} style={position} onKeyDown={event => {if (event.key === 'Escape') {event.preventDefault(); setOpen(false); triggerRef.current?.focus()}}}>
+      <div className="flex items-center gap-3 border-b border-line-subtle pb-3"><span className="size-[34px] rounded-lg border border-line-strong" style={{background:value}}/><div className="flex min-w-0 flex-col gap-1"><small className="text-[13px] text-muted">当前颜色</small><strong className="font-mono text-sm font-medium text-ink">{value.toUpperCase()}</strong></div></div>
       <div className="grid grid-cols-5 gap-2 py-3">{COLOR_PRESETS.map(color => <button type="button" key={color} className={cn('grid size-[30px] min-h-[30px] cursor-pointer place-items-center rounded-lg border border-line-strong outline-none transition hover:scale-105 focus-visible:ring-2 focus-visible:ring-accent', color.toLowerCase() === value.toLowerCase() && 'ring-2 ring-accent ring-offset-2 ring-offset-panel')} aria-label={color} title={color} style={{background:color}} onClick={() => {onChange(color); setDraft(color)}}>{color.toLowerCase() === value.toLowerCase() && <Check className="rounded-full bg-black/55 p-0.5 text-white" size={16}/>}</button>)}</div>
-      <label className="block text-[9px] text-muted">HEX<div className="mt-1 flex h-8 items-center overflow-hidden rounded-lg border border-line bg-surface focus-within:border-accent"><span className="pl-3 font-mono text-xs text-muted">#</span><input className="h-[30px] min-w-0 flex-1 border-0 bg-transparent px-1.5 font-mono text-[10px] uppercase text-ink outline-none" value={draft.replace(/^#/, '')} maxLength={6} spellCheck={false} onChange={event => setDraft(`#${event.target.value.replace(/[^0-9a-f]/gi, '')}`)} onBlur={applyDraft} onKeyDown={event => {if (event.key === 'Enter') {event.preventDefault(); applyDraft()}}}/></div></label>
+      <label className="block text-[13px] text-muted">HEX<div className="mt-1 flex h-8 items-center overflow-hidden rounded-lg border border-line bg-surface focus-within:border-accent"><span className="pl-3 font-mono text-sm text-muted">#</span><input className="h-[30px] min-w-0 flex-1 border-0 bg-transparent px-1.5 font-mono text-sm uppercase text-ink outline-none" value={draft.replace(/^#/, '')} maxLength={6} spellCheck={false} onChange={event => setDraft(`#${event.target.value.replace(/[^0-9a-f]/gi, '')}`)} onBlur={applyDraft} onKeyDown={event => {if (event.key === 'Enter') {event.preventDefault(); applyDraft()}}}/></div></label>
     </div>, document.body)}
   </div>
 }
@@ -240,7 +258,16 @@ function useFloatingPosition(open: boolean, triggerRef: RefObject<HTMLElement | 
       const flip = below < Math.min(expectedHeight, 170) && above > below
       const maxHeight = Math.max(96, Math.min(expectedHeight, flip ? above - 6 : below - 6))
       const left = Math.min(Math.max(8, rect.left), window.innerWidth - width - 8)
-      setPosition({position:'fixed', zIndex:260, left, width, maxHeight, ...(flip ? {bottom:window.innerHeight - rect.top + 6} : {top:rect.bottom + 6})})
+      // Popovers live under body rather than the field's scoped styles.
+      // Carry scoped control tokens across that boundary without changing
+      // the compact controls used by the editor and other pages.
+      const style = window.getComputedStyle(element)
+      const fontSize = style.fontSize || '14px'
+      const controlTokens = {
+        '--control-radius': style.getPropertyValue('--control-radius').trim() || '8px',
+        '--control-padding-x': style.getPropertyValue('--control-padding-x').trim() || '12px',
+      }
+      setPosition({position:'fixed', zIndex:260, left, width, maxHeight, fontSize, ...controlTokens, ...(flip ? {bottom:window.innerHeight - rect.top + 6} : {top:rect.bottom + 6})})
     }
     update()
     window.addEventListener('resize', update)

@@ -1,7 +1,7 @@
 """Prepare project-list history and uploads before any application writer."""
 from copy import deepcopy
 
-from app.core.transactions import has_pending_writes, retry_write
+from app.core.transactions import has_pending_writes, project_write
 from app.models import EditorHistoryEntry, ImagePage, Project
 from app.services.editor_history import _archive_paths, _finish_entry, _page_state, ensure_project_idle
 from app.services.workflow_state import current_page_version
@@ -56,7 +56,7 @@ def publish_project_edit(db, prepared, after, operation, action, focus_id=None):
             db.flush()
             _finish_entry(db, entry, after)
 
-    retry_write(db, save)
+    project_write(db, project_id, save)
     db.expire_all()
 
 

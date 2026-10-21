@@ -8,6 +8,9 @@ from pathlib import Path
 
 from app.core.config import get_settings
 
+LOCAL_OCR_DEFAULT_MAX_TOKENS = 2048
+LOCAL_OCR_MAX_TOKENS = 2048
+
 
 @dataclass(frozen=True)
 class LocalOCRModel:
@@ -91,7 +94,7 @@ def validate_local_config(provider: str, config: dict) -> None:
     spec = LOCAL_OCR_MODELS[provider]
     if config.get("model", spec.repository) != spec.repository or config.get("revision", spec.revision) != spec.revision:
         raise ValueError("本地 OCR 使用固定模型及版本，请通过 OCR 类型切换模型。")
-    for name, default, minimum, maximum in (("max_new_tokens", 512, 16, 1024), ("timeout", 180, 10, 600)):
+    for name, default, minimum, maximum in (("max_new_tokens", LOCAL_OCR_DEFAULT_MAX_TOKENS, 16, LOCAL_OCR_MAX_TOKENS), ("timeout", 180, 10, 600)):
         value = config.get(name, default)
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not minimum <= value <= maximum or int(value) != value:
             raise ValueError(f"{name} 必须是 {minimum}–{maximum} 的整数")

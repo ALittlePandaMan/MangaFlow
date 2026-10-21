@@ -1,3 +1,4 @@
+import asyncio
 import json
 
 import httpx
@@ -6,6 +7,7 @@ from app.services import cloud_budget as budgets
 from app.services.base import ProviderError
 from app.services.cloud_results import CloudResultCache, current_cloud_results
 from app.services.translation.providers import OpenAICompatibleTranslator as Translator
+from app.services.workflow_state import fingerprint
 
 
 @pytest.fixture(autouse=True)
@@ -110,6 +112,21 @@ async def translate(provider):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("configured,expected", [(None, 2048), (8192, 8192)])
+async def test_default_output_limit_is_2048_without_overriding_saved_limits(monkeypatch, configured, expected):
+    def handler(request):
+        assert json.loads(request.content)["max_tokens"] == expected
+        return httpx.Response(200, json={"choices": [{"message": {"content": '{"R001":"译文"}'}}]})
+
+    provider = transport(monkeypatch, handler)
+    if configured is None:
+        provider.config.pop("max_tokens")
+    else:
+        provider.config["max_tokens"] = configured
+    assert await translate(provider) == {"R001": "译文"}
+
+
+@pytest.mark.asyncio
 async def test_received_response_can_be_locally_reparsed_after_a_parser_fix_without_network(tmp_path, monkeypatch):
     calls = []
 
@@ -158,6 +175,104 @@ async def test_invalid_received_response_is_not_reissued_without_acknowledgement
         current_cloud_results.set(CloudResultCache(tmp_path, cache.directory, allow_invalid=True))
         assert await translate(provider) == {"R001": "new"}
         assert len(calls) == 2 and len(list(cache.directory.glob("*.received"))) == 1
+    finally:
+        current_cloud_results.reset(token)
+        budgets.checkpoint_requests.reset(checkpoint)
+
+
+@pytest.mark.parametrize("text", ['{}', '{"R001":""}', '{"R001":" \\n　"}', '{"R001":"\\u200b\\ufeff"}', '{"wrong":"text"}'])
+@pytest.mark.asyncio
+async def test_acknowledged_semantically_invalid_response_is_replaced_not_replayed_forever(tmp_path, monkeypatch, text):
+    calls = []
+    def handler(request):
+        calls.append(1)
+        return httpx.Response(200, json={"choices": [{"message": {"content": text if len(calls) == 1 else '{"R001":"new"}'}}]})
+    provider = transport(monkeypatch, handler)
+    cache = CloudResultCache(tmp_path, tmp_path / ".requests")
+    token, checkpoint = current_cloud_results.set(cache), budgets.checkpoint_requests.set(True)
+    try:
+        for _ in range(2):
+            with pytest.raises(ProviderError):
+                await translate(provider)
+        assert calls == [1]  # No implicit paid retry, even for an empty object.
+        current_cloud_results.set(CloudResultCache(tmp_path, cache.directory, allow_invalid=True))
+        assert await translate(provider) == {"R001": "new"}
+        assert calls == [1, 1]
+        assert len(list(cache.directory.glob("*.received"))) == 1
+    finally:
+        current_cloud_results.reset(token)
+        budgets.checkpoint_requests.reset(checkpoint)
+
+
+@pytest.mark.parametrize("text", ["", " \n　", "\u200b\ufeff", "\u200d", None])
+@pytest.mark.asyncio
+async def test_blank_source_is_not_sent_to_the_translation_endpoint(monkeypatch, text):
+    calls = []
+    provider = transport(monkeypatch, lambda request: calls.append(request))
+    with pytest.raises(ProviderError) as error:
+        await provider.translate_regions([("R001", text)], source_language="ja", target_language="zh", context={})
+    assert error.value.error_kind == "translation_empty_source"
+    assert not calls
+
+
+@pytest.mark.asyncio
+async def test_failed_chunk_drains_paid_sibling_and_stops_dispatching_more_chunks(tmp_path, monkeypatch):
+    calls = []
+    started = asyncio.Event()
+    async def handler(request):
+        instructions = json.loads(json.loads(request.content)["messages"][1]["content"].split("\n\n")[0])
+        identifiers = set(instructions["required_output"])
+        calls.append(identifiers)
+        if len(calls) == 2:
+            started.set()
+        await asyncio.wait_for(started.wait(), timeout=2)
+        if "R000" in identifiers:
+            content = "{}"
+        else:
+            await asyncio.sleep(.03)  # First chunk fails while this request is in flight.
+            content = json.dumps({key: "saved" for key in identifiers})
+        return httpx.Response(200, json={"choices": [{"message": {"content": content}}]})
+
+    provider = transport(monkeypatch, handler)
+    provider.config.update(concurrency_mode="fixed", max_concurrency=2)
+    cache = CloudResultCache(tmp_path, tmp_path / ".requests")
+    token, checkpoint = current_cloud_results.set(cache), budgets.checkpoint_requests.set(True)
+    try:
+        with pytest.raises(ProviderError) as error:
+            await provider.translate_regions([(f"R{index:03}", "source") for index in range(65)],
+                source_language="ja", target_language="zh", context={})
+        assert error.value.error_kind == "translation_missing_ids"
+        assert len(calls) == 2 and all("R064" not in identifiers for identifiers in calls)
+        # Replaying the successful, already paid second chunk needs no network.
+        assert await provider.translate_regions([(f"R{index:03}", "source") for index in range(32, 64)],
+            source_language="ja", target_language="zh", context={}) == {f"R{index:03}": "saved" for index in range(32, 64)}
+        assert len(calls) == 2
+    finally:
+        current_cloud_results.reset(token)
+        budgets.checkpoint_requests.reset(checkpoint)
+
+
+@pytest.mark.asyncio
+async def test_acknowledged_old_invalid_completed_cache_retains_valid_entries(tmp_path, monkeypatch):
+    calls = []
+    def handler(request):
+        instructions = json.loads(json.loads(request.content)["messages"][1]["content"].split("\n\n")[0])
+        calls.append(set(instructions["required_output"]))
+        return httpx.Response(200, json={"choices": [{"message": {"content": '{"R002":"new"}'}}]})
+    provider = transport(monkeypatch, handler)
+    regions = [("R001", "one"), ("R002", "two")]
+    cache = CloudResultCache(tmp_path, tmp_path / ".requests")
+    key = fingerprint({"format": 1, "kind": "translation", "config": provider.config, "regions": regions,
+                       "source_language": "ja", "target_language": "zh", "context": {}})
+    cache.put(key, {"R001": "saved", "R002": "\u200b"})
+    token, checkpoint = current_cloud_results.set(cache), budgets.checkpoint_requests.set(True)
+    try:
+        with pytest.raises(ProviderError):
+            await provider.translate_regions(regions, source_language="ja", target_language="zh", context={})
+        assert not calls
+        current_cloud_results.set(CloudResultCache(tmp_path, cache.directory, allow_invalid=True))
+        assert await provider.translate_regions(regions, source_language="ja", target_language="zh", context={}) == {"R001": "saved", "R002": "new"}
+        assert calls == [{"R002"}] and len(list(cache.directory.glob("*.received"))) == 1
     finally:
         current_cloud_results.reset(token)
         budgets.checkpoint_requests.reset(checkpoint)

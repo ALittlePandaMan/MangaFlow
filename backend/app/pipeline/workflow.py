@@ -1,6 +1,7 @@
 """Checkpointed page operations with one atomic, reversible publication join."""
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -12,7 +13,7 @@ from sqlalchemy import select, update
 from app.core.config import get_settings
 from app.core.database import SessionLocal
 from app.core.serialization import file_digest
-from app.core.transactions import retry_write
+from app.core.transactions import project_write, task_write
 from app.models import EditorHistoryEntry, ImagePage, ModelConfig, ProcessingTask, Project, TaskWorkflow, TextRegion
 from app.pipeline.processor import PipelineProcessor, TaskCancelled, TaskPaused
 from app.pipeline.staged import run_stage
@@ -33,6 +34,18 @@ from app.services.workflow_state import (
     requested_stages,
 )
 from app.storage import get_storage
+from app.utils.text import has_text
+
+logger = logging.getLogger(__name__)
+
+
+class ParallelStageFailure(RuntimeError):
+    """Retain both failures instead of masking repair behind translation."""
+
+    error_kind = "parallel_stage_failed"
+
+    def __init__(self, translation: Exception, repair: Exception):
+        super().__init__(f"翻译失败：{translation}\n背景修复失败：{repair}")
 
 
 def supports_checkpoint_pipeline(task) -> bool:
@@ -105,7 +118,7 @@ def prepare_target_geometry(task_id: str, history_entry_id: int) -> None:
                 changed |= synchronize_source_geometry_before_repair(db,region)
             if changed:
                 entry.after = {**entry.after,"_prepared_target_geometry":True}
-        if retry_write(db,save)=="PAUSED":
+        if project_write(db,project_id,save)=="PAUSED":
             raise TaskPaused("Task paused before accepting target geometry")
 
 
@@ -131,8 +144,8 @@ def snapshot_request(task_id: str):
             if request.get("region_id"):
                 scope = {request["region_id"]}
             explicit_force = bool(scope and request.get("force"))
-            needs_ocr = any((not scope or row["id"] in scope) and not row["source_text"].strip()
-                and (not row["locked"] or explicit_force) and (request.get("force") or not row["translated_text"].strip())
+            needs_ocr = any((not scope or row["id"] in scope) and not has_text(row["source_text"])
+                and (not row["locked"] or explicit_force) and (request.get("force") or not has_text(row["translated_text"]))
                 for row in source_state["regions"].values())
             for kind in requested_stages(request):
                 if kind == "mask" or (kind == "ocr" and request.get("start_stage")=="translation" and not needs_ocr):
@@ -211,10 +224,10 @@ class PageWorkflow:
                 raise TaskCancelled("Task cancelled")
             if allow_pause and (task.pause_requested or task.status == "PAUSED"):
                 def pause():
-                    current = db.get(ProcessingTask, self.task_id)
+                    current = db.scalar(select(ProcessingTask).where(ProcessingTask.id == self.task_id).with_for_update())
                     if current and current.execution_generation == self.lease.generation and current.status == "RUNNING":
                         current.status, current.message = "PAUSED", "Paused at stage checkpoint"
-                retry_write(db, pause)
+                task_write(db, self.task_id, pause)
                 raise TaskPaused("Paused at stage checkpoint")
             if task.status not in ({"RUNNING"} if allow_pause else {"RUNNING", "PAUSED"}):
                 raise StaleExecution("Workflow attempt is no longer running")
@@ -229,14 +242,14 @@ class PageWorkflow:
             active, completed = sorted(self.active), len(self.done)
             with SessionLocal() as db:
                 def save():
-                    task = db.get(ProcessingTask, self.task_id)
+                    task = db.scalar(select(ProcessingTask).where(ProcessingTask.id == self.task_id).with_for_update())
                     if task and task.execution_generation == self.lease.generation and task.status == "RUNNING":
                         task.current_stage = active[0] if len(active) == 1 else "parallel" if active else None
                         task.active_stages = active
                         task.waiting_reason = None
                         task.message = "Running " + " + ".join(active) if active else "Stage results saved"
                         task.progress = min(.95, completed / len(self.stages))
-                retry_write(db, save)
+                task_write(db, self.task_id, save)
 
     def stage(self, stage: str, state: dict) -> dict:
         self.check()
@@ -254,14 +267,16 @@ class PageWorkflow:
         if cached is None:
             cloud = cloud_stage(stage, policy)
             ticket = self.store.claim(self.lease, stage, key, cloud=cloud)
-            self.report(stage)
             started = time.monotonic()
             cache_token = None
+            run_started = False
             try:
+                self.report(stage)
                 directory = self.store.directory(ticket)
                 cache = CloudResultCache(self.storage.root, directory.parent / ".requests" / stage / key,
                     allow_invalid=not cloud or self.store.acknowledged_cloud(self.lease,stage,key)) if cloud or stage=="ocr" else None
                 cache_token = current_cloud_results.set(cache)
+                run_started = True
                 cached = run_stage(stage, state, policy, directory, self.storage,
                                    lambda: self.check(allow_pause=False),
                                    progress=lambda completed,total,message:self.progress(stage,completed,total,message))
@@ -272,9 +287,12 @@ class PageWorkflow:
                 try:
                     # Even a malformed paid response can raise ValueError.
                     # Never infer 'not sent' merely from the exception class.
-                    self.store.fail(ticket, uncertain=cloud, kind=getattr(error, "error_kind", None) or type(error).__name__)
+                    self.store.fail(ticket, uncertain=cloud and run_started,
+                                    kind=getattr(error, "error_kind", None) or type(error).__name__)
                 except StaleExecution:
                     pass
+                except Exception:
+                    logger.exception("Unable to persist failed checkpoint %s (%s)", ticket.id, stage)
                 raise
             finally:
                 if cache_token is not None:
@@ -296,12 +314,12 @@ class PageWorkflow:
         with self.lock:
             with SessionLocal() as db:
                 def save():
-                    task = db.get(ProcessingTask,self.task_id)
+                    task = db.scalar(select(ProcessingTask).where(ProcessingTask.id == self.task_id).with_for_update())
                     if task and task.execution_generation==self.lease.generation and task.status=="RUNNING":
                         task.message = ("翻译前自动识别 · " if stage=="ocr" and self.policy["request"].get("start_stage")=="translation" else "")+str(message)
                         fraction = completed/max(1,total)
                         task.progress = min(.95,(len(self.done)+fraction)/len(self.stages))
-                retry_write(db,save)
+                task_write(db,self.task_id,save)
 
     def execute(self):
         request = self.policy["request"]
@@ -338,7 +356,7 @@ class PageWorkflow:
                         task.status,task.current_stage,task.active_stages = "QUEUED",None,[]
                         task.waiting_reason = "previous_page_translation"
                         task.message = "背景修复已保存，等待前页翻译（未占用处理名额）"
-                    retry_write(db,wait_for_context)
+                    task_write(db,self.task_id,wait_for_context)
                 return "QUEUED"
         if parallel:
             # One extra orchestration thread/page, separate from the CPU pool;
@@ -352,9 +370,20 @@ class PageWorkflow:
                     repair_error = error
                 # Drain a sibling even on failure; it may save a reusable
                 # successful checkpoint, but never publish independently.
-                translation = translated.result()
-                if repair_error is not None:
-                    raise repair_error
+                translation_error = None
+                try:
+                    translation = translated.result()
+                except BaseException as error:
+                    translation_error = error
+                errors = [error for error in (translation_error, repair_error) if error is not None]
+                # Stop/pause/supersession must not become a generic model error.
+                for error in errors:
+                    if isinstance(error, (TaskCancelled, TaskPaused, StaleExecution)) or not isinstance(error, Exception):
+                        raise error
+                if translation_error is not None and repair_error is not None:
+                    raise ParallelStageFailure(translation_error, repair_error) from translation_error
+                if errors:
+                    raise errors[0]
             joined = merge_branches(base, translation, repaired)
         else:
             translated = self.stage("translation", base)

@@ -100,7 +100,7 @@ export const PageListItem = memo(function PageListItem({
       <span className={cn('absolute bottom-1 left-1 bg-canvas px-1 py-0.5 font-mono text-[12px]', selected && 'text-accent')}>{String(index + 1).padStart(2,'0')}</span>
       {activeTask && <span className="absolute right-1 top-1 grid rounded-full bg-canvas/90 p-1 shadow-panel"><CircularProgress value={activeTask.progress} size={34} label={`${item.filename} 处理进度`}/></span>}
     </div>
-    <small className={cn('mt-2 block truncate text-[12px]', selected ? 'font-semibold text-accent-soft-ink' : 'text-secondary')} title={item.filename}>{item.filename}</small>
+    <small className={cn('mt-2 block truncate text-[13px]', selected ? 'font-semibold text-accent-soft-ink' : 'text-secondary')} title={item.filename}>{item.filename}</small>
     <i className={cn('mt-1 block truncate font-mono text-[12px] not-italic', state.emphasized && 'font-semibold', selected ? 'text-accent-soft-ink' : state.className)}>{state.label}</i>
   </button>
 })

@@ -46,6 +46,7 @@ describe('ThemeToggle', () => {
 
     await waitFor(() => expect(document.documentElement).toHaveAttribute('data-theme', 'dark'))
     expect(screen.getByRole('button', {name:/跟随系统（当前深色）/})).toBeInTheDocument()
+    expect(screen.getByRole('button', {name:/跟随系统（当前深色）/})).toHaveClass('icon-button','app-header-icon')
     expect(container.querySelector('.lucide-moon')).toBeInTheDocument()
 
     changeSystemTheme(false)

@@ -16,6 +16,7 @@ from app.services.layout.text_rotation import effective_text_rotation
 from app.services.rendering.snapshot import render_input
 from app.utils.geometry import order_quadrilateral, perspective_coefficients
 from app.utils.image_metadata import load_rgb_with_metadata, save_png_with_metadata
+from app.utils.text import has_text
 from PIL import Image, ImageChops, ImageColor, ImageDraw
 
 RENDER_OUTPUT_VERSION = 11
@@ -64,7 +65,7 @@ class PillowRenderer(Renderer):
         layer = Image.new("RGBA", background.size, (0, 0, 0, 0))
         region_layouts: dict[str, dict[str, Any]] = {}
         for region in regions:
-            if not getattr(region, "visible", True) or not region.translated_text.strip():
+            if not getattr(region, "visible", True) or not has_text(region.translated_text):
                 continue
             translated_bbox = getattr(region, "translated_bbox", None) or region.bbox
             translated_polygon = getattr(region, "translated_polygon", None) or region.polygon

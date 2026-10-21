@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 
 from app.core.config import get_settings
 from app.core.database import SessionLocal
-from app.core.transactions import retry_write
+from app.core.transactions import task_write
 from app.models import (
     ImagePage,
     ModelConfig,
@@ -68,7 +68,7 @@ def dependency_admission(task_id: str) -> str:
     """One short DB operation, never wait with a connection or resource permit."""
     with SessionLocal() as db:
         def examine():
-            task = db.get(ProcessingTask, task_id)
+            task = db.scalar(select(ProcessingTask).where(ProcessingTask.id == task_id).with_for_update())
             if task is None or task.status != "QUEUED" or task.pause_requested:
                 return "stopped"
             if not task.dependency_task_id or task.dependency_context is not None:
@@ -104,7 +104,7 @@ def dependency_admission(task_id: str) -> str:
                 if prepared is None:
                     return "repair"
             return "waiting"
-        return retry_write(db, examine)
+        return task_write(db, task_id, examine)
 
 
 def _failed(task, message, kind):

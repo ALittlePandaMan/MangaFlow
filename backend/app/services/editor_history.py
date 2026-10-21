@@ -10,7 +10,7 @@ from uuid import uuid4
 
 from app.core.serialization import file_digest
 from app.core.timing import measured
-from app.core.transactions import has_pending_writes, retry_write
+from app.core.transactions import has_pending_writes, project_write
 from app.models import EditorHistoryEntry, ImagePage, ProcessingTask, Project, TextRegion
 from app.services.regions import SNAPSHOT_FIELDS, region_snapshot, save_revision
 from app.storage import get_storage
@@ -269,7 +269,7 @@ def begin_task_history(db: Session, task: ProcessingTask) -> int | None:
                     return None
                 return _begin_task_history(db, current, before)
 
-            result = retry_write(db, save)
+            result = project_write(db, project_id, save)
             _invalidate_state_cache(db, project_id)
             return result
         except _HistorySnapshotChanged:
@@ -360,7 +360,7 @@ def finish_task_history(db: Session, task_id: str, entry_id: int | None) -> None
             else:
                 db.delete(current)
 
-        retry_write(db, discard_unpublished)
+        project_write(db, project_id, discard_unpublished)
         _invalidate_state_cache(db, project_id)
         return
     for attempt in range(3):
@@ -382,7 +382,7 @@ def finish_task_history(db: Session, task_id: str, entry_id: int | None) -> None
                 db.delete(current)
 
         try:
-            retry_write(db, save)
+            project_write(db, project_id, save)
             _invalidate_state_cache(db, project_id)
             return
         except _HistorySnapshotChanged:
@@ -561,7 +561,7 @@ def apply_project_history(
 ) -> EditorHistoryEntry:
     prepared = _prepare_history_restore(db,project_id,direction,expected_entry_id,operation_id)
     # Only the DB-only portion is replayed after a known transaction abort.
-    return retry_write(db,lambda: _apply_project_history(db,project_id,direction,expected_entry_id,operation_id,prepared))
+    return project_write(db,project_id,lambda: _apply_project_history(db,project_id,direction,expected_entry_id,operation_id,prepared))
 
 
 def _apply_project_history(db,project_id,direction,expected_entry_id,operation_id,prepared):

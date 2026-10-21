@@ -146,6 +146,7 @@ def test_failure_save_can_also_fail_without_leaving_fake_running_task(client, mo
         visible = wait_for_task(client, task["id"])
         assert visible["status"] == "FAILED"
         assert "恢复保存状态" in visible["message"]
+        assert "inference failed" in visible["error_message"]
         assert task_manager.is_active(task["id"])
         with SessionLocal() as db:
             assert db.get(ProcessingTask, task["id"]).status == "RUNNING"
@@ -162,6 +163,7 @@ def test_failure_save_can_also_fail_without_leaving_fake_running_task(client, mo
     with SessionLocal() as db:
         saved = db.get(ProcessingTask, task["id"])
         assert saved.status == "FAILED" and saved.page.current_stage is None
+        assert "inference failed" in saved.error_message
         assert not db.scalar(select(EditorHistoryEntry.id).where(
             EditorHistoryEntry.task_id == task["id"], EditorHistoryEntry.pending.is_(True),
         ))

@@ -14,6 +14,21 @@ const state: ExecutionStatus = {
 }
 
 describe('execution policy settings',() => {
+  it('uses the shared form skeleton while reading the policy',() => {
+    vi.spyOn(api.execution,'get').mockReturnValueOnce(new Promise(() => {}))
+    render(<ExecutionSettings/>)
+    expect(screen.getByRole('status',{name:'正在读取性能设置…'})).toHaveClass('settings-form-skeleton')
+    expect(screen.queryByRole('button',{name:'保存性能设置'})).not.toBeInTheDocument()
+  })
+  it('can recover from an initial loading failure without reloading the page',async () => {
+    const get = vi.spyOn(api.execution,'get').mockRejectedValueOnce(new Error('暂时不可用')).mockResolvedValue(state)
+    const user = userEvent.setup()
+    render(<ExecutionSettings/>)
+    expect(await screen.findByRole('alert')).toHaveTextContent('暂时不可用')
+    await user.click(screen.getByRole('button',{name:'重新读取'}))
+    expect(await screen.findByLabelText('页面并发上限')).toHaveValue(4)
+    expect(get).toHaveBeenCalledTimes(2)
+  })
   it('shows GPU memory, lock waiting and stage timings without changing the model limit',async () => {
     vi.spyOn(api.execution,'get').mockResolvedValue({...state,
       models:{active:1,limit:1,calls:3,wait_seconds:2.5,run_seconds:4},

@@ -25,6 +25,7 @@ describe('GlobalDialogProvider', () => {
 
     await user.click(screen.getByRole('button', {name:'打开确认'}))
     expect(screen.getByRole('dialog', {name:'删除区域？'})).toBeInTheDocument()
+    expect(screen.getByRole('button',{name:'关闭'})).toHaveClass('icon-button','icon-button-ghost')
     expect(screen.getByText('此操作无法撤销。')).toBeInTheDocument()
 
     await user.click(screen.getByRole('button', {name:'删除区域'}))

@@ -9,6 +9,7 @@ from app.services.inpainting import mask_is_empty
 from app.services.ocr.quality import ocr_review_hints
 from app.storage import get_storage
 from app.utils.geometry import intersection_area
+from app.utils.text import has_text
 
 
 def evaluate_page(page: ImagePage, failed_tasks: list[ProcessingTask] | None = None) -> list[QualityIssue]:
@@ -36,7 +37,7 @@ def evaluate_page(page: ImagePage, failed_tasks: list[ProcessingTask] | None = N
         if has_confidence and region.confidence < threshold and not region.locked:
             reasons.append("low_ocr_confidence")
             add("low_ocr_confidence", f"OCR confidence {region.confidence:.2f} is below {threshold:.2f}", region)
-        if not region.source_text.strip():
+        if not has_text(region.source_text):
             reasons.append("empty_source_text")
             add("empty_source_text", "OCR did not produce source text", region)
         if isinstance(ocr_metadata, dict) and ocr_metadata.get("generation_truncated"):
@@ -51,7 +52,7 @@ def evaluate_page(page: ImagePage, failed_tasks: list[ProcessingTask] | None = N
         for hint in ocr_review_hints(region.source_text):
             reasons.append(hint)
             add(hint, "OCR 结果存在异常重复或无效字符，请核对原图", region)
-        if not region.translated_text.strip():
+        if not has_text(region.translated_text):
             reasons.append("missing_translation")
             add("missing_translation", "Region has no translated text", region)
         if (region.layout_data or {}).get("translation_fallback") and not region.locked:

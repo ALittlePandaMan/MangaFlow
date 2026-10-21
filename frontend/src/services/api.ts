@@ -1,6 +1,7 @@
 import type { DeviceProfile, FontResource, ImagePage, ModelBootstrapEntry, ModelConfiguration, ModelDescriptor, ProcessingTask, Project, RegionStageAction, SetupStatus, TextRegion } from '../types'
 import type {EditorHistoryResult, EditorHistoryState} from '../types'
 import type {ExecutionPolicy, ExecutionStatus} from '../types'
+import type {EditorPreferences, TextStyleDefaults} from '../types'
 import {uploadImagesInBatches, type ImageUploadProgress} from './imageUpload'
 
 export class ApiError extends Error {
@@ -150,7 +151,8 @@ export const api = {
     remove: (filename: string) => request<void>(`/fonts/${encodeURIComponent(filename)}`, {method: 'DELETE'}),
   },
   preferences: {
-    get: () => request<{shortcuts: Record<string, string>}>('/preferences'),
-    update: (shortcuts: Record<string, string>) => request<{shortcuts: Record<string, string>}>('/preferences', {method:'PUT', body:json({shortcuts})}),
+    get: () => request<EditorPreferences>('/preferences'),
+    update: (shortcuts: Record<string, string>) => request<EditorPreferences>('/preferences', {method:'PUT', body:json({shortcuts})}),
+    updateTextStyle: (text_style: TextStyleDefaults) => request<EditorPreferences>('/preferences', {method:'PUT', body:json({text_style})}),
   },
 }

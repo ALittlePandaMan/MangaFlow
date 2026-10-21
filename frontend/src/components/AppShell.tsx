@@ -1,9 +1,10 @@
-import { BookOpen, Boxes, Check, CircleAlert, LockKeyhole, RefreshCw, Settings, Sparkles } from 'lucide-react'
+import { BookOpen, Boxes, Check, CircleAlert, LockKeyhole, RefreshCw, Sparkles } from 'lucide-react'
 import { createContext, lazy, Suspense, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { NavLink, Outlet } from 'react-router-dom'
 import { useGlobalDialog } from './GlobalDialog'
 import { PageLoader } from './LoadingUI'
 import {ThemeToggle} from './ThemeToggle'
+import {SettingsNavigationControl, SettingsNavigationProvider} from './SettingsNavigation'
 import {useShortcutStore} from '../features/shortcuts/store'
 import { api } from '../services/api'
 import type { FontResource, ModelConfiguration, ModelDescriptor, SetupStatus } from '../types'
@@ -54,7 +55,7 @@ export function AppShell() {
   if (setupLoading) return <SetupLoadingScreen/>
   if (setupError || !setup) return <SetupFailureScreen message={setupError || '无法读取首次启动状态'} onRetry={() => void loadSetup()}/>
   if (!setup.ready) return <RequiredSetupGate status={setup} available={available} configured={configured} fonts={fonts} onReady={setSetup}/>
-  return <AppHeaderContext.Provider value={headerSlots}>
+  return <SettingsNavigationProvider><AppHeaderContext.Provider value={headerSlots}>
     <div className={cn('app-shell bg-app', scrollbarClass)}>
       <header className="app-header z-50 flex items-center border-b border-line-subtle bg-panel/95 backdrop-blur-xl">
         <NavLink to="/projects" className="app-brand flex shrink-0 items-center gap-3 text-inherit no-underline outline-none focus-visible:ring-3 focus-visible:ring-accent/20" title="MangaFlow 首页">
@@ -63,14 +64,14 @@ export function AppShell() {
         </NavLink>
         <nav className="app-navigation flex h-full items-center gap-1">
           <NavLink to="/projects" aria-label="项目" title="项目" className={({isActive}) => cn('flex h-10 items-center gap-2 rounded-[10px] border border-transparent px-4 text-[13px] font-semibold text-secondary no-underline outline-none transition-[background-color,border-color,color] hover:bg-hover hover:text-ink focus-visible:ring-3 focus-visible:ring-accent/20', isActive && '!border-accent-line !bg-accent-soft !text-accent-soft-ink hover:!border-accent-line hover:!bg-accent-soft-hover')}><Boxes aria-hidden="true" size={17} /><span>项目</span></NavLink>
-          <NavLink to="/settings" aria-label="设置" title="设置" className={({isActive}) => cn('flex h-10 items-center gap-2 rounded-[10px] border border-transparent px-4 text-[13px] font-semibold text-secondary no-underline outline-none transition-[background-color,border-color,color] hover:bg-hover hover:text-ink focus-visible:ring-3 focus-visible:ring-accent/20', isActive && '!border-accent-line !bg-accent-soft !text-accent-soft-ink hover:!border-accent-line hover:!bg-accent-soft-hover')}><Settings aria-hidden="true" size={17} /><span>设置</span></NavLink>
+          <SettingsNavigationControl/>
         </nav>
         <div className="app-header-slot ml-auto flex h-full min-w-0 items-center gap-2" ref={setEditorTarget}/>
         <ThemeToggle/>
       </header>
       <main className="min-h-0 min-w-0 bg-app"><Outlet /></main>
     </div>
-  </AppHeaderContext.Provider>
+  </AppHeaderContext.Provider></SettingsNavigationProvider>
 }
 
 function RequiredSetupGate({status, available, configured, fonts, onReady}: {

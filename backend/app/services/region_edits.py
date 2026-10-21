@@ -4,7 +4,7 @@ from __future__ import annotations
 from copy import deepcopy
 from uuid import uuid4
 
-from app.core.transactions import has_pending_writes, retry_write
+from app.core.transactions import has_pending_writes, project_write
 from app.models import EditorHistoryEntry, ImagePage, Project, RegionRevision, TextRegion
 from app.services.editor_history import PAGE_FIELDS, _archive_paths, _finish_entry, ensure_page_idle
 from app.services.regions import SNAPSHOT_FIELDS
@@ -133,7 +133,7 @@ def apply_page_edit(db, page_id: str, operation, action: str, *, scope=None, pre
                 entry.after = {**entry.after,**deepcopy(extra)}
             return entry.id
         return None
-    entry_id = retry_write(db,save)
+    entry_id = project_write(db,project_id,save)
     # Reload database timestamps so mask optimistic-version tokens match the
     # subsequent mask-history response byte-for-byte.
     db.expire_all()

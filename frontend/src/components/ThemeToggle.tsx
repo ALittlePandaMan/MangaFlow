@@ -1,6 +1,7 @@
 import {Moon, Sun} from 'lucide-react'
 import {useCallback, useEffect, useRef, useState} from 'react'
 import {flushSync} from 'react-dom'
+import {cn, iconButtonClass} from '../ui'
 
 import {applyTheme, cancelThemeTransition, nextThemeMode, readStoredThemeMode, resolveTheme, SYSTEM_DARK_QUERY, transitionTheme, type ThemeMode} from '../theme'
 
@@ -44,7 +45,7 @@ export function ThemeToggle() {
 
   return <button
     type="button"
-    className="app-header-icon grid size-10 shrink-0 cursor-pointer place-items-center rounded-[10px] border border-line bg-panel text-secondary outline-none transition-colors hover:border-line-strong hover:bg-hover hover:text-ink focus-visible:ring-3 focus-visible:ring-accent/25"
+    className={cn(iconButtonClass,'app-header-icon')}
     title={`${modeLabel}，点击切换为${nextLabel}`}
     aria-label={`主题：${modeLabel}，点击切换为${nextLabel}`}
     onClick={() => switchTheme(nextThemeMode(requestedMode.current, requestedSystemDark.current), requestedSystemDark.current)}

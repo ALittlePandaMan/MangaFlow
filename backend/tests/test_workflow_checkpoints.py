@@ -128,6 +128,30 @@ def test_concurrent_stage_claim_has_only_one_owner(workflow):
         assert len(list(db.scalars(select(StageCheckpoint)))) == 1
 
 
+@pytest.mark.parametrize("read", ["successful", "validate_proofs"])
+def test_checkpoint_read_does_not_lock_task_while_materializing_result(workflow, monkeypatch, read):
+    sessions, store, lease, state = workflow
+    key = fingerprint(state)
+    ticket = store.claim(lease, "mask", key)
+    store.succeed(ticket, {"saved": True})
+    original = store._workflow
+    checked = []
+
+    def validate(db, lease, **kwargs):
+        result = original(db, lease, **kwargs)
+        with sessions() as other:
+            other.execute(select(ProcessingTask).where(ProcessingTask.id == lease.task_id).with_for_update(nowait=True))
+        checked.append(True)
+        return result
+
+    monkeypatch.setattr(store, "_workflow", validate)
+    if read == "successful":
+        assert store.successful(lease, "mask", key) == {"saved": True}
+    else:
+        assert store.validate_proofs(lease, {"mask": key}) == [ticket.id]
+    assert checked == [True]
+
+
 def test_private_compute_cannot_modify_published_page_and_its_delta_replays(workflow):
     sessions, _, _, state = workflow
     identifier = next(iter(state["regions"]))
