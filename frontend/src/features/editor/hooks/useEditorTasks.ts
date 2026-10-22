@@ -47,7 +47,18 @@ export function useEditorTasks(projectId: string, onRecoveredUpdate: TaskUpdateH
           for (let offset=0; !disposed; offset+=RECOVERY_PAGE_SIZE) {
             const tasks=await api.tasks.list(projectId,undefined,{limit:RECOVERY_PAGE_SIZE,offset,activeFirst:true})
             if (disposed) return
-            snapshots(tasks)
+            // An owned monitor releases its page only after adopting results.
+            // A concurrent recovery listing must not publish its terminal row
+            // early. For an abandoned monitor, perform that adoption here.
+            const recovered = tasks.filter(task => !isTerminalTask(task) || !owned.has(task.id))
+            for (const task of recovered) {
+              const previous = activity.getTask(task.id)
+              if (isTerminalTask(task) && previous && !isTerminalTask(previous)) {
+                await recoveredUpdate.current(task)
+                if (disposed) return
+              }
+            }
+            snapshots(recovered)
             tasks.filter(isActiveTask).forEach(task => discovered.set(task.id,task))
             // Active-first ordering puts paused/terminal history after live
             // work. Never scan the project's entire finished task history.
@@ -85,13 +96,17 @@ export function useEditorTasks(projectId: string, onRecoveredUpdate: TaskUpdateH
     const task = activity.getTask(id)
     if (!task || isTerminalTask(task) || task.status === 'CANCELLING' || cancelling.has(id)) return
     cancelling.add(id)
+    const publish = async (updated: ProcessingTask) => {
+      if (isTerminalTask(updated)) await recoveredUpdate.current(updated)
+      snapshots([updated])
+    }
     try {
-      try {snapshots([await api.tasks.cancel(id)])}
+      try {await publish(await api.tasks.cancel(id))}
       catch (reason) {
         // Completion may win the race with the stop click. Re-read; never retry inference.
         if (reason instanceof ApiError && reason.status === 409) {
           const latest = await api.tasks.get(id)
-          snapshots([latest])
+          await publish(latest)
           if (isTerminalTask(latest) || latest.status === 'CANCELLING') return
         }
         throw reason

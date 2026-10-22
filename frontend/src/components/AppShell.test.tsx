@@ -49,6 +49,7 @@ describe('startup loading', () => {
     fireEvent.click(trigger)
     fireEvent.click(screen.getByRole('link',{name:'项目'}))
     expect(await screen.findByText('工作区已就绪')).toBeInTheDocument()
+    expect(screen.queryByRole('button',{name:/界面语言/})).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('link',{name:'设置'}))
     expect(await screen.findByText('设置表单')).toBeInTheDocument()
     expect(screen.getByRole('button',{name:'设置'})).toHaveAttribute('aria-expanded','false')

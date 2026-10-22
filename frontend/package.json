@@ -8,13 +8,17 @@
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "test": "vitest run",
+    "i18n:check": "node scripts/check-i18n.mjs",
+    "visual:typecheck": "tsc --project tsconfig.visual-tests.json --noEmit",
     "test:watch": "vitest"
   },
   "dependencies": {
+    "i18next": "^26.5.4",
     "konva": "^9.3.20",
     "lucide-react": "^0.468.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
+    "react-i18next": "^17.1.0",
     "react-konva": "^18.2.10",
     "react-router-dom": "^7.1.1",
     "zustand": "^5.0.2"

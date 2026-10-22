@@ -66,6 +66,9 @@ class FontResolver:
         self.refresh()
 
     def refresh(self) -> None:
+        from app.services.font_library import font_library_revision
+
+        revision = font_library_revision()
         supported_suffixes = {".ttf", ".otf", ".ttc", ".otc"}
         # Project font assets live in <project>/fonts, never in page/history
         # directories. Walking every manga PNG on a missing-font lookup can
@@ -78,6 +81,8 @@ class FontResolver:
             for path in root.rglob("*")
             if path.suffix.lower() in supported_suffixes and path.is_file()
         ))
+        self._coverage.clear()
+        self._library_revision = revision
 
     @staticmethod
     def _normalize_family(value: str) -> str:
@@ -99,6 +104,10 @@ class FontResolver:
         The returned cache is local to this layout, so uploads/deletions and
         concurrent renders do not share a stale negative or custom-font cache.
         """
+        from app.services.font_library import font_library_revision
+
+        if self._library_revision != font_library_revision():
+            self.refresh()
         if custom_path:
             candidate = Path(custom_path).expanduser()
             if candidate.exists():
@@ -118,7 +127,20 @@ class FontResolver:
                 path for path in self.paths
                 if any(token in self._normalize_family(path.stem) for token in family_tokens)
             ]
-        preferred.sort(key=lambda path: self._weight_rank(path, weight))
+        def family_rank(path: Path) -> int:
+            stem = self._normalize_family(path.stem)
+            for index, token in enumerate(family_tokens):
+                position = stem.find(token)
+                if position >= 0:
+                    if index:
+                        return 2  # Another locale is a fallback, not an exact match.
+                    suffix = stem[position + len(token):]
+                    return int(suffix.startswith(("sc", "tc", "jp", "kr", "hk")))
+            return 3
+
+        # Exact family/locale before weight: LXGW WenKai must not resolve to
+        # WenKai TC (or vice versa) merely because that file was scanned first.
+        preferred.sort(key=lambda path: (family_rank(path), self._weight_rank(path, weight)))
         cjk_tokens = ("notosanscjk", "notoserifcjk", "sourcehan", "wqy", "droidsansfallback", "unifont")
         fallbacks = [
             path for path in self.paths if any(token in self._normalize_family(path.stem) for token in cjk_tokens)
@@ -150,9 +172,8 @@ class FontResolver:
         try:
             from fontTools.ttLib import TTFont
 
-            font = TTFont(path, lazy=True)
-            coverage = {codepoint for table in font["cmap"].tables for codepoint in table.cmap}
-            font.close()
+            with TTFont(path, lazy=True) as font:
+                coverage = {codepoint for table in font["cmap"].tables for codepoint in table.cmap}
             self._coverage[path] = coverage
         except Exception:
             self._coverage[path] = None

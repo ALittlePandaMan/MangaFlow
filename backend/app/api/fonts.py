@@ -6,6 +6,8 @@ from pathlib import Path
 from fastapi import APIRouter, File, HTTPException, UploadFile
 
 from app.core.config import get_settings
+from app.services import font_presets
+from app.services.font_library import font_family, notify_fonts_changed
 from app.storage import get_storage
 
 router = APIRouter(prefix="/fonts", tags=["fonts"])
@@ -18,35 +20,37 @@ def _font_directory() -> Path:
     return directory
 
 
-def _font_family(path: Path) -> str:
-    from fontTools.ttLib import TTFont
-
-    font = TTFont(path, lazy=True)
-    try:
-        records = font["name"].names
-        for name_id in (16, 1):
-            for record in records:
-                if record.nameID != name_id:
-                    continue
-                try:
-                    family = record.toUnicode().strip()
-                except Exception:
-                    continue
-                if family:
-                    return family
-    finally:
-        font.close()
-    return path.stem
-
-
 def _font_entry(path: Path) -> dict[str, str]:
     relative = get_storage().relative(path)
-    return {
-        "name": _font_family(path),
+    entry = {
+        "name": font_family(path),
         "filename": path.name,
         "path": relative,
         "url": get_storage().media_url(relative) or "",
     }
+    preset = font_presets.BY_FILENAME.get(path.name)
+    if preset and font_presets.installed(preset, path.parent):
+        # A pinned font may put a localized alias first in its name table.
+        # Preserve legacy uploads, but use the reviewed, filename-compatible
+        # family for presets so selecting them never falls back to Noto.
+        entry.update(name=preset.family, preset_id=preset.id, source_url=preset.source_url,
+                     license_url=get_storage().media_url(f"fonts/licenses/{preset.id}.txt") or "")
+    return entry
+
+
+@router.get("/presets")
+def list_font_presets() -> list[dict]:
+    return font_presets.catalog(_font_directory())
+
+
+@router.post("/presets/{preset_id}/install", status_code=201)
+def install_font_preset(preset_id: str) -> dict[str, str]:
+    try:
+        path = font_presets.install(preset_id, _font_directory())
+        notify_fonts_changed()
+        return _font_entry(path)
+    except font_presets.FontInstallError as exc:
+        raise HTTPException(exc.status, str(exc)) from None
 
 
 @router.get("")
@@ -82,7 +86,7 @@ def upload_font(file: UploadFile = File(...)) -> dict[str, str]:
                     raise HTTPException(413, f"Font exceeds the {get_settings().max_upload_mb} MB limit")
                 output.write(chunk)
         try:
-            family = _font_family(temporary)
+            family = font_family(temporary, fallback=Path(original_name).stem)
         except Exception as exc:
             raise HTTPException(400, "The uploaded file is not a valid TrueType/OpenType font") from exc
 
@@ -92,6 +96,7 @@ def upload_font(file: UploadFile = File(...)) -> dict[str, str]:
         original_stem = "".join(character for character in Path(original_name).stem if character.isalnum())[:120]
         destination = directory / f"{family_stem or original_stem or 'CustomFont'}{suffix}"
         temporary.replace(destination)
+        notify_fonts_changed()
         return _font_entry(destination)
     except HTTPException:
         temporary.unlink(missing_ok=True)
@@ -109,3 +114,4 @@ def delete_font(filename: str) -> None:
     if target.parent != _font_directory().resolve() or not target.is_file():
         raise HTTPException(404, "Font not found")
     target.unlink()
+    notify_fonts_changed()

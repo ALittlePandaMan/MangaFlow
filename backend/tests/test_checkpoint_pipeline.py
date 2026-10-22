@@ -23,7 +23,8 @@ from sqlalchemy import func, select
 from test_batch_repair_translate import batch
 from test_editor_history import apply as undo
 from test_pipeline import solid_page, wait_for_task
-from test_translation_auto_ocr import providers, setup  # noqa: F401
+from test_translation_auto_ocr import providers as providers
+from test_translation_auto_ocr import setup
 
 
 def stopped(client, task_id, status):
@@ -49,7 +50,7 @@ def checkpoint_mode(monkeypatch):
     monkeypatch.setattr(SimpleLaMaInpainter, "load", fake_lama)
 
 
-def test_checkpointed_batch_publishes_once_and_undo_restores_whole_page(client, providers):  # noqa: F811
+def test_checkpointed_batch_publishes_once_and_undo_restores_whole_page(client, providers):
     ocr, translator, _ = providers
     page, regions = setup(client, ["", "已有原文"])
     original_history = client.get(f"/api/projects/{page['project_id']}/history").json()["undo_count"]
@@ -83,7 +84,7 @@ def test_checkpointed_batch_publishes_once_and_undo_restores_whole_page(client, 
     ("mask","inpainting",{"mask","inpainting"}),
     ("rendering","rendering",{"rendering"}),
 ])
-def test_standalone_operations_publish_only_their_own_boundary(client,providers,start,end,expected):  # noqa: F811
+def test_standalone_operations_publish_only_their_own_boundary(client,providers,start,end,expected):
     ocr,translator,_ = providers
     page,regions = setup(client,[""])
     previous = client.get(f"/api/projects/{page['project_id']}/history").json()["undo_count"]
@@ -113,7 +114,7 @@ def test_standalone_operations_publish_only_their_own_boundary(client,providers,
 
 
 @pytest.mark.parametrize("scope",["single","multi"])
-def test_scoped_translation_checkpoints_only_selected_blank_sources(client,providers,scope):  # noqa: F811
+def test_scoped_translation_checkpoints_only_selected_blank_sources(client,providers,scope):
     ocr,translator,_ = providers
     page,regions = setup(client,["","","unselected"])
     payload = {"start_stage":"translation","end_stage":"translation","force":True}
@@ -132,7 +133,7 @@ def test_scoped_translation_checkpoints_only_selected_blank_sources(client,provi
     assert rows[-1]["source_text"]=="unselected" and rows[-1]["translated_text"]==""
 
 
-def test_standalone_translation_save_failure_reuses_paid_result_and_prerequisite_ocr(client,providers,monkeypatch):  # noqa: F811
+def test_standalone_translation_save_failure_reuses_paid_result_and_prerequisite_ocr(client,providers,monkeypatch):
     ocr,translator,_ = providers
     page,_ = setup(client,[""])
     original = workflow.publish_workflow
@@ -174,7 +175,7 @@ def test_cancelled_native_ocr_retry_reuses_completed_crops_and_publishes_one_und
         def ensure_loaded(self):
             pass
 
-        def recognize(self,source,box,orientation,padding):
+        def recognize(self,source,box,orientation,padding, *, polygon=None, crop_angle=None):
             calls.append(box[0])
             if len(calls)==2:
                 started.set()
@@ -204,7 +205,7 @@ def test_cancelled_native_ocr_retry_reuses_completed_crops_and_publishes_one_und
     assert all(not row["source_text"] for row in undo(client,page["project_id"])["regions"])
 
 
-def test_partial_paid_translation_survives_acknowledged_task_retry_without_rebilling_successes(client,providers,monkeypatch):  # noqa: F811
+def test_partial_paid_translation_survives_acknowledged_task_retry_without_rebilling_successes(client,providers,monkeypatch):
     import json
 
     import httpx
@@ -260,7 +261,7 @@ def test_partial_paid_translation_survives_acknowledged_task_retry_without_rebil
             db.commit()
 
 
-def test_refused_translation_retains_repair_and_explicit_retry_reuses_it(client, providers, monkeypatch):  # noqa: F811
+def test_refused_translation_retains_repair_and_explicit_retry_reuses_it(client, providers, monkeypatch):
     from app.services.translation.providers import OpenAICompatibleTranslator
 
     _, translator, _ = providers
@@ -309,7 +310,7 @@ def test_refused_translation_retains_repair_and_explicit_retry_reuses_it(client,
             db.commit()
 
 
-def test_redetection_is_atomic_retries_detection_checkpoint_but_new_request_redetects(client,providers,monkeypatch):  # noqa: F811
+def test_redetection_is_atomic_retries_detection_checkpoint_but_new_request_redetects(client,providers,monkeypatch):
     from app.pipeline.processor import PipelineProcessor
     from app.services.base import DetectionResult
 
@@ -357,7 +358,7 @@ def test_redetection_is_atomic_retries_detection_checkpoint_but_new_request_rede
 
 
 @pytest.mark.parametrize("checkpoints",[False,True])
-def test_named_translation_override_does_not_override_repair_or_render_models(client,providers,monkeypatch,checkpoints):  # noqa: F811
+def test_named_translation_override_does_not_override_repair_or_render_models(client,providers,monkeypatch,checkpoints):
     monkeypatch.setattr(get_settings(),"checkpoint_pipeline_enabled",checkpoints)
     _,translator,lookups = providers
     page,_ = setup(client,["existing text"])
@@ -368,7 +369,7 @@ def test_named_translation_override_does_not_override_repair_or_render_models(cl
     assert all(requested is None for kind,requested in lookups if kind in {"inpainting","rendering"})
 
 
-def test_parallel_failure_preserves_page_and_retries_only_failed_branch(client, providers, monkeypatch):  # noqa: F811
+def test_parallel_failure_preserves_page_and_retries_only_failed_branch(client, providers, monkeypatch):
     _, translator, _ = providers
     page, _ = setup(client, ["已有原文"])
     original = client.get(f"/api/images/{page['id']}").json()
@@ -401,7 +402,7 @@ def test_parallel_failure_preserves_page_and_retries_only_failed_branch(client, 
     assert calls.count("inpainting") == 2
 
 
-def test_translated_geometry_remains_serial_and_initializes_angle_before_masks(client, providers, monkeypatch):  # noqa: F811
+def test_translated_geometry_remains_serial_and_initializes_angle_before_masks(client, providers, monkeypatch):
     from app.pipeline.processor import PipelineProcessor
 
     page, _ = setup(client, ["已有原文"])
@@ -426,7 +427,7 @@ def test_translated_geometry_remains_serial_and_initializes_angle_before_masks(c
     assert stages == ["ocr", "translation", "mask", "inpainting", "rendering"]
 
 
-def test_real_branches_overlap_and_published_page_is_unchanged_until_join(client, providers, monkeypatch):  # noqa: F811
+def test_real_branches_overlap_and_published_page_is_unchanged_until_join(client, providers, monkeypatch):
     page, _ = setup(client, ["已有原文"])
     both = threading.Barrier(2)
     started, release = threading.Event(), threading.Event()
@@ -451,7 +452,7 @@ def test_real_branches_overlap_and_published_page_is_unchanged_until_join(client
     assert result["status"] == "COMPLETED", result
 
 
-def test_cancelled_native_result_cannot_overwrite_page(client, providers, monkeypatch):  # noqa: F811
+def test_cancelled_native_result_cannot_overwrite_page(client, providers, monkeypatch):
     page, _ = setup(client, ["已有原文"])
     started, release = threading.Event(), threading.Event()
     original = workflow.run_stage
@@ -481,7 +482,7 @@ def test_cancelled_native_result_cannot_overwrite_page(client, providers, monkey
             StageCheckpoint.stage == "inpainting", StageCheckpoint.status == "SUCCEEDED"))
 
 
-def test_nonforced_existing_translation_and_locked_regions_skip_prerequisite_ocr(client, providers):  # noqa: F811
+def test_nonforced_existing_translation_and_locked_regions_skip_prerequisite_ocr(client, providers):
     ocr, translator, _ = providers
     page, regions = setup(client, ["", "", "已有原文"])
     assert client.patch(f"/api/regions/{regions[0]['id']}", json={"translated_text": "人工译文"}).status_code == 200
@@ -495,7 +496,7 @@ def test_nonforced_existing_translation_and_locked_regions_skip_prerequisite_ocr
     assert rows[0]["translated_text"] == "人工译文" and rows[0]["source_text"] == ""
 
 
-def test_parallel_reprocessing_preserves_previous_output_until_success(client, providers, monkeypatch):  # noqa: F811
+def test_parallel_reprocessing_preserves_previous_output_until_success(client, providers, monkeypatch):
     page, _ = setup(client, ["已有原文"])
     first = batch(client, page["project_id"]).json()[0]
     assert wait_for_task(client, first["id"])["status"] == "COMPLETED"
@@ -516,7 +517,7 @@ def test_parallel_reprocessing_preserves_previous_output_until_success(client, p
     assert client.get(old["rendered_url"]).content == old_bytes
 
 
-def test_pause_drains_cloud_result_and_resume_does_not_translate_again(client, providers, monkeypatch):  # noqa: F811
+def test_pause_drains_cloud_result_and_resume_does_not_translate_again(client, providers, monkeypatch):
     _, translator, _ = providers
     page, _ = setup(client, ["已有原文"])
     started, release = threading.Event(), threading.Event()
@@ -549,7 +550,7 @@ def test_pause_drains_cloud_result_and_resume_does_not_translate_again(client, p
     assert len(translator.calls) == 1
 
 
-def test_stale_page_rejects_publication_and_does_not_capture_other_edit_in_undo(client, providers, monkeypatch):  # noqa: F811
+def test_stale_page_rejects_publication_and_does_not_capture_other_edit_in_undo(client, providers, monkeypatch):
     page, regions = setup(client, ["已有原文"])
     original = workflow.publish_workflow
 
@@ -569,7 +570,7 @@ def test_stale_page_rejects_publication_and_does_not_capture_other_edit_in_undo(
         assert not db.scalar(select(EditorHistoryEntry.id).where(EditorHistoryEntry.task_id == task["id"]))
 
 
-def test_unpublished_and_unmanifested_workflow_images_are_private(client, providers, monkeypatch):  # noqa: F811
+def test_unpublished_and_unmanifested_workflow_images_are_private(client, providers, monkeypatch):
     page, _ = setup(client, ["已有原文"])
     original = workflow.publish_workflow
 
@@ -595,7 +596,7 @@ def test_unpublished_and_unmanifested_workflow_images_are_private(client, provid
     assert client.get(f"/media/{storage.relative(link)}").status_code == 404
 
 
-def test_unknown_cloud_failure_requires_confirmation_even_for_value_error(client, providers, monkeypatch):  # noqa: F811
+def test_unknown_cloud_failure_requires_confirmation_even_for_value_error(client, providers, monkeypatch):
     page, _ = setup(client, ["已有原文"])
     # The test provider intercepts actual I/O. This config exercises cloud
     # classification for a named, non-default translation override.
@@ -627,7 +628,7 @@ def test_unknown_cloud_failure_requires_confirmation_even_for_value_error(client
         db.commit()
 
 
-def test_publication_failure_rolls_back_page_and_history_and_reuses_all_results(client, providers, monkeypatch):  # noqa: F811
+def test_publication_failure_rolls_back_page_and_history_and_reuses_all_results(client, providers, monkeypatch):
     from app.services import workflow_publish
 
     _, translator, _ = providers
@@ -660,7 +661,7 @@ def test_publication_failure_rolls_back_page_and_history_and_reuses_all_results(
     assert client.get(f"/api/projects/{page['project_id']}/history").json()["undo_count"] == before + 1
 
 
-def test_retry_keeps_frozen_previous_page_context_after_sibling_changes(client, providers, monkeypatch):  # noqa: F811
+def test_retry_keeps_frozen_previous_page_context_after_sibling_changes(client, providers, monkeypatch):
     _, translator, _ = providers
     previous, previous_regions = setup(client, ["上一页原文"])
     page = client.post(f"/api/projects/{previous['project_id']}/images",

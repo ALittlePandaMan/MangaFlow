@@ -3,6 +3,16 @@ import {TaskActivity} from './taskActivity'
 import {taskFixture} from './taskActivity.testUtils'
 
 describe('current-operation task snapshots', () => {
+  it.each(['QUEUED','RUNNING','CANCELLING','PAUSED'])('locks only the owning page for a %s task', status=>{
+    const activity=new TaskActivity('project')
+    activity.begin([taskFixture('1',{status})])
+    expect(activity.hasPendingTasks()).toBe(true)
+    expect(activity.getPageTask('page-1')?.id).toBe('1')
+    expect(activity.getPageTask('unrelated-page')).toBeNull()
+    activity.update([taskFixture('1',{status:'COMPLETED'})])
+    expect(activity.getPageTask('page-1')).toBeNull()
+    expect(activity.hasPendingTasks()).toBe(false)
+  })
   it('keeps every current live task available for scrolling and page locks', () => {
     const activity=new TaskActivity('project')
     const tasks=Array.from({length:8},(_,i)=>taskFixture(`${i}`))
@@ -41,6 +51,16 @@ describe('current-operation task snapshots', () => {
     activity.record(taskFixture('1',{status:'COMPLETED',progress:1}))
     expect(activity.getSnapshot().completion).toMatchObject({total:1,completed:1,failed:0,cancelled:0})
     expect(activity.getSnapshot().tasks).toHaveLength(0)
+  })
+  it('appends continuous submissions without hiding older running or queued work', () => {
+    const activity=new TaskActivity('project')
+    activity.record(taskFixture('1',{status:'RUNNING'}))
+    activity.record(taskFixture('2'))
+    activity.record(taskFixture('3',{status:'COMPLETED',progress:1}))
+    expect(activity.getSnapshot().tasks.map(task=>task.id)).toEqual(['1','2'])
+    expect(activity.getSnapshot()).toMatchObject({active:2,total:3,completion:null})
+    activity.update([taskFixture('1',{status:'CANCELLED'}),taskFixture('2',{status:'COMPLETED',progress:1})])
+    expect(activity.getSnapshot().completion).toMatchObject({total:3,completed:2,cancelled:1})
   })
   it('replaces old activity without dropping locks for unrelated ongoing work', () => {
     const activity=new TaskActivity('project')

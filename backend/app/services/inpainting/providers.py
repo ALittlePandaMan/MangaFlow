@@ -193,34 +193,3 @@ class SimpleLaMaInpainter(Inpainter):
 
             self._model = SimpleLama(device=torch.device(self._device))
             return self._model(model_image, model_mask)
-
-
-class HybridInpainter(Inpainter):
-    """Backward-compatible provider alias that routes every repair to LaMa."""
-
-    _scoped_model_methods = {"inpaint"}
-
-    capabilities = ProviderCapabilities(
-        name="hybrid",
-        provider_type="inpainting",
-        description="Backward-compatible alias using LaMa for every repair region",
-        devices=["cpu", "cuda"],
-        extra={"structure_aware": True, "complex_only": True, "optional_dependency": "simple-lama-inpainting"},
-    )
-
-    def __init__(self, config: dict | None = None) -> None:
-        super().__init__(config)
-        lama_config = dict(self.config.get("lama", {}))
-        lama_config["device"] = self.config.get("device", lama_config.get("device", "auto"))
-        self._lama = SimpleLaMaInpainter(lama_config)
-
-    def load(self) -> None:
-        self._lama.ensure_loaded()
-
-    def unload(self) -> None:
-        self._lama.unload()
-        super().unload()
-
-    def inpaint(self, image_path: Path, mask_path: Path, output_path: Path, region_type: str) -> Path:
-        self.ensure_loaded()
-        return self._lama.inpaint(image_path, mask_path, output_path, "background_complex")

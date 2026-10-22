@@ -2,9 +2,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from functools import lru_cache
 from pathlib import Path
-from threading import RLock
 
 import numpy as np
 from app.services.base import OCRProvider, OCRResult, ProviderCapabilities, ProviderError
@@ -16,35 +14,10 @@ from app.services.infra.device import (
     resolve_torch_device,
 )
 from app.services.infra.paddle import extract_paddle_lines
+from app.services.ocr.crops import crop_region as _crop
 from PIL import Image
 
 logger = logging.getLogger(__name__)
-_crop_lock = RLock()
-
-
-@lru_cache(maxsize=2)
-def _decoded_page(path: str) -> Image.Image:
-    # Uploaded originals are immutable and page IDs make their paths unique.
-    with Image.open(path) as source:
-        return source.convert("RGB")
-
-
-def _crop(image_path: Path, bbox: list[float], padding: int) -> Image.Image:
-    path = image_path.resolve()
-    # PIL crop is read-only with respect to the source, but serialize access to
-    # the shared decoded page for deployments that raise task concurrency.
-    with _crop_lock:
-        image = _decoded_page(str(path))
-        x, y, width, height = bbox
-        box = (
-            max(0, int(x - padding)),
-            max(0, int(y - padding)),
-            min(image.width, int(x + width + padding)),
-            min(image.height, int(y + height + padding)),
-        )
-        return image.crop(box)
-
-
 class NullOCRProvider(OCRProvider):
     capabilities = ProviderCapabilities(
         name="review-fallback",
@@ -53,7 +26,7 @@ class NullOCRProvider(OCRProvider):
         devices=["cpu"],
     )
 
-    def recognize(self, image_path: Path, bbox: list[float], orientation: str, padding: int = 4) -> OCRResult:
+    def recognize(self, image_path: Path, bbox: list[float], orientation: str, padding: int = 4, *, polygon=None, crop_angle=None) -> OCRResult:
         self.ensure_loaded()
         return OCRResult(text="", confidence=0.0, orientation=orientation, metadata={"fallback": True})
 
@@ -145,21 +118,31 @@ class MangaOCRProvider(OCRProvider):
             return [post_process(text).strip() for text in self._model.tokenizer.batch_decode(tokens, skip_special_tokens=True)]
 
     def recognize_batch(self, image_path: Path, regions: list[tuple[list[float], str]], padding: int = 4,
-                        *, check: Callable[[], None] | None = None) -> list[OCRResult]:
+                        *, polygons=None, crop_angles=None, check: Callable[[], None] | None = None) -> list[OCRResult]:
         """Infer a bounded microbatch; degrade on OOM without losing crop order."""
         if not regions:
             return []
+        polygons = polygons if polygons is not None else [None] * len(regions)
+        if len(polygons) != len(regions):
+            raise ProviderError("OCR 文本框轮廓数量不匹配。")
+        crop_angles = crop_angles if crop_angles is not None else [None] * len(regions)
+        if len(crop_angles) != len(regions):
+            raise ProviderError("OCR 文字角度数量不匹配。")
         if check:
             check()
         self.ensure_loaded()
         size = min(len(regions), self.batch_size())
         if size < len(regions):
             return [result for start in range(0, len(regions), size)
-                    for result in self.recognize_batch(image_path, regions[start:start+size], padding, check=check)]
+                    for result in self.recognize_batch(image_path, regions[start:start+size], padding,
+                        polygons=polygons[start:start+size], crop_angles=crop_angles[start:start+size], check=check)]
         if size == 1:
             box, orientation = regions[0]
-            return [self.recognize(image_path, box, orientation, padding)]
-        crops = [_crop(image_path, box, padding) for box, _ in regions]
+            return [self.recognize(image_path, box, orientation, padding, crop_angle=crop_angles[0],
+                **({"polygon": polygons[0]} if polygons[0] is not None else {}))]
+        crops = [_crop(image_path, box, padding, orientation=orientation, crop_angle=angle,
+                      **({"polygon": polygon} if polygon is not None else {}))
+                 for (box, orientation), polygon, angle in zip(regions, polygons, crop_angles, strict=True)]
         try:
             texts = self._recognize_crops(crops)
         except Exception as exc:
@@ -170,14 +153,15 @@ class MangaOCRProvider(OCRProvider):
             self._batch_ceiling = max(1, size // 2) if "out of memory" in str(exc).lower() else 1
             exc.__traceback__ = None
             release_torch_cuda()
-            return self.recognize_batch(image_path, regions, padding, check=check)
+            return self.recognize_batch(image_path, regions, padding, polygons=polygons, crop_angles=crop_angles, check=check)
         if len(texts) != len(regions):
             raise ProviderError("MangaOCR 批量结果数量不匹配，原文未更新。")
         return [self._result(text, orientation, size) for text, (_, orientation) in zip(texts, regions, strict=True)]
 
-    def recognize(self, image_path: Path, bbox: list[float], orientation: str, padding: int = 4) -> OCRResult:
+    def recognize(self, image_path: Path, bbox: list[float], orientation: str, padding: int = 4, *, polygon=None, crop_angle=None) -> OCRResult:
         self.ensure_loaded()
-        crop = _crop(image_path, bbox, padding)
+        crop = _crop(image_path, bbox, padding, orientation=orientation, crop_angle=crop_angle,
+                     **({"polygon": polygon} if polygon is not None else {}))
         try:
             text = str(self._model(crop)).strip()
         except Exception as exc:
@@ -203,14 +187,15 @@ class TesseractOCRProvider(OCRProvider):
         devices=["cpu"],
     )
 
-    def recognize(self, image_path: Path, bbox: list[float], orientation: str, padding: int = 4) -> OCRResult:
+    def recognize(self, image_path: Path, bbox: list[float], orientation: str, padding: int = 4, *, polygon=None, crop_angle=None) -> OCRResult:
         self.ensure_loaded()
         try:
             import pytesseract
             from pytesseract import Output
         except ImportError as exc:
             raise ProviderError("pytesseract is not installed") from exc
-        crop = _crop(image_path, bbox, padding)
+        crop = _crop(image_path, bbox, padding, orientation=orientation, crop_angle=crop_angle,
+                     **({"polygon": polygon} if polygon is not None else {}))
         language = str(self.config.get("language", "jpn_vert" if orientation == "vertical" else "jpn"))
         data = pytesseract.image_to_data(crop, lang=language, output_type=Output.DICT)
         tokens = [text.strip() for text in data["text"] if text.strip()]
@@ -265,9 +250,10 @@ class PaddleOCRProvider(OCRProvider):
             use_textline_orientation=False,
         )
 
-    def recognize(self, image_path: Path, bbox: list[float], orientation: str, padding: int = 4) -> OCRResult:
+    def recognize(self, image_path: Path, bbox: list[float], orientation: str, padding: int = 4, *, polygon=None, crop_angle=None) -> OCRResult:
         self.ensure_loaded()
-        crop = _crop(image_path, bbox, padding)
+        crop = _crop(image_path, bbox, padding, orientation=orientation, crop_angle=crop_angle,
+                     **({"polygon": polygon} if polygon is not None else {}))
         try:
             raw = self._model.predict(np.asarray(crop))
         except Exception as exc:

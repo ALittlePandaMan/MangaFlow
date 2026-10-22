@@ -16,7 +16,7 @@ interface Props {
   label: string
   labelColor: string
   visible: boolean
-  onSelect: () => void
+  onSelect: (additive: boolean) => void
   onContextMenu: (event: Konva.KonvaEventObject<MouseEvent>) => void
   onPreview?: (polygon: number[][], rotationDelta?: number) => void
   onCommit: (polygon: number[][], rotationDelta?: number) => void | Promise<void>
@@ -222,14 +222,17 @@ export function RegionPolygonEditor({polygon, pageWidth, pageHeight, scale, labe
   const wholeDragStart = useRef<Point[] | null>(null)
   const editingRef = useRef(false)
 
-  const preview = (next: Point[], notify = true, rotationDelta = 0) => {
+  const preview = (next: Point[], rotationDelta = 0) => {
     pointsRef.current = next
     setPoints(next)
-    if (notify) onPreview?.(next, rotationDelta)
+    onPreview?.(next, rotationDelta)
   }
 
   useEffect(() => {
-    if (!editingRef.current) preview(copyPoints(polygon), false)
+    if (editingRef.current) return
+    const next=copyPoints(polygon)
+    pointsRef.current=next
+    setPoints(next)
   }, [polygon])
 
   const bounds = useMemo(() => polygonBounds(points), [points])
@@ -270,7 +273,7 @@ export function RegionPolygonEditor({polygon, pageWidth, pageHeight, scale, labe
     const candidate = rotatePolygon(drag.start, drag.center, delta)
     if (!isValidPolygon(candidate, pageWidth, pageHeight, drag.winding, drag.minimumEdgeLength)) return
     drag.lastDelta = delta
-    preview(candidate, true, delta * 180 / Math.PI)
+    preview(candidate, delta * 180 / Math.PI)
   }
 
   const endRotation = (event: Konva.KonvaEventObject<Event>) => {
@@ -422,9 +425,9 @@ export function RegionPolygonEditor({polygon, pageWidth, pageHeight, scale, labe
       onClick={event => {
         event.cancelBubble = true
         if (event.evt.button !== 0) return
-        onSelect()
+        onSelect(event.evt.altKey)
       }}
-      onTap={event => { event.cancelBubble = true; onSelect() }}
+      onTap={event => { event.cancelBubble = true; onSelect(false) }}
       onContextMenu={onContextMenu}
       onMouseEnter={event => setCursor(event, 'grab')}
       onMouseLeave={event => setCursor(event, 'default')}

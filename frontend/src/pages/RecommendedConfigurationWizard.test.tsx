@@ -6,19 +6,20 @@ import {RecommendedConfigurationWizard} from './SettingsPage'
 
 const available = [
   ['detection','rfdetr'],['detection','opencv-fallback'],['inpainting','lama'],
-  ['ocr','paddleocr-vl-1.6'],['rendering','pillow'],['translation','openai-compatible'],['translation','passthrough'],['translation','google-web'],['ocr','paddleocr'],['ocr','cloud-ocr'],
+  ['ocr','paddleocr-vl-1.6'],['rendering','pillow'],['translation','openai-compatible'],['translation','passthrough'],['translation','google-web'],['ocr','paddleocr'],['ocr','cloud-ocr'],['ocr','review-fallback'],
 ].map(([kind,name]) => ({kind,name,description:name,devices:['rfdetr','lama','paddleocr-vl-1.6'].includes(name) ? ['cpu','cuda'] : ['cpu'],supports_batch:false,installed:true,orientations:[],capabilities:{},is_fallback:false})) as ModelDescriptor[]
 const translation: ModelConfiguration = {id:'translation',kind:'translation',provider:'openai-compatible',name:'云端翻译',enabled:true,is_default:true,has_api_key:true,config:{base_url:'https://example.com/v1',model:'test-model',api_protocol:'openai'},capabilities:{...available[5]}}
 
 describe('recommended configuration layout',() => {
-  it('omits retired choices and does not preselect a legacy OCR default',async()=>{
+  it.each(['paddleocr','review-fallback'])('omits retired choices and does not preselect a %s OCR default',async provider=>{
     const user = userEvent.setup()
-    const legacy:ModelConfiguration = {...translation,kind:'ocr',provider:'paddleocr',config:{device:'cpu'},capabilities:{...available[8]}}
+    const legacy:ModelConfiguration = {...translation,kind:'ocr',provider,config:{device:'cpu'},capabilities:{...available.find(item=>item.name===provider)!}}
     render(<RecommendedConfigurationWizard available={available} configured={[translation,legacy]} fonts={[]} onInstall={vi.fn()}/>)
     const nav = screen.getByRole('navigation',{name:'推荐配置阶段'})
     await user.click(within(nav).getByRole('button',{name:'OCR 识别'}))
     expect(screen.queryByRole('button',{name:/PaddleOCR 文字识别/})).not.toBeInTheDocument()
     expect(screen.queryByRole('button',{name:/云端 OCR（通用接口）/})).not.toBeInTheDocument()
+    expect(screen.queryByRole('button',{name:/人工审核占位|review-fallback/})).not.toBeInTheDocument()
     expect(screen.getByRole('button',{name:/PaddleOCR-VL 1.6/,pressed:true})).toBeInTheDocument()
     await user.click(within(nav).getByRole('button',{name:'云端翻译'}))
     expect(screen.queryByRole('button',{name:/不翻译（原文直通）/})).not.toBeInTheDocument()

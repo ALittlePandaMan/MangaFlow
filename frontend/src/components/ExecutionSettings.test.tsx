@@ -1,9 +1,13 @@
-import {render, screen, waitFor} from '@testing-library/react'
+import {render as renderView, screen, waitFor, within} from '@testing-library/react'
+import type {ReactElement} from 'react'
+import {GlobalDialogProvider} from './GlobalDialog'
 import userEvent from '@testing-library/user-event'
 import {describe,it,expect,vi} from 'vitest'
 import {ExecutionSettings} from './ExecutionSettings'
 import {api} from '../services/api'
 import type {ExecutionStatus} from '../types'
+
+const render=(element:ReactElement)=>renderView(element,{wrapper:GlobalDialogProvider})
 
 const state: ExecutionStatus = {
   policy:{mode:'auto',max_pages:4,cpu_workers:4,memory_reserve_mb:1024},
@@ -52,7 +56,13 @@ describe('execution policy settings',() => {
     expect(cap).toHaveValue(3)
     await userEvent.click(screen.getByRole('button',{name:'保存性能设置'}))
     await waitFor(() => expect(save).toHaveBeenCalledWith({...state.policy,max_pages:3}))
-    expect(await screen.findByText(/设置已生效/)).toBeInTheDocument()
+    const dialog=await screen.findByRole('status',{name:'保存成功'})
+    expect(dialog).toHaveTextContent('设置已生效。')
+    expect(document.querySelector('.settings-form .settings-notice')).toBeNull()
+    await userEvent.click(within(dialog).getByRole('button',{name:'关闭提示'}))
+    expect(screen.queryByRole('status',{name:'保存成功'})).not.toBeInTheDocument()
+    expect(screen.queryByText('设置已生效。')).not.toBeInTheDocument()
+    expect(screen.getByRole('button',{name:'保存性能设置'})).toBeEnabled()
   })
   it('shows actual backends and safe fallback reasons without starting another request',async () => {
     const get = vi.spyOn(api.execution,'get').mockResolvedValue({...state,inference:[
@@ -74,5 +84,36 @@ describe('execution policy settings',() => {
     expect(screen.getByLabelText('GPU 并行上限')).toBeDisabled()
     expect(screen.getByLabelText('保留可用内存（MB）')).toBeEnabled()
     expect(screen.getByLabelText('显存预留（MB）')).toHaveValue(2048)
+  })
+  it('reports save failures in a dialog, preserves the draft and allows retrying',async () => {
+    vi.spyOn(api.execution,'get').mockResolvedValue(state)
+    const save=vi.spyOn(api.execution,'update').mockRejectedValueOnce(new Error('性能设置保存失败')).mockImplementation(async policy=>({...state,policy}))
+    const user=userEvent.setup()
+    render(<ExecutionSettings/>)
+    const cap=await screen.findByLabelText('页面并发上限')
+    await user.clear(cap); await user.type(cap,'3')
+    await user.click(screen.getByRole('button',{name:'保存性能设置'}))
+    const dialog=await screen.findByRole('alert',{name:'保存失败'})
+    expect(dialog).toHaveTextContent('性能设置保存失败')
+    expect(document.querySelector('.settings-form .settings-error')).toBeNull()
+    expect(screen.queryByRole('status',{name:'保存成功'})).not.toBeInTheDocument()
+    await user.click(within(dialog).getByRole('button',{name:'关闭提示'}))
+    expect(cap).toHaveValue(3)
+    await user.click(screen.getByRole('button',{name:'保存性能设置'}))
+    expect(await screen.findByRole('status',{name:'保存成功'})).toBeVisible()
+    expect(save).toHaveBeenCalledTimes(2)
+  })
+  it('reports refresh errors with a global alert without disturbing the edited policy',async()=>{
+    vi.spyOn(api.execution,'get').mockResolvedValueOnce(state).mockRejectedValueOnce(new Error('刷新服务不可用'))
+    const user=userEvent.setup()
+    render(<ExecutionSettings/>)
+    const cap=await screen.findByLabelText('页面并发上限')
+    await user.clear(cap); await user.type(cap,'3')
+    await user.click(screen.getByRole('button',{name:'刷新状态'}))
+    const dialog=await screen.findByRole('alert',{name:'刷新状态'})
+    expect(dialog).toHaveTextContent('刷新服务不可用')
+    expect(document.querySelector('.settings-form .settings-error')).toBeNull()
+    await user.click(within(dialog).getByRole('button',{name:'关闭提示'}))
+    expect(cap).toHaveValue(3)
   })
 })

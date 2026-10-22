@@ -34,7 +34,7 @@ where = ["backend"]
 include = ["app", "app.*"]
 
 [tool.setuptools.package-data]
-app = ["migrations/*.py", "migrations/versions/*.py"]
+app = ["assets/font-licenses/*.txt"]
 
 [tool.setuptools.dynamic]
 version = {attr = "app.version.APP_VERSION"}
@@ -51,5 +51,5 @@ target-version = "py312"
 exclude = ["frontend/node_modules"]
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP", "B"]
+select = ["E", "F", "I", "UP", "B", "RUF100"]
 ignore = ["E501", "B008", "UP017", "UP046"]

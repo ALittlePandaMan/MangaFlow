@@ -10,4 +10,4 @@ fi
 
 "$repo_dir/.venv/bin/ruff" check "$repo_dir/backend/app" "$repo_dir/backend/tests" "$repo_dir/scripts"
 bash "$repo_dir/scripts/test-backend.sh" -q
-(cd "$repo_dir/frontend" && npm run lint && npm test && npm run build)
+(cd "$repo_dir/frontend" && npm run lint && npm run i18n:check && npm run visual:typecheck && npm test && npm run build)

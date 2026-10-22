@@ -1,8 +1,9 @@
-import {Focus, Layers3, ZoomIn, ZoomOut} from 'lucide-react'
+import {t, useLocale} from '../../../i18n'
+import {Layers3} from 'lucide-react'
 import {forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState, type MutableRefObject, type PointerEvent as ReactPointerEvent} from 'react'
 import {createPortal} from 'react-dom'
 import type {ImagePage, TextRegion, Tool} from '../../../types'
-import {buttonClass, cn, compactIconButtonClass} from '../../../ui'
+import {buttonClass, cn} from '../../../ui'
 import {MaskBitmap, type MaskBounds, type MaskPatch, type MaskPoint, type MaskTool} from '../lib/maskBitmap'
 import {MaskEncoder} from '../lib/maskEncoder'
 import {loadMaskHistory} from '../lib/maskHistory'
@@ -38,6 +39,7 @@ const POLYGON_CLOSE_DISTANCE = polygonDraftStyle.closeDistance
 
 /** Isolated editing session: pointer movement never re-renders the workbench. */
 export const MaskEditor = forwardRef<MaskEditorHandle, Props>(function MaskEditor({page, region, regions, tool, operation = tool === 'eraser' ? 'eraser' : 'brush', disabled = false, onToolChange, onSave, onSelectRegion, onStateChange, onHistoryBoundary, onHistoryStep, controlsTarget, preferences, prepared}, ref) {
+  useLocale()
   const viewport = useRef<HTMLDivElement>(null)
   const canvas = useRef<HTMLCanvasElement>(null)
   const source = useRef<HTMLImageElement | null>(null)
@@ -61,7 +63,6 @@ export const MaskEditor = forwardRef<MaskEditorHandle, Props>(function MaskEdito
   const [showOriginal, setShowOriginal] = useState(() => preferences?.current.showOriginal ?? true)
   const [diameter, setDiameter] = useState(() => preferences?.current.diameter ?? 24)
   const [referenceOpacity, setReferenceOpacity] = useState(() => preferences?.current.referenceOpacity ?? 30)
-  const [zoom, setZoom] = useState(100)
   const [ready, setReady] = useState(false)
   const [error, setError] = useState('')
   const [leaving, setLeaving] = useState(false)
@@ -96,14 +97,14 @@ export const MaskEditor = forwardRef<MaskEditorHandle, Props>(function MaskEdito
     // Keep the fitted page clear of the top controls; no bottom save tray.
     const scale = Math.max(.02, Math.min(4, (size.current.width - 48) / (w + 60), (size.current.height - 144) / (h + 20)))
     transform.current = {scale, x: size.current.width / 2 - (x + w / 2) * scale, y: (size.current.height - 16) / 2 - (y + h / 2) * scale}
-    setZoom(Math.round(scale * 100)); schedule()
+    schedule()
   }
   const zoomAt = (factor: number, anchor: MaskPoint = {x: size.current.width / 2, y: size.current.height / 2}) => {
     if (stroke.current) return
     fitted.current = false
     const old = transform.current, scale = Math.max(.02, Math.min(12, old.scale * factor))
     transform.current = {scale, x: anchor.x - (anchor.x - old.x) * scale / old.scale, y: anchor.y - (anchor.y - old.y) * scale / old.scale}
-    setZoom(Math.round(scale * 100)); schedule()
+    schedule()
   }
   wheelZoom.current = event => {
     event.preventDefault()
@@ -216,7 +217,6 @@ export const MaskEditor = forwardRef<MaskEditorHandle, Props>(function MaskEdito
       else if (bitmap.current && previous.width > 1 && previous.height > 1) {
         const old = transform.current, factor = Math.min(size.current.width / previous.width, size.current.height / previous.height)
         transform.current = {scale: old.scale * factor, x: size.current.width/2 - (previous.width/2-old.x)*factor, y: size.current.height/2 - (previous.height/2-old.y)*factor}
-        setZoom(Math.round(transform.current.scale * 100))
       }
       const ratio = Math.min(2, window.devicePixelRatio || 1)
       if (canvas.current) {canvas.current.width = Math.round(size.current.width * ratio); canvas.current.height = Math.round(size.current.height * ratio)}
@@ -383,7 +383,6 @@ export const MaskEditor = forwardRef<MaskEditorHandle, Props>(function MaskEdito
         const current = pair(), start = gesture.current, old = start.transform
         const scale = Math.max(.02, Math.min(12, old.scale * current.distance / start.distance))
         transform.current = {scale, x: current.center.x - (start.center.x-old.x) * scale/old.scale, y: current.center.y - (start.center.y-old.y) * scale/old.scale}
-        setZoom(Math.round(scale * 100))
       }
     } else if (panning.current) {
       fitted.current = false
@@ -423,20 +422,14 @@ export const MaskEditor = forwardRef<MaskEditorHandle, Props>(function MaskEdito
   const controlsDisabled = disabled || !ready || leaving
   const saveError=saveState.error instanceof Error ? saveState.error.message : saveState.error ? String(saveState.error) : ''
   const controls = <MaskControls region={region} regions={regions} tool={tool} operation={operation} onToolChange={onToolChange} diameter={diameter} referenceOpacity={referenceOpacity} showOriginal={showOriginal} disabled={controlsDisabled} onRegionChange={id => {if (id !== region.id) requestLeave(() => onSelectRegion(id))}} onDiameterChange={setDiameter} onReferenceOpacityChange={setReferenceOpacity} onReferenceChange={setShowOriginal}/>
-  return <section aria-label="蒙版模式" className="absolute inset-0 flex min-h-0 flex-col text-ink">
+  return <section aria-label={t("蒙版模式")} className="absolute inset-0 flex min-h-0 flex-col text-ink">
     {controlsTarget ? createPortal(controls, controlsTarget) : controlsTarget === undefined ? controls : null}
     {error && <p role="alert" className="m-0 shrink-0 bg-danger/10 px-4 py-2 text-sm text-danger-soft-ink">{error}</p>}
-    {saveError && <div role="alert" className="flex shrink-0 items-center gap-3 bg-danger/10 px-4 py-2 text-xs text-danger-soft-ink"><span className="min-w-0 flex-1">蒙版自动保存失败，修改仍保留：{saveError}</span><button className={buttonClass} disabled={leaving} onClick={() => {void autosave.current?.flush().catch(() => {})}}>重试同步</button></div>}
-    {region.locked ? <p className="m-0 shrink-0 bg-accent-soft px-4 py-2 text-xs text-accent-soft-ink">此区域已锁定，仅可查看蒙版。</p> : !region.mask_url && <p className="m-0 shrink-0 bg-accent-soft px-4 py-2 text-xs text-accent-soft-ink">此区域暂无蒙版，可用顶部工具补画，或切回原图执行“重新修复”生成。</p>}
+    {saveError && <div role="alert" className="flex shrink-0 items-center gap-3 bg-danger/10 px-4 py-2 text-xs text-danger-soft-ink"><span className="min-w-0 flex-1">{t("蒙版自动保存失败，修改仍保留：")}{saveError}</span><button className={buttonClass} disabled={leaving} onClick={() => {void autosave.current?.flush().catch(() => {})}}>{t("重试同步")}</button></div>}
+    {region.locked ? <p className="m-0 shrink-0 bg-accent-soft px-4 py-2 text-xs text-accent-soft-ink">{t("此区域已锁定，仅可查看蒙版。")}</p> : !region.mask_url && <p className="m-0 shrink-0 bg-accent-soft px-4 py-2 text-xs text-accent-soft-ink">{t("此区域暂无蒙版，可用顶部工具补画，或切回原图执行“重新修复”生成。")}</p>}
     <div ref={viewport} className="relative min-h-0 flex-1 overflow-hidden bg-canvas">
-      <canvas ref={canvas} aria-label="蒙版编辑画布" className={cn('block size-full touch-none', disabled ? 'pointer-events-none' : tool === 'pan' ? 'cursor-grab' : tool === 'select' ? 'cursor-pointer' : 'cursor-crosshair')} onPointerDown={down} onPointerMove={move} onPointerUp={event => up(event)} onPointerCancel={event => up(event,true)} onLostPointerCapture={event => {panning.current = null; event.currentTarget.style.cursor = ''; if (stroke.current?.id === event.pointerId) cancelStroke()}} onPointerLeave={() => {cursor.current = null; schedule()}} onContextMenu={event => event.preventDefault()}/>
-      <div className="mask-zoom" aria-label="蒙版画布缩放">
-        <button className={compactIconButtonClass} disabled={controlsDisabled} aria-label="缩小蒙版画布" onClick={() => zoomAt(1/1.25)}><ZoomOut size={16} aria-hidden="true"/></button>
-        <button className={compactIconButtonClass} disabled={controlsDisabled} aria-label="查看整页" title="查看整页" onClick={() => fit()}><Focus size={16} aria-hidden="true"/></button>
-        <button className={compactIconButtonClass} disabled={controlsDisabled} aria-label="放大蒙版画布" onClick={() => zoomAt(1.25)}><ZoomIn size={16} aria-hidden="true"/></button>
-        <span>{zoom}%</span>
-      </div>
-      <div className="mask-active-region"><Layers3 size={14} aria-hidden="true"/><span>{region.region_key}</span>{region.locked && <span className="mask-caption">已锁定</span>}</div>
+      <canvas ref={canvas} aria-label={t("蒙版编辑画布")} className={cn('block size-full touch-none', disabled ? 'pointer-events-none' : tool === 'pan' ? 'cursor-grab' : tool === 'select' ? 'cursor-pointer' : 'cursor-crosshair')} onPointerDown={down} onPointerMove={move} onPointerUp={event => up(event)} onPointerCancel={event => up(event,true)} onLostPointerCapture={event => {panning.current = null; event.currentTarget.style.cursor = ''; if (stroke.current?.id === event.pointerId) cancelStroke()}} onPointerLeave={() => {cursor.current = null; schedule()}} onContextMenu={event => event.preventDefault()}/>
+      <div className="mask-active-region"><Layers3 size={14} aria-hidden="true"/><span>{region.region_key}</span>{region.locked && <span className="mask-caption">{t("已锁定")}</span>}</div>
     </div>
   </section>
 })

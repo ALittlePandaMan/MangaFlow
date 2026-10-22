@@ -5,6 +5,12 @@ import {NumberControl, SelectControl} from './FormControls'
 
 describe('SelectControl typography',() => {
   const options = [{value:'a',label:'自定义云端翻译'},{value:'b',label:'不翻译（原文直通）'}]
+  it('keeps the full selected label available when the compact trigger ellipsizes it', () => {
+    const label='VeryLongCustomModelIdentifier'.repeat(6)
+    render(<SelectControl compact ariaLabel="模型" value="a" options={[{value:'a',label}]} onChange={vi.fn()}/>)
+    expect(screen.getByTitle(label)).toHaveTextContent(label)
+    expect(screen.getByTitle(label)).toHaveClass('truncate')
+  })
   it('carries the trigger font size into the portalled options',async () => {
     render(<SelectControl ariaLabel="服务商" value="a" options={options} onChange={vi.fn()}/>)
     const trigger = screen.getByRole('button',{name:'服务商'})

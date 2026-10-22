@@ -12,13 +12,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]/"backend"))
 
-import cv2  # noqa: E402
-from app.core.config import get_settings  # noqa: E402
-from app.core.db_engine import read_only_connection  # noqa: E402
-from app.services.detection.layout import RFDetrTextDetector  # noqa: E402
-from app.services.detection.text_roles import partition_text_roles  # noqa: E402
-from PIL import Image, ImageDraw  # noqa: E402
-from sqlalchemy import text  # noqa: E402
+import cv2
+from app.core.config import get_settings
+from app.core.db_engine import read_only_connection
+from app.services.detection.layout import RFDetrTextDetector
+from app.services.detection.text_roles import partition_text_roles
+from PIL import Image, ImageDraw
+from sqlalchemy import text
 
 
 def main():

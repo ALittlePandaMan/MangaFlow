@@ -78,4 +78,16 @@ describe('translation context dialog',() => {
     fireEvent.change(screen.getByRole('textbox'),{target:{value:'{}'}})
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
+  it('does not reset editing focus when callback identities change on each keystroke',async () => {
+    function ControlledDialog() {
+      const [text,setText]=useState('{}')
+      return <TranslationContextDialog {...harnessProps()} text={text} onTextChange={setText} onClose={() => {}}/>
+    }
+    render(<ControlledDialog/>)
+    const input=screen.getByRole('textbox')
+    await userEvent.click(input)
+    await userEvent.type(input,' ')
+    expect(input).toHaveFocus()
+    expect(input).toHaveValue('{} ')
+  })
 })

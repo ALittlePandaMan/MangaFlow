@@ -85,6 +85,10 @@ def _invalidate_rendered_artifacts(page: ImagePage, *, clean: bool = False) -> N
 def _mark_manual_mask_edit(region: TextRegion) -> None:
     layout_data = dict(region.layout_data or {})
     mask_generation = dict(layout_data.get("mask_generation", {}))
+    # Automatic audits describe an earlier bitmap. A deliberate brush/eraser
+    # edit must not inherit its stale completeness/disagreement diagnostics.
+    mask_generation.pop("mask_integrity", None)
+    mask_generation.pop("segmentation_disagreement", None)
     mask_generation.update(
         {
             "method": "manual_mask",

@@ -117,7 +117,7 @@ cd frontend && npm run dev
 
 页面任务池与 CPU 计算池互相独立，子线程只计算蒙版、返回普通数据；页面任务负责数据库与撤销记录。模型加载、推理和异常回退共用保护锁；图片写入采用临时文件原子替换。PostgreSQL 使用短事务与行锁，项目历史提交保持有序。自动调节属于保守试探，并发增加不保证每一种任务都更快。
 
-开发环境需安装 `backend/requirements/dev.txt`（包含性能监测依赖）；生产环境安装 `base.txt` 和 `execution.txt`。使用 `bash scripts/test-backend.sh -q` 在独立 PostgreSQL 数据库运行回归；不会调用真实云端 Provider。
+开发环境需安装 `backend/requirements/dev.txt`；生产环境的基础及性能监测依赖统一在 `base.txt`。使用 `bash scripts/test-backend.sh -q` 在独立 PostgreSQL 数据库运行回归；不会调用真实云端 Provider。
 
 当前可迁移配置位于 `config.yaml`，里面保存文字检测、图像修复、OCR、排版、云端翻译与字体六项活动配置，不包含数据库 ID、运行数据或任何 API Key。在设置页面安装、切换或编辑 Provider 后，后端会自动把当前生效配置原子写回该文件。Docker 后端每次启动都会幂等读取它：已有网页配置保持不变，只补齐缺失阶段；废弃的 Paddle 文字检测配置会迁移为 RF-DETR，现有页面不自动重检。配置中启用 `preload` 后会加载本地模型；MangaOCR、PaddleOCR 识字与 LaMa 可以自动下载，RF-DETR 权重需先显式安装。
 

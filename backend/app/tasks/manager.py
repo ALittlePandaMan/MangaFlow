@@ -507,11 +507,6 @@ class TaskManager:
             self.loop.call_soon_threadsafe(running.cancel)
         return worker_started
 
-    def has_started(self, task_id: str) -> bool:
-        with self.lock:
-            attempt = self.attempts.get(task_id)
-            return bool(attempt and attempt.started)
-
     def is_active(self, task_id: str) -> bool:
         with self.lock:
             attempt = self.attempts.get(task_id)
@@ -588,7 +583,11 @@ class TaskManager:
                 task.page.status = "FAILED"
                 task.page.error_message = task.error_message
                 task.page.current_stage = None
-        return list(db.scalars(select(ProcessingTask.id).where(ProcessingTask.status == TaskStatus.QUEUED.value)).all())
+        # Restore the same per-page admission order after a restart, too. UUID
+        # or physical row order must not make translation overtake queued OCR.
+        return list(db.scalars(select(ProcessingTask.id).where(
+            ProcessingTask.status == TaskStatus.QUEUED.value,
+        ).order_by(ProcessingTask.created_at, ProcessingTask.id)).all())
 
 
 task_manager = TaskManager()

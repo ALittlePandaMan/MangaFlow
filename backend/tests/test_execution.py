@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 
 import pytest
+from app.services.base import ProviderCapabilities
 from app.services.execution import AdaptiveLimiter, ExecutionPolicy, ExecutionRuntime, MiB
 
 
@@ -105,7 +106,7 @@ def test_inference_diagnostics_do_not_wait_for_model_or_expose_configs():
 
     try:
         runtime.report_provider(SimpleNamespace(
-            capabilities=SimpleNamespace(name="manga-ocr", provider_type="ocr"),
+            capabilities=ProviderCapabilities(name="manga-ocr", provider_type="ocr", description=""),
             state="ready", _device="cpu", _fallback_reason="accelerator_inference_failed",
             config={"device":"cuda", "api_key":"must-not-appear"}))
         with ThreadPoolExecutor(2) as pool:
@@ -128,7 +129,7 @@ def test_provider_diagnostics_use_actual_device_and_clear_unloaded_device():
     from types import SimpleNamespace
 
     runtime = ExecutionRuntime()
-    provider = SimpleNamespace(capabilities=SimpleNamespace(name="lama",provider_type="inpainting"),
+    provider = SimpleNamespace(capabilities=ProviderCapabilities(name="lama",provider_type="inpainting",description=""),
                                state="ready",_device="cuda:0",config={"device":"auto"})
     try:
         runtime.report_provider(provider)
@@ -250,7 +251,7 @@ def test_pages_overlap_but_same_page_is_serial_and_history_stays_reversible(clie
         def ensure_loaded(self):
             pass
 
-        def recognize(self, path, box, orientation, padding):
+        def recognize(self, path, box, orientation, padding, *, polygon=None, crop_angle=None):
             calls.append(path)
             if len(calls) == 1:
                 first_started.set()
@@ -304,7 +305,7 @@ def test_shared_local_model_is_not_entered_concurrently():
         active = 0
         peak = 0
 
-        def recognize(self, *args):
+        def recognize(self, *args, **kwargs):
             self.active += 1
             self.peak = max(self.peak, self.active)
             time.sleep(0.03)
@@ -341,7 +342,7 @@ def test_rfdetr_cpu_postprocessing_does_not_hold_gpu_slot(tmp_path, monkeypatch)
     class OCR(OCRProvider):
         capabilities = ProviderCapabilities("manga-ocr", "ocr", "test")
 
-        def recognize(self, *args):
+        def recognize(self, *args, **kwargs):
             entered.set()
             return OCRResult("text", .8, "vertical")
 
@@ -368,10 +369,10 @@ def test_shared_local_microbatch_model_is_not_entered_concurrently():
         active = 0
         peak = 0
 
-        def recognize(self, *args):
+        def recognize(self, *args, **kwargs):
             return None
 
-        def recognize_batch(self, *args):
+        def recognize_batch(self, *args, **kwargs):
             self.active += 1
             self.peak = max(self.peak, self.active)
             time.sleep(.02)

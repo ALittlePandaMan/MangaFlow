@@ -229,6 +229,22 @@ export interface FontResource {
   filename: string
   path: string
   url?: string
+  preset_id?: string
+  license_url?: string
+  source_url?: string
+}
+export interface FontPreset {
+  id: string
+  name: string
+  family: string
+  description: string
+  languages: string[]
+  category: string
+  size_bytes: number
+  license: string
+  source_url: string
+  license_url: string
+  installed_filename: string | null
 }
 export interface ExecutionPolicy {
   mode: 'auto' | 'fixed' | 'serial'

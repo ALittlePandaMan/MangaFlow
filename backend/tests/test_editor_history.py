@@ -4,8 +4,8 @@ import time
 
 import pytest
 from app.core.database import SessionLocal
-from app.models import ProcessingTask, TextRegion
-from app.services.editor_history import begin_task_history
+from app.models import EditorHistoryEntry, ProcessingTask, TextRegion
+from app.services.editor_history import begin_task_history, project_history_state
 from app.storage import get_storage
 from app.tasks.manager import TaskManager
 from test_repair_geometry_sync import png, setup_page, wait_task
@@ -32,6 +32,33 @@ def apply(client, project_id, direction="undo"):
 
 def rows(client, page):
     return client.get(f"/api/images/{page['id']}/regions").json()
+
+
+def test_history_cursor_and_pending_flag_share_one_snapshot(client, repair_provider, monkeypatch):
+    page, _ = setup_page(client)
+    with SessionLocal() as db:
+        entry = EditorHistoryEntry(project_id=page["project_id"], image_id=page["id"], action="finishing",
+                                   before={}, after={}, pending=True)
+        db.add(entry)
+        db.commit()
+        identifier = entry.id
+    with SessionLocal() as db:
+        execute = db.execute
+        calls = []
+
+        def finish_after_first_read(statement, *args, **kwargs):
+            result = execute(statement, *args, **kwargs)
+            if not calls:
+                with SessionLocal() as writer:
+                    writer.get(EditorHistoryEntry, identifier).pending = False
+                    writer.commit()
+            calls.append(statement)
+            return result
+
+        monkeypatch.setattr(db, "execute", finish_after_first_read)
+        state = project_history_state(db, page["project_id"])
+        assert state["pending"] or state["undo_id"] == identifier
+        assert len(calls) == 1
 
 
 def test_creation_shape_styles_and_copy_split_merge_can_all_undo_and_redo(client, repair_provider):

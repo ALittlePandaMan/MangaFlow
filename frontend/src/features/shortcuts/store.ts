@@ -1,7 +1,8 @@
+import {t} from '../../i18n'
 import {create} from 'zustand'
 import {persist} from 'zustand/middleware'
 
-export type ShortcutGroupId = 'tools' | 'views' | 'editing' | 'regions' | 'page'
+type ShortcutGroupId = 'tools' | 'views' | 'editing' | 'regions' | 'page'
 
 export type ShortcutId =
   | 'tool.pan' | 'tool.select' | 'tool.rectangle' | 'tool.polygon' | 'tool.lasso'
@@ -15,7 +16,7 @@ export type ShortcutId =
   | 'page.previous' | 'page.next'
   | 'page.import' | 'page.context' | 'page.export' | 'page.batchOcr' | 'page.reset'
 
-export interface ShortcutDefinition {
+interface ShortcutDefinition {
   id: ShortcutId
   group: ShortcutGroupId
   label: string
@@ -25,53 +26,53 @@ export interface ShortcutDefinition {
 }
 
 export const SHORTCUT_GROUPS: Array<{id: ShortcutGroupId, label: string, description: string}> = [
-  {id:'tools', label:'工具', description:'切换画布选择与区域创建工具'},
-  {id:'views', label:'视图', description:'切换原图、净图、译文与对比模式'},
-  {id:'editing', label:'编辑与画布', description:'撤销、重做、全选和画布缩放'},
-  {id:'regions', label:'区域操作', description:'操作当前选中或多选的文字区域'},
-  {id:'page', label:'页面与流程', description:'当前页处理、导入导出及批量任务'},
+  {id:'tools', get label(){return t("工具")}, get description(){return t("切换画布选择与区域创建工具")}},
+  {id:'views', get label(){return t("视图")}, get description(){return t("切换原图、净图、译文与对比模式")}},
+  {id:'editing', get label(){return t("编辑与画布")}, get description(){return t("撤销、重做、全选和画布缩放")}},
+  {id:'regions', get label(){return t("区域操作")}, get description(){return t("操作当前选中或多选的文字区域")}},
+  {id:'page', get label(){return t("页面与流程")}, get description(){return t("当前页处理、导入导出及批量任务")}},
 ]
 
 export const SHORTCUT_DEFINITIONS: ShortcutDefinition[] = [
-  {id:'tool.pan', group:'tools', label:'拖拽画布', description:'拖动画布而不修改文字区域', defaultBinding:'KeyH'},
-  {id:'tool.select', group:'tools', label:'选择 / 变换', description:'选择、移动和调整文字区域', defaultBinding:'KeyV'},
-  {id:'tool.rectangle', group:'tools', label:'矩形区域', description:'创建矩形文字区域', defaultBinding:'KeyR'},
-  {id:'tool.polygon', group:'tools', label:'多边形区域', description:'逐点创建不规则文字区域', defaultBinding:'KeyP'},
-  {id:'tool.lasso', group:'tools', label:'套索区域', description:'拖动创建自由选区', defaultBinding:'KeyL'},
+  {id:'tool.pan', group:'tools', get label(){return t("拖拽画布")}, get description(){return t("拖动画布而不修改文字区域")}, defaultBinding:'KeyH'},
+  {id:'tool.select', group:'tools', get label(){return t("选择 / 变换")}, get description(){return t("选择、移动和调整文字区域")}, defaultBinding:'KeyV'},
+  {id:'tool.rectangle', group:'tools', get label(){return t("矩形区域")}, get description(){return t("创建矩形文字区域")}, defaultBinding:'KeyR'},
+  {id:'tool.polygon', group:'tools', get label(){return t("多边形区域")}, get description(){return t("逐点创建不规则文字区域")}, defaultBinding:'KeyP'},
+  {id:'tool.lasso', group:'tools', get label(){return t("套索区域")}, get description(){return t("拖动创建自由选区")}, defaultBinding:'KeyL'},
 
-  {id:'view.original', group:'views', label:'原图视图', description:'显示原始图片与原文框', defaultBinding:'Digit1'},
-  {id:'view.clean', group:'views', label:'净图视图', description:'显示修复后的背景', defaultBinding:'Digit2'},
-  {id:'view.translated', group:'views', label:'译文视图', description:'显示修复背景与翻译文字', defaultBinding:'Digit3'},
-  {id:'view.comparison', group:'views', label:'对比视图', description:'左右对比原图与翻译结果', defaultBinding:'Digit4'},
+  {id:'view.original', group:'views', get label(){return t("原图视图")}, get description(){return t("显示原始图片与原文框")}, defaultBinding:'Digit1'},
+  {id:'view.clean', group:'views', get label(){return t("净图视图")}, get description(){return t("显示修复后的背景")}, defaultBinding:'Digit2'},
+  {id:'view.translated', group:'views', get label(){return t("译文视图")}, get description(){return t("显示修复背景与翻译文字")}, defaultBinding:'Digit3'},
+  {id:'view.comparison', group:'views', get label(){return t("对比视图")}, get description(){return t("左右对比原图与翻译结果")}, defaultBinding:'Digit4'},
 
-  {id:'edit.undo', group:'editing', label:'撤销', description:'撤销最近一次编辑或图片操作（项目历史）', defaultBinding:'Mod+KeyZ'},
-  {id:'edit.redo', group:'editing', label:'重做', description:'恢复最近一次撤销', defaultBinding:'Mod+KeyY'},
-  {id:'edit.selectAll', group:'editing', label:'全选区域', description:'选择当前页的全部文字区域', defaultBinding:'Mod+KeyA'},
-  {id:'zoom.out', group:'editing', label:'缩小画布', description:'降低画布缩放比例', defaultBinding:'Minus'},
-  {id:'zoom.reset', group:'editing', label:'重置缩放', description:'恢复画布默认缩放比例', defaultBinding:'Digit0'},
-  {id:'zoom.in', group:'editing', label:'放大画布', description:'提高画布缩放比例', defaultBinding:'Equal', allowShiftVariant:true},
+  {id:'edit.undo', group:'editing', get label(){return t("撤销")}, get description(){return t("撤销最近一次编辑或图片操作（项目历史）")}, defaultBinding:'Mod+KeyZ'},
+  {id:'edit.redo', group:'editing', get label(){return t("重做")}, get description(){return t("恢复最近一次撤销")}, defaultBinding:'Mod+KeyY'},
+  {id:'edit.selectAll', group:'editing', get label(){return t("全选区域")}, get description(){return t("选择当前页的全部文字区域")}, defaultBinding:'Mod+KeyA'},
+  {id:'zoom.out', group:'editing', get label(){return t("缩小画布")}, get description(){return t("降低画布缩放比例")}, defaultBinding:'Minus'},
+  {id:'zoom.reset', group:'editing', get label(){return t("重置缩放")}, get description(){return t("恢复画布默认缩放比例")}, defaultBinding:'Digit0'},
+  {id:'zoom.in', group:'editing', get label(){return t("放大画布")}, get description(){return t("提高画布缩放比例")}, defaultBinding:'Equal', allowShiftVariant:true},
 
-  {id:'region.delete', group:'regions', label:'删除所选区域', description:'删除当前选中的一个或多个区域', defaultBinding:'Delete'},
-  {id:'region.cancelSelection', group:'regions', label:'取消选择', description:'清除当前区域选择', defaultBinding:''},
-  {id:'region.merge', group:'regions', label:'合并所选区域', description:'把多个已选区域合并为一个', defaultBinding:'Mod+KeyM'},
-  {id:'region.nudgeLeft', group:'regions', label:'向左微调', description:'按住 Shift 可一次移动 10 像素', defaultBinding:'ArrowLeft', allowShiftVariant:true},
-  {id:'region.nudgeRight', group:'regions', label:'向右微调', description:'按住 Shift 可一次移动 10 像素', defaultBinding:'ArrowRight', allowShiftVariant:true},
-  {id:'region.nudgeUp', group:'regions', label:'向上微调', description:'按住 Shift 可一次移动 10 像素', defaultBinding:'ArrowUp', allowShiftVariant:true},
-  {id:'region.nudgeDown', group:'regions', label:'向下微调', description:'按住 Shift 可一次移动 10 像素', defaultBinding:'ArrowDown', allowShiftVariant:true},
-  {id:'region.ocr', group:'regions', label:'所选区域重新 OCR', description:'只重新识别当前所选区域', defaultBinding:'Alt+Digit1'},
-  {id:'region.translate', group:'regions', label:'所选区域重新翻译', description:'只重新翻译当前所选区域', defaultBinding:'Alt+Digit2'},
-  {id:'region.inpaint', group:'regions', label:'所选区域重新修复', description:'只重新修复当前所选区域', defaultBinding:'Alt+Digit3'},
+  {id:'region.delete', group:'regions', get label(){return t("删除所选区域")}, get description(){return t("删除当前选中的一个或多个区域")}, defaultBinding:'Delete'},
+  {id:'region.cancelSelection', group:'regions', get label(){return t("取消选择")}, get description(){return t("清除当前区域选择")}, defaultBinding:''},
+  {id:'region.merge', group:'regions', get label(){return t("合并所选区域")}, get description(){return t("把多个已选区域合并为一个")}, defaultBinding:'Mod+KeyM'},
+  {id:'region.nudgeLeft', group:'regions', get label(){return t("向左微调")}, get description(){return t("按住 Shift 可一次移动 10 像素")}, defaultBinding:'ArrowLeft', allowShiftVariant:true},
+  {id:'region.nudgeRight', group:'regions', get label(){return t("向右微调")}, get description(){return t("按住 Shift 可一次移动 10 像素")}, defaultBinding:'ArrowRight', allowShiftVariant:true},
+  {id:'region.nudgeUp', group:'regions', get label(){return t("向上微调")}, get description(){return t("按住 Shift 可一次移动 10 像素")}, defaultBinding:'ArrowUp', allowShiftVariant:true},
+  {id:'region.nudgeDown', group:'regions', get label(){return t("向下微调")}, get description(){return t("按住 Shift 可一次移动 10 像素")}, defaultBinding:'ArrowDown', allowShiftVariant:true},
+  {id:'region.ocr', group:'regions', get label(){return t("所选区域重新 OCR")}, get description(){return t("只重新识别当前所选区域")}, defaultBinding:'Alt+Digit1'},
+  {id:'region.translate', group:'regions', get label(){return t("所选区域重新翻译")}, get description(){return t("只重新翻译当前所选区域")}, defaultBinding:'Alt+Digit2'},
+  {id:'region.inpaint', group:'regions', get label(){return t("所选区域重新修复")}, get description(){return t("只重新修复当前所选区域")}, defaultBinding:'Alt+Digit3'},
 
-  {id:'page.previous', group:'page', label:'上一张图片', description:'切换到页面列表中的上一张图片', defaultBinding:'KeyA'},
-  {id:'page.next', group:'page', label:'下一张图片', description:'切换到页面列表中的下一张图片', defaultBinding:'KeyD'},
-  {id:'page.workflowOcr', group:'page', label:'当前页重新检测', description:'按当前设置重新检测文字区域，再执行 OCR', defaultBinding:'Mod+Shift+Digit1'},
-  {id:'page.workflowTranslate', group:'page', label:'当前页重新翻译', description:'执行当前页处理流程的翻译阶段', defaultBinding:'Mod+Shift+Digit2'},
-  {id:'page.workflowInpaint', group:'page', label:'当前页重新修复', description:'执行当前页处理流程的修复阶段', defaultBinding:'Mod+Shift+Digit3'},
-  {id:'page.import', group:'page', label:'导入图片', description:'打开漫画图片选择窗口', defaultBinding:'Mod+KeyO'},
-  {id:'page.context', group:'page', label:'翻译上下文', description:'打开当前项目的翻译上下文', defaultBinding:'Mod+Shift+KeyC'},
-  {id:'page.export', group:'page', label:'导出', description:'打开项目导出菜单', defaultBinding:'Mod+Shift+KeyE'},
-  {id:'page.batchOcr', group:'page', label:'批量识别', description:'识别其他尚未完成 OCR 的图片', defaultBinding:'Mod+Shift+KeyB'},
-  {id:'page.reset', group:'page', label:'重置当前页', description:'清空处理结果并恢复导入原图', defaultBinding:'Mod+Shift+Backspace'},
+  {id:'page.previous', group:'page', get label(){return t("上一张图片")}, get description(){return t("切换到页面列表中的上一张图片")}, defaultBinding:'KeyA'},
+  {id:'page.next', group:'page', get label(){return t("下一张图片")}, get description(){return t("切换到页面列表中的下一张图片")}, defaultBinding:'KeyD'},
+  {id:'page.workflowOcr', group:'page', get label(){return t("当前页重新检测")}, get description(){return t("按当前设置重新检测文字区域，再执行 OCR")}, defaultBinding:'Mod+Shift+Digit1'},
+  {id:'page.workflowTranslate', group:'page', get label(){return t("当前页重新翻译")}, get description(){return t("执行当前页处理流程的翻译阶段")}, defaultBinding:'Mod+Shift+Digit2'},
+  {id:'page.workflowInpaint', group:'page', get label(){return t("当前页重新修复")}, get description(){return t("执行当前页处理流程的修复阶段")}, defaultBinding:'Mod+Shift+Digit3'},
+  {id:'page.import', group:'page', get label(){return t("导入图片")}, get description(){return t("打开漫画图片选择窗口")}, defaultBinding:'Mod+KeyO'},
+  {id:'page.context', group:'page', get label(){return t("翻译上下文")}, get description(){return t("打开当前项目的翻译上下文")}, defaultBinding:'Mod+Shift+KeyC'},
+  {id:'page.export', group:'page', get label(){return t("导出")}, get description(){return t("打开项目导出菜单")}, defaultBinding:'Mod+Shift+KeyE'},
+  {id:'page.batchOcr', group:'page', get label(){return t("批量识别")}, get description(){return t("识别其他尚未完成 OCR 的图片")}, defaultBinding:'Mod+Shift+KeyB'},
+  {id:'page.reset', group:'page', get label(){return t("重置当前页")}, get description(){return t("清空处理结果并恢复导入原图")}, defaultBinding:'Mod+Shift+Backspace'},
 ]
 
 export type ShortcutMap = Record<ShortcutId, string>
@@ -147,7 +148,7 @@ const KEY_LABELS: Record<string, string> = {
 }
 
 export function formatShortcut(binding: string): string {
-  if (!binding) return '未设置'
+  if (!binding) return t("未设置")
   return binding.split('+').map(part => {
     if (part === 'Mod') return 'Ctrl'
     if (part === 'Alt' || part === 'Shift') return part

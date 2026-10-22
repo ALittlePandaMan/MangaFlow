@@ -10,7 +10,7 @@ const priority = (task: ProcessingTask) => ({RUNNING:0, CANCELLING:0, QUEUED:1, 
 const newestFirst = (left: ProcessingTask, right: ProcessingTask) =>
   (right.created_at || '').localeCompare(left.created_at || '') || right.id.localeCompare(left.id)
 
-export interface TaskCompletion {
+interface TaskCompletion {
   id: number
   total: number
   completed: number
@@ -45,8 +45,9 @@ export class TaskActivity {
   subscribe = (listener: () => void) => {this.listeners.add(listener); return () => {this.listeners.delete(listener)}}
   getSnapshot = () => this.snapshot
   getTask = (id: string) => this.tasks.get(id)
+  hasPendingTasks = () => [...this.tasks.values()].some(task => !isTerminalTask(task))
   getPageTask = (imageId?: string) => imageId
-    ? [...this.tasks.values()].find(task => task.image_id === imageId && isActiveTask(task)) || null
+    ? [...this.tasks.values()].find(task => task.image_id === imageId && !isTerminalTask(task)) || null
     : null
 
   setConnectionIssue = (connectionIssue: boolean) => {
@@ -75,8 +76,18 @@ export class TaskActivity {
   }
   record = (task: ProcessingTask) => {
     if (!this.belongs(task)) return
-    if (!this.knownIds.has(task.id) || !this.currentIds.size) this.begin([task])
-    else this.update([task])
+    if (!this.knownIds.has(task.id)) {
+      if (!this.currentIds.size || ![...this.currentIds].some(id => {
+        const current = this.tasks.get(id)
+        return current && !isTerminalTask(current)
+      })) {this.begin([task]);return}
+      // Continuous region submissions belong to the same visible queue. Do
+      // not hide older live work (or lose an immediately completed new job).
+      this.currentIds.add(task.id)
+      this.knownIds.add(task.id)
+      this.tasks.set(task.id,task)
+      this.publish()
+    } else this.update([task])
   }
 
   update = (updates: ProcessingTask[]) => {

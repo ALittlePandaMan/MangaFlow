@@ -139,7 +139,7 @@ def test_task_timings_persist_success_and_failure_without_text_payloads(client, 
         def ensure_loaded(self):
             pass
 
-        def recognize(self, *args):
+        def recognize(self, *args, **kwargs):
             if fails:
                 raise ValueError("synthetic failure")
             return OCRResult("private text not in metrics", 1, "vertical")

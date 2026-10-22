@@ -150,6 +150,41 @@ it('accepts a completion race with stop without replaying inference', async () =
   expect(submit).not.toHaveBeenCalled()
 })
 
+it('retains the page lock until cancellation results have been adopted',async()=>{
+  vi.spyOn(api.tasks,'list').mockResolvedValue([])
+  const cancelled=taskFixture('1',{status:'CANCELLED'})
+  vi.spyOn(api.tasks,'cancel').mockResolvedValue(cancelled)
+  let adopt!:()=>void
+  const update=vi.fn(()=>new Promise<void>(resolve=>{adopt=resolve}))
+  const {result}=renderHook(()=>useEditorTasks('project',update))
+  await waitFor(()=>expect(result.current.activity.getSnapshot().recovering).toBe(false))
+  act(()=>result.current.activity.begin([taskFixture('1',{status:'RUNNING'})]))
+  let stopping!:Promise<void>
+  await act(async()=>{stopping=result.current.cancelTask('1');await Promise.resolve()})
+  expect(update).toHaveBeenCalledWith(cancelled)
+  expect(result.current.activity.getPageTask('page-1')?.status).toBe('RUNNING')
+  await act(async()=>{adopt();await stopping})
+  expect(result.current.activity.getPageTask('page-1')).toBeNull()
+})
+
+it('does not let a recovery listing release an owned page during result adoption',async()=>{
+  let list!: (tasks:ReturnType<typeof taskFixture>[])=>void,adopt!:()=>void
+  vi.spyOn(api.tasks,'list').mockReturnValue(new Promise(resolve=>{list=resolve}))
+  const completed=taskFixture('1',{status:'COMPLETED'})
+  vi.spyOn(api.tasks,'get').mockResolvedValue(completed)
+  const update=vi.fn(()=>new Promise<void>(resolve=>{adopt=resolve}))
+  const recoveredUpdate=vi.fn()
+  const {result}=renderHook(()=>useEditorTasks('project',recoveredUpdate))
+  act(()=>result.current.activity.begin([taskFixture('1',{status:'RUNNING'})]))
+  let monitoring!:Promise<unknown>
+  await act(async()=>{monitoring=result.current.waitForTask('1',update);await Promise.resolve()})
+  await act(async()=>list([completed]))
+  expect(result.current.activity.getPageTask('page-1')?.status).toBe('RUNNING')
+  expect(recoveredUpdate).not.toHaveBeenCalled()
+  await act(async()=>{adopt();await monitoring})
+  expect(result.current.activity.getPageTask('page-1')).toBeNull()
+})
+
 it('keeps a task active after a failed stop and leaves retries to an explicit user click', async () => {
   vi.spyOn(api.tasks,'list').mockResolvedValue([])
   const cancel=vi.spyOn(api.tasks,'cancel').mockRejectedValue(new ApiError(503,'Unavailable'))

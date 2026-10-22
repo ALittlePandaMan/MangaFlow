@@ -17,7 +17,8 @@ def _fill_color(mask: np.ndarray, metadata: dict[str, Any]) -> list[int] | None:
     repair = metadata.get("repair", {})
     constraint = metadata.get("constraint", {})
     background = metadata.get("background", {})
-    if not all(isinstance(item, dict) for item in (repair, constraint, background)):
+    integrity = metadata.get("mask_integrity", {})
+    if not all(isinstance(item, dict) for item in (repair, constraint, background, integrity)):
         return None
     trusted_balloon = metadata.get("method") in {"balloon_glyph", "source_polygon_union"} and constraint.get(
         "status"
@@ -25,6 +26,7 @@ def _fill_color(mask: np.ndarray, metadata: dict[str, Any]) -> list[int] | None:
     verified_paper = metadata.get("method") == "conservative_glyph" and background.get("scope") == "local_paper"
     if (
         metadata.get("version") != MASK_ALGORITHM_VERSION
+        or integrity.get("status") in {"partial", "uncertain"}
         or not (trusted_balloon or verified_paper)
         or not background.get("uniform")
         or repair.get("strategy") != "uniform_fill"

@@ -1,3 +1,4 @@
+import {t, useLocale} from '../../../i18n'
 import {ChevronDown, Eye, EyeOff, Folder, Layers3} from 'lucide-react'
 import {useCallback, useId, useLayoutEffect, useMemo, useRef, useState} from 'react'
 import type {MouseEvent as ReactMouseEvent} from 'react'
@@ -17,12 +18,14 @@ interface Props {
   selectedCount:number
   fontOptions:string[]
   busyAction?:string | null
+  readOnly?:boolean
   onUpdate:(id:string,patch:Partial<TextRegion>) => void
   onUpdateMany?:(changes:Array<{id:string;patch:Partial<TextRegion>}>) => void
   onAction:(action:'delete') => void
 }
 
-export function RegionProperties({page,regions,region,selectedRegions,selectedCount,fontOptions,busyAction,onUpdate,onUpdateMany,onAction}:Props) {
+export function RegionProperties({page,regions,region,selectedRegions,selectedCount,fontOptions,busyAction,readOnly=false,onUpdate,onUpdateMany,onAction}:Props) {
+  useLocale()
   const [layersExpanded,setLayersExpanded]=useState(true)
   const [textExpanded,setTextExpanded]=useState(true)
   const layerListId=useId()
@@ -64,20 +67,20 @@ export function RegionProperties({page,regions,region,selectedRegions,selectedCo
     else if(box.bottom>bounds.bottom) scroller.scrollTop+=Math.min(box.bottom-bounds.bottom,box.top-bounds.top)
   },[selectionKey,selectedCount,layersExpanded,textExpanded])
   return <aside className="region-inspector">
-    <TextTypesettingPanel regions={targets} fontOptions={fontOptions} busy={!!busyAction} onChange={updateMany}/>
-    <h3 className="inspector-section-heading inspector-layer-heading"><button type="button" className="inspector-section-toggle" aria-expanded={layersExpanded} aria-controls={layerListId} onClick={() => setLayersExpanded(value => !value)}><Layers3 size={15}/><span>图层</span><small>{items.length+(page ? 1 : 0)}</small><ChevronDown size={15} className="inspector-section-chevron"/></button></h3>
+    <TextTypesettingPanel regions={targets} fontOptions={fontOptions} busy={!!busyAction || readOnly} onChange={updateMany}/>
+    <h3 className="inspector-section-heading inspector-layer-heading"><button type="button" className="inspector-section-toggle" aria-expanded={layersExpanded} aria-controls={layerListId} onClick={() => setLayersExpanded(value => !value)}><Layers3 size={15}/><span>{t("图层")}</span><small>{items.length+(page ? 1 : 0)}</small><ChevronDown size={15} className="inspector-section-chevron"/></button></h3>
     <div id={layerListId} ref={list} hidden={!layersExpanded} className={cn('inspector-layer-list',scrollbarClass)}>
       <div className="inspector-group-row">
-        <button type="button" className="inspector-group-toggle" aria-label={textExpanded ? '折叠文本组' : '展开文本组'} aria-expanded={textExpanded} aria-controls={textListId} onClick={() => setTextExpanded(value => !value)}>
-          <Folder size={17}/><span className="inspector-layer-title"><strong>文本</strong><small>文本组</small></span><ChevronDown size={14} className="inspector-group-chevron"/>
+        <button type="button" className="inspector-group-toggle" aria-label={textExpanded ? t("折叠文本组") : t("展开文本组")} aria-expanded={textExpanded} aria-controls={textListId} onClick={() => setTextExpanded(value => !value)}>
+          <Folder size={17}/><span className="inspector-layer-title"><strong>{t("文本")}</strong><small>{t("文本组")}</small></span><ChevronDown size={14} className="inspector-group-chevron"/>
         </button>
-        <span className="inspector-layer-opacity">100%</span><button type="button" className={cn(compactIconButtonClass,'inspector-eye')} aria-label={layers.translated ? '隐藏文本组' : '显示文本组'} disabled={!!busyAction} onClick={() => toggleLayer('translated')}>{layers.translated ? <Eye aria-hidden="true" size={16}/> : <EyeOff aria-hidden="true" size={16}/>}</button>
+        <span className="inspector-layer-opacity">100%</span><button type="button" className={cn(compactIconButtonClass,'inspector-eye')} aria-label={layers.translated ? t("隐藏文本组") : t("显示文本组")} disabled={!!busyAction} onClick={() => toggleLayer('translated')}>{layers.translated ? <Eye aria-hidden="true" size={16}/> : <EyeOff aria-hidden="true" size={16}/>}</button>
       </div>
       <div id={textListId} hidden={!textExpanded}>
-        {items.map(item => <RegionLayerRow key={item.id} region={item} selected={selected.has(item.id)} expanded={selectedCount===1 && selected.has(item.id)} disabled={!!busyAction} onSelect={selectRow} onUpdate={update} onDelete={deleteRow}/>)}
-        {!items.length && <p className="inspector-empty">暂无文本区域，识别或创建文本框后会显示在这里。</p>}
+        {items.map(item => <RegionLayerRow key={item.id} region={item} selected={selected.has(item.id)} expanded={selectedCount===1 && selected.has(item.id)} disabled={!!busyAction || readOnly} selectionDisabled={!!busyAction} onSelect={selectRow} onUpdate={update} onDelete={deleteRow}/>)}
+        {!items.length && <p className="inspector-empty">{t("暂无文本区域，识别或创建文本框后会显示在这里。")}</p>}
       </div>
-      {page && <div className="inspector-image-row"><Layers3 size={17}/><span className="inspector-layer-title"><strong>Mask</strong><small>蒙版叠加</small></span><button type="button" className={cn(compactIconButtonClass,'inspector-eye')} disabled={!!busyAction} aria-label={layers.mask ? '隐藏 Mask 图层' : '显示 Mask 图层'} aria-pressed={!!layers.mask} onClick={() => toggleLayer('mask')}>{layers.mask ? <Eye aria-hidden="true" size={16}/> : <EyeOff aria-hidden="true" size={16}/>}</button></div>}
+      {page && <div className="inspector-image-row"><Layers3 size={17}/><span className="inspector-layer-title"><strong>Mask</strong><small>{t("蒙版叠加")}</small></span><button type="button" className={cn(compactIconButtonClass,'inspector-eye')} disabled={!!busyAction} aria-label={layers.mask ? t("隐藏 Mask 图层") : t("显示 Mask 图层")} aria-pressed={!!layers.mask} onClick={() => toggleLayer('mask')}>{layers.mask ? <Eye aria-hidden="true" size={16}/> : <EyeOff aria-hidden="true" size={16}/>}</button></div>}
     </div>
   </aside>
 }

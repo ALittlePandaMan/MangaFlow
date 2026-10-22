@@ -256,10 +256,6 @@ def _persist_model_settings(
     return manifest
 
 
-def persist_shortcut_preferences(path: str | Path | None, shortcuts: dict[str, str]) -> ManifestPreferences:
-    return persist_editor_preferences(path, ManifestPreferences(shortcuts=shortcuts))
-
-
 def persist_editor_preferences(path: str | Path | None, patch: ManifestPreferences) -> ManifestPreferences:
     """Merge only explicitly supplied preferences, preserving the other editor settings."""
 
@@ -580,6 +576,6 @@ __all__ = [
     "apply_model_manifest",
     "load_model_manifest",
     "persist_model_settings",
-    "persist_shortcut_preferences",
+    "persist_editor_preferences",
     "preload_manifest_models",
 ]

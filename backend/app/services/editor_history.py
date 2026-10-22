@@ -15,7 +15,7 @@ from app.models import EditorHistoryEntry, ImagePage, ProcessingTask, Project, T
 from app.services.regions import SNAPSHOT_FIELDS, region_snapshot, save_revision
 from app.storage import get_storage
 from fastapi import HTTPException
-from sqlalchemy import delete, select, update
+from sqlalchemy import and_, delete, select, update
 from sqlalchemy.orm import Session
 
 HISTORY_LIMIT = 100
@@ -178,18 +178,31 @@ def project_history_state(db: Session, project_id: str) -> dict:
     # Toolbar/region responses need cursors, not megabytes of before/after
     # snapshots. Selecting ORM entities deserialized every checkpoint on every
     # mask stroke and region update.
+    # Read cursors and pending work in one PostgreSQL snapshot. Otherwise a
+    # task can close its journal between these queries, returning an old undo
+    # cursor together with pending=False and making the next undo fail.
+    pending = (
+        select(EditorHistoryEntry.id)
+        .where(EditorHistoryEntry.project_id == project_id, EditorHistoryEntry.pending.is_(True))
+        .correlate(None).exists()
+        | select(ProcessingTask.id)
+        .where(ProcessingTask.project_id == project_id, ProcessingTask.status.in_(ACTIVE_TASK_STATES))
+        .exists()
+    ).label("pending")
     entries = list(
         db.execute(
-            select(EditorHistoryEntry.id, EditorHistoryEntry.action, EditorHistoryEntry.applied)
-            .where(
+            select(EditorHistoryEntry.id, EditorHistoryEntry.action, EditorHistoryEntry.applied, pending)
+            .select_from(Project)
+            .outerjoin(EditorHistoryEntry, and_(
                 EditorHistoryEntry.project_id == project_id,
                 EditorHistoryEntry.pending.is_(False),
-            )
+            ))
+            .where(Project.id == project_id)
             .order_by(EditorHistoryEntry.id)
         ).all()
     )
-    applied = [entry for entry in entries if entry.applied]
-    unapplied = [entry for entry in entries if not entry.applied]
+    applied = [entry for entry in entries if entry.id is not None and entry.applied]
+    unapplied = [entry for entry in entries if entry.id is not None and not entry.applied]
     state = {
         "project_id": project_id,
         "undo_count": len(applied),
@@ -198,18 +211,7 @@ def project_history_state(db: Session, project_id: str) -> dict:
         "redo_id": unapplied[0].id if unapplied else None,
         "undo_label": applied[-1].action if applied else None,
         "redo_label": unapplied[0].action if unapplied else None,
-        "pending": db.scalar(
-            select(EditorHistoryEntry.id)
-            .where(EditorHistoryEntry.project_id == project_id, EditorHistoryEntry.pending.is_(True))
-            .limit(1)
-        )
-        is not None
-        or db.scalar(
-            select(ProcessingTask.id)
-            .where(ProcessingTask.project_id == project_id, ProcessingTask.status.in_(ACTIVE_TASK_STATES))
-            .limit(1)
-        )
-        is not None,
+        "pending": bool(entries and entries[0].pending),
     }
     db.info[key] = state
     return state

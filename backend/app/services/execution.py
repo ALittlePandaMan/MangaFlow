@@ -320,13 +320,12 @@ class ExecutionRuntime:
 
     def report_provider(self, provider):
         capability = provider.capabilities
-        backend = getattr(capability, "extra", {}).get("backend") or {"manga-ocr": "torch", "lama": "torch", "hybrid": "torch", "paddleocr": "paddle"}.get(capability.name)
+        backend = capability.extra.get("backend") or {"manga-ocr": "torch", "lama": "torch", "paddleocr": "paddle"}.get(capability.name)
         if backend is None:
             return  # RF-DETR reports its worker's actual handshake separately.
-        actual = getattr(provider, "_lama", provider)
-        device = getattr(actual, "_device", None) if provider.state == "ready" else None
-        reason = getattr(actual, "_fallback_reason", None)
-        if device == "cpu" and actual.config.get("device", "auto") != "cpu" and not reason:
+        device = getattr(provider, "_device", None) if provider.state == "ready" else None
+        reason = getattr(provider, "_fallback_reason", None)
+        if device == "cpu" and provider.config.get("device", "auto") != "cpu" and not reason:
             reason = "accelerator_unavailable"
         self.report_inference(kind=capability.provider_type, name=capability.name, backend=backend,
                               device=device, state=str(provider.state), fallback_reason=reason)

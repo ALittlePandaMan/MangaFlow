@@ -134,6 +134,19 @@ describe('canvas context-menu scopes', () => {
     rightClick()
     expect(props.onPageContextMenu).toHaveBeenCalledOnce()
   })
+  it('keeps context actions and selection available while background tasks lock geometry', () => {
+    const other={...region,id:'other',region_key:'R002'}
+    const props={...callbacks(),regions:[region,other]}
+    render(<MangaCanvas {...props} readOnly processingRegionIds={[region.id]}/>)
+    rightClick()
+    expect(useEditorStore.getState().selectedIds).toEqual([other.id])
+    fireEvent.click(screen.getByRole('menuitem',{name:'重新修复'}))
+    expect(props.onRegionAction).toHaveBeenCalledWith([other.id],'inpaint',{})
+    rightClick()
+    fireEvent.click(screen.getByRole('menuitem',{name:'重新翻译'}))
+    expect(props.onRegionAction).toHaveBeenLastCalledWith([other.id],'translate',{})
+    expect(props.onUpdate).not.toHaveBeenCalled()
+  })
   it('highlights only the regions captured for the active task', () => {
     const props = {...callbacks(),regions:[region,{...region,id:'other',region_key:'R002'}]}
     const {rerender} = render(<MangaCanvas {...props} processingRegionIds={['region']}/>)

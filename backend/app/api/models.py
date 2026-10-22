@@ -12,7 +12,7 @@ from app.core.config import get_settings
 from app.core.database import get_db
 from app.core.secrets import get_secret_store
 from app.models import ModelConfig
-from app.schemas.domain import BootstrapModelsRequest, ModelConfigCreate, ModelDiscoveryRequest
+from app.schemas.domain import BootstrapModelsRequest, ModelConfigCreate, ModelDiscoveryRequest, ModelTestRequest
 from app.services.base import ProviderError
 from app.services.infra.device import device_profile
 from app.services.infra.model_manifest import persist_model_settings
@@ -87,6 +87,18 @@ def get_setup_status(db: Session = Depends(get_db)) -> dict:
 @router.post("/models/setup-status/verify")
 def verify_setup_status(db: Session = Depends(get_db)) -> dict:
     return setup_status_report(db, validate_models=True)
+
+
+@router.get("/models/recommended/status")
+def recommended_status(db: Session = Depends(get_db)) -> dict:
+    from app.services.infra.recommended_installation import recommended_installation
+    return recommended_installation.status(db)
+
+
+@router.post("/models/recommended/install", status_code=202)
+def install_recommended(db: Session = Depends(get_db)) -> dict:
+    from app.services.infra.recommended_installation import recommended_installation
+    return recommended_installation.start(db)
 
 
 @router.post("/models/discover")
@@ -242,6 +254,45 @@ def _validate_detection(payload: ModelConfigCreate) -> None:
         layout_options(payload.config)
     except (TypeError, ValueError) as exc:
         raise HTTPException(422, str(exc)) from exc
+
+
+@router.post("/models/test")
+async def test_model_connection(payload: ModelTestRequest, db: Session = Depends(get_db)) -> dict:
+    from app.services.model_testing import probe_provider
+
+    existing = db.get(ModelConfig, payload.config_id) if payload.config_id else None
+    if payload.config_id and existing is None:
+        raise HTTPException(404, "Model configuration not found")
+    if existing is not None and (existing.kind != payload.kind or existing.provider != payload.provider):
+        raise HTTPException(422, "测试配置与已保存的服务不匹配")
+    descriptor = next((item for item in registry.describe() if item["kind"] == payload.kind and item["name"] == payload.provider), None)
+    if descriptor is None or payload.provider in {"passthrough", "review-fallback"}:
+        raise HTTPException(422, "请选择可用的服务进行测试")
+    payload = _reuse_translation_connection(payload, db)
+    _validate_cloud_ocr(payload, existing)
+    _validate_detection(payload)
+    config = dict(payload.config)
+    config.pop("api_key", None)
+    remote_key = (payload.api_key or "").strip()
+    if "remote" in descriptor["devices"] and payload.provider != "google-web":
+        base_url = str(config.get("base_url", "")).strip()
+        try:
+            parsed = urlsplit(base_url)
+            valid = parsed.scheme in {"http", "https"} and parsed.hostname and parsed.port != 0
+        except ValueError:
+            valid = False
+        if not valid or parsed.username or parsed.password or parsed.query or parsed.fragment:
+            raise HTTPException(422, "请输入有效的 HTTP(S) API 地址，不能包含账号、查询参数或片段")
+        if not remote_key and existing is not None and existing.encrypted_api_key:
+            if not _same_api_origin(str(existing.config.get("base_url", "")), base_url):
+                raise HTTPException(422, "接口地址已更换，请重新输入 API Key 后测试。")
+            remote_key = get_secret_store().decrypt(existing.encrypted_api_key) or ""
+        if payload.provider != "cloud-ocr" and (not remote_key or not str(config.get("model", "")).strip()):
+            raise HTTPException(422, "请填写 API 地址、密钥并选择模型后测试。")
+        config["api_key"] = remote_key
+    # No ORM session/transaction or saved key is held by a model worker.
+    db.rollback()
+    return await probe_provider(payload.kind, payload.provider, config)
 
 
 @router.post("/models/config", status_code=201)

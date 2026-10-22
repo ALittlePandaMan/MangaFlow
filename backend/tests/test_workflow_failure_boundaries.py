@@ -9,9 +9,9 @@ from app.services.checkpoints import CheckpointStore
 from sqlalchemy import select
 from sqlalchemy.exc import OperationalError
 from test_batch_repair_translate import batch
-from test_checkpoint_pipeline import checkpoint_mode as checkpoint_mode  # noqa: F401
+from test_checkpoint_pipeline import checkpoint_mode as checkpoint_mode
 from test_checkpoint_pipeline import stopped
-from test_translation_auto_ocr import providers as providers  # noqa: F401
+from test_translation_auto_ocr import providers as providers
 from test_translation_auto_ocr import setup
 
 

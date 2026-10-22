@@ -7,6 +7,7 @@ from uuid import uuid4
 from app.models import ImagePage, RegionRevision, TextRegion
 from app.schemas.domain import RegionCreate, RegionUpdate
 from app.services.layout.text_rotation import record_user_rotation
+from app.services.ocr.crops import OCR_FRAME_KEY, carry_source_frame
 from app.utils.geometry import bbox_to_polygon, polygon_to_bbox
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -207,6 +208,12 @@ def update_region(db: Session, region: TextRegion, data: RegionUpdate, action: s
     }
     source_text_before = region.source_text
     changes = data.model_dump(exclude_unset=True, mode="json")
+    source_frame = None
+    if "polygon" in changes and changes["polygon"] != region.polygon:
+        source_frame = carry_source_frame(region, changes["polygon"])
+    elif changes.get("bbox") and changes["bbox"] != region.bbox and "polygon" not in changes:
+        # Bbox-only edits explicitly replace the source with an upright frame.
+        source_frame = {"polygon": bbox_to_polygon(changes["bbox"]), "angle": 0}
     if PAINT_FIELDS & changes.keys():
         region.layout_data = {**(region.layout_data or {}), "text_paint": {
             **((region.layout_data or {}).get("text_paint") or {}), "version": 1, "mode": "manual"}}
@@ -237,6 +244,9 @@ def update_region(db: Session, region: TextRegion, data: RegionUpdate, action: s
         region.pixel_mask_path = None
         region.inpainted_path = None
         region.layout_data = {**_without_automatic_grouping(region.layout_data), "manual": True}
+        region.layout_data.pop(OCR_FRAME_KEY, None)
+        if source_frame:
+            region.layout_data[OCR_FRAME_KEY] = source_frame
         sync = region.layout_data.get(TRANSLATION_GEOMETRY_SYNC_KEY, {})
         region.layout_data = {
             **region.layout_data,
@@ -300,6 +310,9 @@ def copy_region(db: Session, region: TextRegion, offset: float = 12) -> TextRegi
     values["locked"] = False
     values["bubble_id"] = None
     values["layout_data"] = {**_without_automatic_grouping(values.get("layout_data")), "manual": True}
+    frame = carry_source_frame(region, values["polygon"])
+    if frame:
+        values["layout_data"][OCR_FRAME_KEY] = frame
     duplicate = TextRegion(image_id=region.image_id, region_key=next_region_key(db, region.image_id), **values)
     db.add(duplicate)
     db.flush()

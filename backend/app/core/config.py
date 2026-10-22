@@ -21,7 +21,6 @@ class Settings(BaseSettings):
     )
 
     app_name: str = "MangaFlow"
-    environment: str = "development"
     debug: bool = False
     maintenance_mode: bool = False
     api_prefix: str = "/api"
@@ -40,7 +39,6 @@ class Settings(BaseSettings):
     gpu_max_concurrency: int = Field(default=1, ge=1, le=2)
     gpu_memory_reserve_mb: int = Field(default=2048, ge=2048, le=16384)
     native_threads: int = Field(default=2, ge=1, le=16)
-    default_font_path: str | None = None
     auto_provision_models: bool = True
     text_segmentation_enabled: bool = True
     segmentation_backend: Literal["auto", "opencv", "onnx_cuda"] = "auto"

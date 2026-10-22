@@ -4,12 +4,12 @@ import type Konva from 'konva'
 import {beforeEach, describe, expect, it, vi} from 'vitest'
 import {RegionPolygonEditor} from './RegionPolygonEditor'
 
-const {rects} = vi.hoisted(() => ({rects:vi.fn()}))
+const {rects,lines} = vi.hoisted(() => ({rects:vi.fn(),lines:vi.fn()}))
 vi.mock('konva', () => ({default:{}}))
 vi.mock('./RegionLabel', () => ({RegionLabel:() => null}))
 vi.mock('react-konva', () => ({
   Group:forwardRef(function MockGroup({children}: {children?:ReactNode},_ref) {return <>{children}</>}),
-  Line:() => null,
+  Line:(props:Konva.LineConfig) => {lines(props);return null},
   Circle:() => null,
   Rect:(props:Konva.RectConfig) => {rects(props); return null},
 }))
@@ -35,7 +35,26 @@ const expectParallel = (before:number[][],after:number[][]) => before.forEach((p
 })
 
 describe('polygon edge handle interaction', () => {
-  beforeEach(() => rects.mockClear())
+  beforeEach(() => {rects.mockClear();lines.mockClear()})
+
+  it.each([false,true])('forwards Alt=%s from an edited frame click without changing geometry',altKey => {
+    const callbacks=props()
+    render(<RegionPolygonEditor {...callbacks}/>)
+    const outline=lines.mock.calls.map(([line])=>line).find(line=>line.closed)
+    act(()=>outline.onClick({evt:new MouseEvent('click',{button:0,altKey}),cancelBubble:false}))
+    expect(callbacks.onSelect).toHaveBeenCalledExactlyOnceWith(altKey)
+    expect(callbacks.onCommit).not.toHaveBeenCalled()
+  })
+
+  it('taps an edited frame as single selection and ignores non-primary clicks',()=>{
+    const callbacks=props()
+    render(<RegionPolygonEditor {...callbacks}/>)
+    const outline=lines.mock.calls.map(([line])=>line).find(line=>line.closed)
+    act(()=>outline.onClick({evt:new MouseEvent('click',{button:2,altKey:true}),cancelBubble:false}))
+    expect(callbacks.onSelect).not.toHaveBeenCalled()
+    act(()=>outline.onTap({evt:new Event('touchend'),cancelBubble:false}))
+    expect(callbacks.onSelect).toHaveBeenCalledExactlyOnceWith(false)
+  })
 
   it.each([0,1,2,3])('compresses edge %s of a rotated rectangle in parallel and commits only at drag end', index => {
     const callbacks = props()

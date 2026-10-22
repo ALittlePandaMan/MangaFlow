@@ -174,7 +174,8 @@ def validated_crop(request):
     maximum = request.get("max_new_tokens", LOCAL_OCR_DEFAULT_MAX_TOKENS)
     if isinstance(maximum, bool) or not isinstance(maximum, int) or not 16 <= maximum <= LOCAL_OCR_MAX_TOKENS:
         raise ValueError("invalid OCR generation limit")
-    image = _crop(Path(request["image_path"]), box, padding)
+    image = _crop(Path(request["image_path"]), box, padding, polygon=request.get("polygon"),
+                  orientation=request.get("orientation"), crop_angle=request.get("crop_angle"))
     if not image.width or not image.height:
         raise ValueError("empty OCR crop")
     return image, maximum

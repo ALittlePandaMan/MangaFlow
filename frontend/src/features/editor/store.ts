@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import type { Tool, ViewMode } from '../../types'
 
-export interface LayerVisibility {
+interface LayerVisibility {
   original: boolean
   detection: boolean
   clean: boolean

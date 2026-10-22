@@ -1,5 +1,5 @@
 export type ThemeMode = 'system' | 'light' | 'dark'
-export type ResolvedTheme = Exclude<ThemeMode, 'system'>
+type ResolvedTheme = Exclude<ThemeMode, 'system'>
 
 export const THEME_STORAGE_KEY = 'mangaflow.theme'
 export const SYSTEM_DARK_QUERY = '(prefers-color-scheme: dark)'

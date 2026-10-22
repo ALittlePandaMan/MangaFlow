@@ -1,3 +1,4 @@
+import {t, useLocale} from '../../../i18n'
 import {RegionLabel} from './RegionLabel'
 import Konva from 'konva'
 import { Eraser, Languages, ScanText } from 'lucide-react'
@@ -33,6 +34,7 @@ interface Props {
   onPageContextMenu?: (position: {x: number, y: number}) => void
   processingRegionIds?: string[]
   runningAction: string | null
+  readOnly?: boolean
   interactionKey: string
 }
 
@@ -89,13 +91,15 @@ const polygonContainsPoint = (polygon: number[][], point: MarqueePoint, edgeTole
   return inside
 }
 function ComparisonLabel({x, scale, text}: {x: number, scale: number, text: string}) {
+  useLocale()
   return <Group x={x} y={12 * scale} scaleX={scale} scaleY={scale} listening={false}>
     <Rect width={48} height={24} cornerRadius={6} fill="rgba(24,24,24,.86)" stroke="rgba(255,255,255,.18)" strokeWidth={1}/>
     <Text width={48} height={24} text={text} align="center" verticalAlign="middle" fontFamily="Noto Sans CJK SC, sans-serif" fontSize={10} fontStyle="bold" fill="#f2f2f2"/>
   </Group>
 }
 
-function MangaCanvasComponent({ page, regions, onCreate, onUpdate, onUpdateMany, onRegionAction, onPageContextMenu, processingRegionIds, runningAction }: Props) {
+function MangaCanvasComponent({ page, regions, onCreate, onUpdate, onUpdateMany, onRegionAction, onPageContextMenu, processingRegionIds, runningAction, readOnly = false }: Props) {
+  useLocale()
   const containerRef = useRef<HTMLDivElement>(null)
   const contextMenuRef = useRef<HTMLDivElement>(null)
   const [viewport, setViewport] = useState({width: 800, height: 700})
@@ -116,6 +120,8 @@ function MangaCanvasComponent({ page, regions, onCreate, onUpdate, onUpdateMany,
   const polygonSubmitting = useRef(false)
   const view = useEditorStore(state => state.view)
   const tool = useEditorStore(state => state.tool)
+  const setTool = useEditorStore(state => state.setTool)
+  const drawingToolActive = tool === 'rectangle' || tool === 'polygon' || tool === 'lasso'
   const zoom = useEditorStore(state => state.zoom)
   const viewReset = useEditorStore(state => state.viewReset)
   const setZoom = useEditorStore(state => state.setZoom)
@@ -142,7 +148,7 @@ function MangaCanvasComponent({ page, regions, onCreate, onUpdate, onUpdateMany,
   const wheelFrameTime = useRef<number | null>(null)
   const selected = regions.find(region => region.id === selectedIds[0])
   const singleSelection = selectedIds.length === 1
-  const editableRegionId = singleSelection && selected && !selected.locked && !runningAction && !touchNavigating && !comparison && tool === 'select'
+  const editableRegionId = singleSelection && selected && !selected.locked && !runningAction && !readOnly && !touchNavigating && !comparison && tool === 'select'
     ? selected.id : null
   // Konva hit-testing follows paint order, including transparent polygon fills.
   // Raise the active editor and all its handles together, without mutating OCR
@@ -153,8 +159,8 @@ function MangaCanvasComponent({ page, regions, onCreate, onUpdate, onUpdateMany,
     return [...regions.slice(0, index), ...regions.slice(index + 1), regions[index]]
   }, [regions, editableRegionId])
   const editingTranslatedGeometry = view === 'translated'
-  const groupSelection = useMemo(() => selectedIds.length > 1 && tool === 'select' && !comparison && !runningAction && !touchNavigating
-    ? regions.filter(region => selectedIdSet.has(region.id) && !region.locked) : [], [regions,selectedIds,selectedIdSet,tool,comparison,runningAction,touchNavigating])
+  const groupSelection = useMemo(() => selectedIds.length > 1 && tool === 'select' && !comparison && !runningAction && !readOnly && !touchNavigating
+    ? regions.filter(region => selectedIdSet.has(region.id) && !region.locked) : [], [regions,selectedIds,selectedIdSet,tool,comparison,runningAction,readOnly,touchNavigating])
   // A multi-selection may contain only one movable box; keep that box in the
   // drag group while locked boxes stay selected and stationary.
   const groupSelectionIds = useMemo(() => new Set(groupSelection.map(region => region.id)), [groupSelection])
@@ -409,7 +415,7 @@ function MangaCanvasComponent({ page, regions, onCreate, onUpdate, onUpdateMany,
     drawing.current = null
     middlePanning.current = false
     setMiddlePanningActive(false)
-  }, [page.id, tool])
+  }, [page.id, tool, readOnly])
   useEffect(() => {
     if (view !== 'comparison') return
     cancelMarquee()
@@ -493,6 +499,7 @@ function MangaCanvasComponent({ page, regions, onCreate, onUpdate, onUpdateMany,
     }
     if (runningAction) return
     if (tool === 'pan') return
+    if (readOnly && tool !== 'select') return
     if (view === 'comparison') return
     const point = pointer(event)
     if (!point) return
@@ -549,6 +556,7 @@ function MangaCanvasComponent({ page, regions, onCreate, onUpdate, onUpdateMany,
       finishMarquee()
       return
     }
+    if (readOnly) return
     const gesture = drawing.current
     if (!gesture) return
     // Release synchronously, before awaiting persistence or a bubbling window
@@ -625,7 +633,7 @@ function MangaCanvasComponent({ page, regions, onCreate, onUpdate, onUpdateMany,
   }
 
   const polygonClick = (event: Konva.KonvaEventObject<Event>) => {
-    if (runningAction || view === 'comparison' || tool !== 'polygon' || polygonSubmitting.current) return
+    if (runningAction || readOnly || view === 'comparison' || tool !== 'polygon' || polygonSubmitting.current) return
     const point = pointer(event)
     if (!point || point[0] < 0 || point[0] > page.width || point[1] < 0 || point[1] > page.height) return
     if (draft.length >= 3 && Math.hypot(point[0] - draft[0][0], point[1] - draft[0][1]) * scale <= POLYGON_CLOSE_DISTANCE) {
@@ -648,14 +656,33 @@ function MangaCanvasComponent({ page, regions, onCreate, onUpdate, onUpdateMany,
     ? Math.hypot(polygonPreview[0] - draft[0][0], polygonPreview[1] - draft[0][1]) * scale <= POLYGON_CLOSE_DISTANCE
     : false
 
+  const handleRegionDown = (event: Konva.KonvaEventObject<MouseEvent | TouchEvent>) => {
+    if (!drawingToolActive || (event.evt instanceof MouseEvent && event.evt.button !== 0)) return
+    // A click on a frame selects it; do not let its initial press also start
+    // a rectangle/lasso at the Stage. Middle-button panning still bubbles.
+    event.cancelBubble = true
+    stopWheelAnimation()
+    cancelMarquee()
+  }
+
+  const selectRegion = (id: string, additive = false) => {
+    if (drawingToolActive) {
+      drawing.current = null
+      setDraft([])
+      setPolygonPreview(null)
+      setTool('select')
+    }
+    setContextMenu(null)
+    select(id, tool === 'select' && additive)
+  }
+
   const renderInteractionRegion = (region: TextRegion) => {
             const selectedNow = selectedIdSet.has(region.id)
             const geometry = regionGeometry(region, editingTranslatedGeometry)
             const editable = region.id === editableRegionId
-            const geometryLabel = selectedNow ? `  · ${editingTranslatedGeometry ? '译文框' : '原文框'}` : ''
-            const label = `${region.region_key}${geometryLabel}${region.visible ? '' : '  · 已关闭'}${region.locked ? '  🔒' : ''}`
+            const geometryLabel = selectedNow ? `  · ${editingTranslatedGeometry ? t("译文框") : t("原文框")}` : ''
+            const label = `${region.region_key}${geometryLabel}${region.visible ? '' : t("  · 已关闭")}${region.locked ? '  🔒' : ''}`
             const labelColor = selectedNow ? canvasPalette.selectedLabel : region.visible ? canvasPalette.detected : canvasPalette.hidden
-            const drawingToolActive = tool === 'rectangle' || tool === 'polygon' || tool === 'lasso'
             return <Group key={region.id} name={`region-${region.id}`} onMouseEnter={() => setHoveredRegionId(region.id)} onMouseLeave={() => setHoveredRegionId(null)} onContextMenu={event => openRegionContextMenu(event, region)}>
               {editable ? <RegionPolygonEditor
                 key={`${region.id}-${editingTranslatedGeometry ? 'translated' : 'source'}`}
@@ -663,7 +690,7 @@ function MangaCanvasComponent({ page, regions, onCreate, onUpdate, onUpdateMany,
                 pageWidth={page.width} pageHeight={page.height}
                 scale={scale} labelScale={regionLabelScale}
                 label={label} labelColor={labelColor} visible={region.visible}
-                onSelect={() => select(region.id, true)}
+                onSelect={additive => select(region.id, additive)}
                 onContextMenu={event => openRegionContextMenu(event, region)}
                 onPreview={editingTranslatedGeometry ? polygon => setTranslatedGeometryPreview({
                   regionId: region.id,
@@ -686,13 +713,15 @@ function MangaCanvasComponent({ page, regions, onCreate, onUpdate, onUpdateMany,
                   dash={region.visible ? undefined : [6 / scale, 4 / scale]}
                   fill={selectedNow ? canvasPalette.selectionFill : 'rgba(0,0,0,.001)'}
                   opacity={region.visible ? 1 : .7}
-                  listening={!runningAction && !drawingToolActive && tool !== 'pan'}
+                  listening={!runningAction && tool !== 'pan'}
+                  onMouseDown={handleRegionDown}
+                  onTouchStart={handleRegionDown}
                   onClick={event => {
                     event.cancelBubble = true
                     if (event.evt.button !== 0) return
-                    select(region.id, tool === 'select')
+                    selectRegion(region.id, event.evt.altKey)
                   }}
-                  onTap={event => { event.cancelBubble = true; select(region.id, tool === 'select') }}
+                  onTap={event => { event.cancelBubble = true; selectRegion(region.id) }}
                   onContextMenu={event => openRegionContextMenu(event, region)}
                 />
                 {(selectedNow || hoveredRegionId === region.id) && <RegionLabel x={geometry.bbox[0]} y={geometry.bbox[1]} text={label} color={labelColor} scale={regionLabelScale}/>}
@@ -731,8 +760,8 @@ function MangaCanvasComponent({ page, regions, onCreate, onUpdate, onUpdateMany,
               {layers.translated && <TranslatedRegions regions={translatedRenderRegions} displayScale={scale}/>}
               {maskOverlay.image && <KonvaImage name="mask-overlay-translated" image={maskOverlay.image} width={page.width} height={page.height} opacity={MASK_OVERLAY_OPACITY} listening={false}/>}
             </Group>
-            <ComparisonLabel x={12 / scale} scale={1 / scale} text="原图"/>
-            <ComparisonLabel x={page.width + COMPARISON_GAP + 12 / scale} scale={1 / scale} text="译文"/>
+            <ComparisonLabel x={12 / scale} scale={1 / scale} text={t("原图")}/>
+            <ComparisonLabel x={page.width + COMPARISON_GAP + 12 / scale} scale={1 / scale} text={t("译文")}/>
           </>}
           {view !== 'comparison' && layers.original && <KonvaImage image={original ?? undefined} width={page.width} height={page.height} listening={false} />}
           {view !== 'comparison' && layers.clean && <KonvaImage image={clean ?? undefined} width={page.width} height={page.height} listening={false} />}
@@ -749,7 +778,7 @@ function MangaCanvasComponent({ page, regions, onCreate, onUpdate, onUpdateMany,
             const geometry = regionGeometry(region, view === 'translated')
             return <Group key={`processing-${region.id}`} listening={false}>
               <Line name={`processing-${region.id}`} points={flat(geometry.polygon)} closed stroke={canvasPalette.selected} strokeWidth={3 / scale} dash={[6 / scale,4 / scale]} fill={canvasPalette.marqueeFill}/>
-              <RegionLabel x={geometry.bbox[0]} y={geometry.bbox[1]} text={`${region.region_key} · 处理中`} color={canvasPalette.selectedLabel} scale={regionLabelScale}/>
+              <RegionLabel x={geometry.bbox[0]} y={geometry.bbox[1]} text={t("{{v0}} · 处理中", {v0: region.region_key})} color={canvasPalette.selectedLabel} scale={regionLabelScale}/>
             </Group>
           })}
           {view !== 'comparison' && marquee && <Rect
@@ -788,15 +817,14 @@ function MangaCanvasComponent({ page, regions, onCreate, onUpdate, onUpdateMany,
         </Group>
       </Layer>
     </Stage>
-    {(maskOverlay.loading || maskOverlay.error) && <span role={maskOverlay.error ? 'alert' : 'status'} aria-label="Mask 图层加载状态" className="pointer-events-none absolute right-3.5 top-3.5 z-10 max-w-[calc(100%-28px)] rounded-lg border border-line bg-panel/95 px-3 py-2 text-xs text-secondary shadow-soft">{maskOverlay.error || '正在显示 Mask…'}</span>}
-    {contextMenu && contextRegionIds.length > 0 && <div ref={contextMenuRef} className="absolute z-[80] max-h-[calc(100%-16px)] w-[178px] max-w-[calc(100%-16px)] overflow-y-auto rounded-xl border border-line-strong bg-popover p-1 text-secondary shadow-panel backdrop-blur-xl" style={{left: contextMenu.x, top: contextMenu.y}} role="menu" aria-label={contextRegionIds.length > 1 ? `所选 ${contextRegionIds.length} 个区域` : `${contextRegion?.region_key} 区域操作`}>
-      <div className="mb-1 flex h-[38px] items-center gap-2 border-b border-line-subtle px-2"><span className="min-w-0 truncate font-mono text-[13px] font-semibold text-accent">{contextRegionIds.length > 1 ? `所选 ${contextRegionIds.length} 个区域` : contextRegion?.region_key}</span><small className="shrink-0 text-[12px] text-muted">{contextRegionIds.length > 1 ? '多选操作' : '区域操作'}</small></div>
-      <button className={cn(contextButtonClass, runningAction === 'ocr' && 'bg-accent/10 text-ink')} role="menuitem" disabled={!!runningAction} title={`重新 OCR (${formatShortcut(shortcuts['region.ocr'])})`} aria-keyshortcuts={shortcutToAria(shortcuts['region.ocr'])} onClick={() => runRegionContextAction('ocr')}>{runningAction === 'ocr' ? <ButtonLoading label="OCR 处理中…"/> : <><ScanText size={15}/>重新 OCR</>}</button>
-      <button className={cn(contextButtonClass, runningAction === 'inpaint' && 'bg-accent/10 text-ink')} role="menuitem" disabled={!!runningAction} title={`重新修复 (${formatShortcut(shortcuts['region.inpaint'])})`} aria-keyshortcuts={shortcutToAria(shortcuts['region.inpaint'])} onClick={() => runRegionContextAction('inpaint')}>{runningAction === 'inpaint' ? <ButtonLoading label="背景修复中…"/> : <><Eraser size={15}/>重新修复</>}</button>
-      <button className={cn(contextButtonClass, runningAction === 'translate' && 'bg-accent/10 text-ink')} role="menuitem" disabled={!!runningAction} title={`重新翻译 (${formatShortcut(shortcuts['region.translate'])})`} aria-keyshortcuts={shortcutToAria(shortcuts['region.translate'])} onClick={() => runRegionContextAction('translate')}>{runningAction === 'translate' ? <ButtonLoading label="翻译处理中…"/> : <><Languages size={15}/>重新翻译</>}</button>
+    {(maskOverlay.loading || maskOverlay.error) && <span role={maskOverlay.error ? 'alert' : 'status'} aria-label={t("Mask 图层加载状态")} className="pointer-events-none absolute right-3.5 top-3.5 z-10 max-w-[calc(100%-28px)] rounded-lg border border-line bg-panel/95 px-3 py-2 text-xs text-secondary shadow-soft">{maskOverlay.error || t("正在显示 Mask…")}</span>}
+    {contextMenu && contextRegionIds.length > 0 && <div ref={contextMenuRef} className="motion-popover absolute z-[80] max-h-[calc(100%-16px)] w-[178px] max-w-[calc(100%-16px)] overflow-y-auto rounded-xl border border-line-strong bg-popover p-1 text-secondary shadow-panel backdrop-blur-xl" style={{left: contextMenu.x, top: contextMenu.y}} role="menu" aria-label={contextRegionIds.length > 1 ? t("所选 {{v0}} 个区域", {v0: contextRegionIds.length}) : t("{{v0}} 区域操作", {v0: contextRegion?.region_key})}>
+      <div className="mb-1 flex h-[38px] items-center gap-2 border-b border-line-subtle px-2"><span className="min-w-0 truncate font-mono text-[13px] font-semibold text-accent">{contextRegionIds.length > 1 ? t("所选 {{v0}} 个区域", {v0: contextRegionIds.length}) : contextRegion?.region_key}</span><small className="shrink-0 text-[12px] text-muted">{contextRegionIds.length > 1 ? t("多选操作") : t("区域操作")}</small></div>
+      <button className={cn(contextButtonClass, runningAction === 'ocr' && 'bg-accent/10 text-ink')} role="menuitem" disabled={!!runningAction} title={t("重新 OCR ({{v0}})", {v0: formatShortcut(shortcuts['region.ocr'])})} aria-keyshortcuts={shortcutToAria(shortcuts['region.ocr'])} onClick={() => runRegionContextAction('ocr')}>{runningAction === 'ocr' ? <ButtonLoading label={t("OCR 处理中…")}/> : <><ScanText size={15}/>{t("重新 OCR")}</>}</button>
+      <button className={cn(contextButtonClass, runningAction === 'inpaint' && 'bg-accent/10 text-ink')} role="menuitem" disabled={!!runningAction} title={t("重新修复 ({{v0}})", {v0: formatShortcut(shortcuts['region.inpaint'])})} aria-keyshortcuts={shortcutToAria(shortcuts['region.inpaint'])} onClick={() => runRegionContextAction('inpaint')}>{runningAction === 'inpaint' ? <ButtonLoading label={t("背景修复中…")}/> : <><Eraser size={15}/>{t("重新修复")}</>}</button>
+      <button className={cn(contextButtonClass, runningAction === 'translate' && 'bg-accent/10 text-ink')} role="menuitem" disabled={!!runningAction} title={t("重新翻译 ({{v0}})", {v0: formatShortcut(shortcuts['region.translate'])})} aria-keyshortcuts={shortcutToAria(shortcuts['region.translate'])} onClick={() => runRegionContextAction('translate')}>{runningAction === 'translate' ? <ButtonLoading label={t("翻译处理中…")}/> : <><Languages size={15}/>{t("重新翻译")}</>}</button>
     </div>}
-    <span className="canvas-touch-hint pointer-events-none absolute bottom-3 left-3 rounded-md bg-panel/90 px-2 py-1 text-[11px] text-muted">双指缩放 / 移动</span>
-    <span aria-label="画布缩放比例" className="pointer-events-none absolute bottom-3 right-3 font-mono text-[11px] font-semibold text-ink">{Math.round(zoom * 100)}%</span>
+    <span className="canvas-touch-hint pointer-events-none absolute bottom-3 left-3 rounded-md bg-panel/90 px-2 py-1 text-[11px] text-muted">{t("双指缩放 / 移动")}</span>
   </div>
 }
 
@@ -804,12 +832,14 @@ export const MangaCanvas = memo(MangaCanvasComponent, (previous, next) =>
   previous.page === next.page &&
   previous.regions === next.regions &&
   previous.runningAction === next.runningAction &&
+  previous.readOnly === next.readOnly &&
   previous.onPageContextMenu === next.onPageContextMenu &&
   previous.processingRegionIds === next.processingRegionIds &&
   previous.interactionKey === next.interactionKey
 )
 
 export function TranslatedRegions({regions, displayScale}: {regions: TextRegion[], displayScale: number}) {
+  useLocale()
   // Always draw editor text at the viewport's canvas resolution. The exported
   // page-size PNG loses small-glyph detail when scaled, and switching away from
   // it on the first edit used to change the sharpness of every region at once.
@@ -823,6 +853,7 @@ export function TranslatedRegions({regions, displayScale}: {regions: TextRegion[
 // Keep original references at this boundary. Perspective tiles update only at
 // raster thresholds; retired hidden bubble insets never replace visible frames.
 const TranslatedRegion = memo(function TranslatedRegion({region, rasterScale}: {region: TextRegion, rasterScale: number}) {
+  useLocale()
     if (!region.visible) return null
     const renderStyle = resolvedRenderStyle(region)
     if (region.perspective_warp && isPerspectiveQuad(region.translated_polygon)) return <PerspectiveTranslatedText key={`text-${region.id}`} region={region} style={renderStyle} displayScale={rasterScale}/>
@@ -832,6 +863,7 @@ const TranslatedRegion = memo(function TranslatedRegion({region, rasterScale}: {
 })
 
 function PerspectiveTranslatedText({region, style, displayScale}: {region: TextRegion, style: RenderStyle, displayScale: number}) {
+  useLocale()
   const registeredFonts = useFontRevision()
   const [fontRevision, setFontRevision] = useState(0)
   useEffect(() => {
@@ -945,6 +977,7 @@ function createTextTile(region: TextRegion, style: RenderStyle, width: number, h
 }
 
 function VerticalTranslatedText({region, style}: {region: TextRegion, style: RenderStyle}) {
+  useLocale()
   useFontRevision()
   const layout = sizeText(region)
   if (!region.translated_text.trim() || (usesAutomaticFontSize(region) && layout.overflow)) return null
@@ -981,6 +1014,7 @@ function horizontalLineX(region: TextRegion, lineWidth: number, width: number, a
 }
 
 function HorizontalTranslatedText({region, style}: {region: TextRegion, style: RenderStyle}) {
+  useLocale()
   useFontRevision()
   const layout = sizeText(region)
   if (!region.translated_text.trim() || (usesAutomaticFontSize(region) && layout.overflow)) return null

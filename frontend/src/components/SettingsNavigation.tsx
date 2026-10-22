@@ -1,3 +1,4 @@
+import {t, useLocale} from '../i18n'
 import {Settings} from 'lucide-react'
 import {createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject} from 'react'
 import {NavLink, useLocation} from 'react-router-dom'
@@ -15,6 +16,7 @@ interface SettingsNavigationState {
 const SettingsNavigationContext = createContext<SettingsNavigationState | null>(null)
 
 export function SettingsNavigationProvider({children}: {children: ReactNode}) {
+  useLocale()
   const compact = useCompactLayout(768)
   const {pathname} = useLocation()
   const [menuOpen, setMenuOpen] = useState(false)
@@ -32,17 +34,18 @@ export function useSettingsNavigation() {
 }
 
 // Keep the existing topbar appearance; only its action changes on the compact settings page.
-const navigationClass = 'flex h-10 items-center gap-2 rounded-[10px] border border-transparent px-4 text-[13px] font-semibold text-secondary no-underline outline-none transition-[background-color,border-color,color] hover:bg-hover hover:text-ink focus-visible:ring-3 focus-visible:ring-accent/20'
+const navigationClass = 'flex h-10 items-center gap-2 rounded-[10px] border border-transparent px-4 text-[14px] font-semibold text-secondary no-underline outline-none transition-[background-color,border-color,color] hover:bg-hover hover:text-ink focus-visible:ring-3 focus-visible:ring-accent/20'
 const activeClass = '!border-accent-line !bg-accent-soft !text-accent-soft-ink hover:!border-accent-line hover:!bg-accent-soft-hover'
 
 export function SettingsNavigationControl() {
+  useLocale()
   const navigation = useSettingsNavigation()
   const {pathname} = useLocation()
-  const content = <><Settings aria-hidden="true" size={17}/><span>设置</span></>
+  const content = <><Settings aria-hidden="true" size={17}/><span>{t("设置")}</span></>
   if (navigation?.compact && pathname === '/settings') return <button
     ref={navigation.trigger} type="button" className={cn(navigationClass,activeClass,'cursor-pointer')}
-    aria-label="设置" title="设置" aria-expanded={navigation.open} aria-controls="settings-navigation"
+    aria-label={t("设置")} title={t("设置")} aria-expanded={navigation.open} aria-controls="settings-navigation"
     onClick={navigation.toggle}>{content}</button>
-  return <NavLink to="/settings" aria-label="设置" title="设置"
+  return <NavLink to="/settings" aria-label={t("设置")} title={t("设置")}
     className={({isActive}) => cn(navigationClass,isActive && activeClass)}>{content}</NavLink>
 }

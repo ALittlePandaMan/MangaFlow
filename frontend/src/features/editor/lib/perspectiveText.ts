@@ -1,4 +1,4 @@
-export type PerspectivePoint = [number, number]
+type PerspectivePoint = [number, number]
 // Keep in sync with backend fitting, paint and perspective render changes.
 export const PERSPECTIVE_RENDER_OUTPUT_VERSION = 11
 

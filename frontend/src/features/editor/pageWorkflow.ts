@@ -1,3 +1,4 @@
+import {t} from '../../i18n'
 import type {ViewMode} from '../../types'
 
 export type PageWorkflowStage = 'ocr' | 'translation' | 'inpainting'
@@ -41,5 +42,5 @@ export function buildPageWorkflowRequest(stage: PageWorkflowStage): PageWorkflow
     force: true,
     options: {rebuild_clean: true},
   }
-  throw new Error(`不支持的页面处理操作：${stage}`)
+  throw new Error(t("不支持的页面处理操作：{{v0}}", {v0: stage}))
 }

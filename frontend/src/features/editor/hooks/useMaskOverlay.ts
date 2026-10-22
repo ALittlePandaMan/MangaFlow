@@ -1,3 +1,4 @@
+import {t} from '../../../i18n'
 import {useEffect,useMemo,useState} from 'react'
 import type {ImagePage,TextRegion} from '../../../types'
 import {buildMaskOverlay,type MaskOverlayInput} from '../lib/maskOverlay'
@@ -19,7 +20,7 @@ export function useMaskOverlay(page:ImagePage, regions:TextRegion[], enabled:boo
     void buildMaskOverlay(JSON.parse(key) as MaskOverlayInput,controller.signal).then(image => {
       if (!controller.signal.aborted) setPreview({key,image,error:null})
     }).catch(() => {
-      if (!controller.signal.aborted) setPreview({key,image:null,error:'Mask 叠加加载失败，请关闭后重新开启重试。'})
+      if (!controller.signal.aborted) setPreview({key,image:null,error:t("Mask 叠加加载失败，请关闭后重新开启重试。")})
     })
     return () => controller.abort()
   },[key])

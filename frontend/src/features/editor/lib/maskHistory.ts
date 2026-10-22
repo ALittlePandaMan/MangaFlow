@@ -1,15 +1,16 @@
+import {t} from '../../../i18n'
 import {api} from '../../../services/api'
 import {maskCoverage,type MaskCheckpoint,type MaskBounds} from './maskBitmap'
 
 async function pixels(url:string,bounds:MaskBounds) {
   const image=await new Promise<HTMLImageElement>((resolve,reject) => {
     const value=new Image();value.crossOrigin='anonymous';value.onload=() => resolve(value)
-    value.onerror=() => reject(new Error('无法读取蒙版历史'));value.src=url
+    value.onerror=() => reject(new Error(t("无法读取蒙版历史")));value.src=url
   })
-  if (image.naturalWidth !== bounds.width || image.naturalHeight !== bounds.height) throw new Error('蒙版历史尺寸不匹配')
+  if (image.naturalWidth !== bounds.width || image.naturalHeight !== bounds.height) throw new Error(t("蒙版历史尺寸不匹配"))
   const canvas=document.createElement('canvas');canvas.width=bounds.width;canvas.height=bounds.height
   const context=canvas.getContext('2d',{willReadFrequently:true})
-  if (!context) throw new Error('无法读取蒙版历史')
+  if (!context) throw new Error(t("无法读取蒙版历史"))
   context.drawImage(image,0,0)
   return {...bounds,pixels:maskCoverage(context.getImageData(0,0,bounds.width,bounds.height).data)}
 }

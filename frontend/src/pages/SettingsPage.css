@@ -1,17 +1,18 @@
-.settings-workspace, .settings-dialog {
+.settings-workspace {
   --control-radius: 10px;
   --control-padding-x: 14px;
   --settings-control-height: 44px;
   --settings-font-body: 16px;
   --settings-font-help: 14px;
 }
-.settings-workspace { position: relative; display: grid; grid-template-columns: 256px minmax(0,1fr); height: 100%; min-height: 0; color: var(--color-ink); background: var(--color-app); }
-.settings-sidebar { display: flex; flex-direction: column; gap: 24px; min-height: 0; overflow: auto; padding: 24px 20px; background: var(--color-panel); border-right: 1px solid var(--color-line-subtle); }
+.settings-workspace { --settings-sidebar-width: 280px; --settings-top-padding: 12px; position: relative; display: grid; grid-template-columns: var(--settings-sidebar-width) minmax(0,1fr); height: 100%; min-height: 0; color: var(--color-ink); background: var(--color-app); }
+.settings-sidebar { display: flex; flex-direction: column; gap: 24px; min-width: 0; min-height: 0; overflow: auto; padding: var(--settings-top-padding) 20px; background: var(--color-panel); border-right: 1px solid var(--color-line-subtle); }
 :root[data-theme='light'] .settings-sidebar { background: #f7f9fc; }
 .settings-sidebar nav { display: flex; flex-direction: column; gap: 4px; }
 .settings-sidebar button { flex-shrink: 0; }
 .settings-nav-item, .settings-nav-group { display: flex; align-items: center; gap: 16px; width: 100%; min-height: 44px; padding: 0 12px; border: 0; border-radius: var(--control-radius); background: transparent; color: var(--color-secondary); text-align: left; font-size: var(--settings-font-body); font-weight: 600; cursor: pointer; }
 .settings-nav-item svg, .settings-nav-group svg { flex-shrink: 0; color: var(--color-muted); }
+.settings-nav-item span, .settings-nav-group span { min-width: 0; padding-block: 10px; line-height: 1.4; overflow-wrap: anywhere; }
 .settings-nav-group span { flex: 1; }
 .settings-model-navigation { display: flex; flex-direction: column; gap: 4px; }
 .settings-model-navigation .settings-nav-item { padding-left: 32px; }
@@ -19,10 +20,12 @@
 .settings-nav-item.is-active { background: var(--color-accent-soft); color: var(--color-accent-soft-ink); }
 .settings-nav-item.is-active svg { color: inherit; }
 .settings-install { width: 100%; margin-top: auto; }
-.settings-main { min-height: 0; min-width: 0; overflow: auto; padding: 32px 48px 48px; container: settings / inline-size; }
+.settings-sidebar .settings-install { height: var(--settings-control-height); gap: 8px; padding-block: 0; white-space: nowrap; }
+/* Keep short sections and asynchronously loaded sections on the same axis. */
+.settings-main { min-height: 0; min-width: 0; overflow: auto; scrollbar-gutter: stable; padding: var(--settings-top-padding) 48px 48px; container: settings / inline-size; }
 .settings-sidebar, .settings-main { overscroll-behavior: contain; }
 .settings-content { width: 100%; max-width: 864px; margin: 0 auto; }
-.settings-breadcrumb { display: flex; align-items: center; gap: 12px; margin-bottom: 28px; color: var(--color-secondary); font-size: 14px; font-weight: 500; line-height: 22px; }
+.settings-breadcrumb { display: flex; align-items: center; gap: 12px; min-height: var(--settings-control-height); margin-bottom: 16px; color: var(--color-secondary); font-size: 14px; font-weight: 500; line-height: 22px; }
 .settings-breadcrumb svg { width: 16px; height: 16px; flex-shrink: 0; }
 .settings-page-heading { margin-bottom: 28px; }
 .settings-page-heading h1 { margin: 0; font-size: 28px; line-height: 1.4; font-weight: 700; letter-spacing: -.5px; }
@@ -58,9 +61,9 @@
 .settings-error, .settings-notice { margin: 0 0 24px; padding: 12px 16px; border-radius: var(--control-radius); overflow-wrap: anywhere; font-size: var(--settings-font-help); line-height: 1.6; }
 .settings-error { color: var(--color-danger-soft-ink); background: color-mix(in srgb,var(--color-danger) 10%,transparent); }
 .settings-notice { color: var(--color-accent-soft-ink); background: var(--color-accent-soft); }
-:is(.settings-workspace, .settings-dialog) :is(input:not([type='checkbox']):not([type='file']):not([type='color']), button[aria-haspopup='listbox'], textarea) { border-radius: var(--control-radius); padding-inline: var(--control-padding-x); font-size: var(--settings-font-body); background-color: var(--color-panel); }
-:is(.settings-workspace, .settings-dialog) :is(input:not([type='checkbox']):not([type='file']), button[aria-haspopup='listbox']) { min-height: var(--settings-control-height); height: var(--settings-control-height); }
-:is(.settings-workspace, .settings-dialog) :is(.settings-actions button, .settings-font-toolbar button, .settings-model-fetch > button, .settings-runtime-header button, .settings-install, .settings-error-state button, .recommendation-hardware > button, .recommendation-actions > button) { min-height: var(--settings-control-height); padding-inline: var(--control-padding-x); border-radius: var(--control-radius); font-size: var(--settings-font-body); line-height: 1.5; }
+.settings-workspace :is(input:not([type='checkbox']):not([type='file']):not([type='color']), button[aria-haspopup='listbox'], textarea) { border-radius: var(--control-radius); padding-inline: var(--control-padding-x); font-size: var(--settings-font-body); background-color: var(--color-panel); }
+.settings-workspace :is(input:not([type='checkbox']):not([type='file']), button[aria-haspopup='listbox']) { min-height: var(--settings-control-height); height: var(--settings-control-height); }
+.settings-workspace :is(.settings-actions button, .settings-font-toolbar button, .settings-model-fetch > button, .settings-runtime-header button, .settings-install, .settings-error-state button, .recommendation-hardware > button, .recommendation-actions > button) { min-height: var(--settings-control-height); padding-inline: var(--control-padding-x); border-radius: var(--control-radius); font-size: var(--settings-font-body); line-height: 1.5; }
 /* Full-height steppers share the same hit target on desktop and touch screens. */
 .settings-workspace .number-control { height: var(--settings-control-height); grid-template-columns: minmax(0,1fr) 88px; border: 0; border-radius: var(--control-radius); outline: 1px solid var(--color-line); outline-offset: -1px; background: var(--color-panel); }
 .settings-workspace .number-control:hover { outline-color: var(--color-line-strong); }
@@ -84,6 +87,46 @@
 .settings-font-info strong { font-size: var(--settings-font-body); font-weight: 500; }
 .settings-font-info small { display: block; margin-top: 4px; color: var(--color-muted); font-size: var(--settings-font-help); line-height: 1.6; }
 .settings-font-row p { margin: 0; font-size: 24px; line-height: 1.5; overflow-wrap: anywhere; }
+.font-library-navigation { display: flex; width: fit-content; max-width: 100%; gap: 4px; margin-bottom: 20px; padding: 4px; border: 1px solid var(--color-line-subtle); border-radius: var(--control-radius); background: var(--color-panel); }
+.font-library-navigation button { display: flex; min-height: 40px; align-items: center; justify-content: center; gap: 10px; padding: 8px 16px; border-radius: 7px; color: var(--color-secondary); font-size: 16px; font-weight: 600; cursor: pointer; }
+.font-library-navigation button:hover { background: var(--color-hover); }
+.font-library-navigation button[aria-pressed='true'] { color: var(--color-accent-soft-ink); background: var(--color-accent-soft); }
+.font-library-navigation span { font-size: 13px; font-variant-numeric: tabular-nums; opacity: .75; }
+.font-library-filters { display: grid; grid-template-columns: minmax(0,1fr) 172px; gap: 12px; margin-bottom: 16px; }
+.font-library-search { position: relative; min-width: 0; }
+.font-library-search:only-child { grid-column: 1 / -1; }
+.font-library-search > svg { position: absolute; inset: 13px auto auto 14px; color: var(--color-muted); pointer-events: none; }
+.settings-workspace .settings-font-manager .font-library-search input[type='search'] { height: 44px; padding-left: 42px; padding-right: 48px; font-size: 16px; }
+.font-library-search input::-webkit-search-cancel-button { display: none; }
+.font-library-search > button { position: absolute; top: 2px; right: 2px; width: 40px; height: 40px; min-height: 40px; }
+.font-library-count, .font-library-feedback { margin: 0 0 16px; color: var(--color-muted); font-size: 14px; line-height: 1.7; }
+.font-library-feedback { color: var(--color-accent-soft-ink); }
+.font-library-count { margin-bottom: 12px; font-variant-numeric: tabular-nums; }
+.font-preset-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 16px; }
+.font-preset-card { display: flex; min-width: 0; flex-direction: column; gap: 16px; padding: 20px; border: 1px solid var(--color-line); border-radius: 12px; background: var(--color-panel); }
+.font-preset-heading { display: flex; min-height: 50px; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.font-preset-heading > div { min-width: 0; }
+.font-preset-heading h2 { margin: 0; color: var(--color-ink); font-size: 18px; font-weight: 600; line-height: 1.5; overflow-wrap: anywhere; }
+.font-preset-heading > div > span { display: block; margin-top: 2px; color: var(--color-muted); font-size: 14px; line-height: 1.5; }
+.font-preset-kind { flex-shrink: 0; max-width: 112px; padding: 4px 8px; border-radius: 6px; color: var(--color-secondary); background: var(--color-hover); font-size: 13px; line-height: 1.5; }
+.font-preset-artwork { display: block; width: 100%; height: 48px; margin: 8px 0 0; background: var(--color-ink); mask-repeat: no-repeat; mask-size: contain; mask-position: left center; }
+.font-preset-live { min-height: 48px; margin: 8px 0 0; font-size: 28px; line-height: 1.7; overflow-wrap: anywhere; }
+.font-preset-description { flex: 1; margin: 0; color: var(--color-secondary); font-size: 14px; line-height: 1.75; }
+.font-preset-languages { display: flex; flex-wrap: wrap; gap: 6px 10px; color: var(--color-muted); font-size: 14px; line-height: 1.6; }
+.font-preset-card footer { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 12px; padding-top: 16px; border-top: 1px solid var(--color-line-subtle); }
+.font-preset-card footer > div { display: flex; flex: 1; min-width: 140px; flex-wrap: wrap; align-items: center; gap: 8px 10px; color: var(--color-muted); font-size: 14px; line-height: 1.7; }
+.font-preset-size { font-variant-numeric: tabular-nums; }
+.font-preset-card a { display: inline-flex; align-items: center; gap: 3px; color: inherit; }
+.font-preset-card a:hover { color: var(--color-accent-soft-ink); text-decoration: underline; }
+.font-preset-card a:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 3px; border-radius: 2px; }
+.settings-workspace .font-preset-card footer button { min-height: 40px; font-size: 14px; }
+.font-preset-download { color: var(--color-accent-soft-ink); border-color: var(--color-accent-line); background: var(--color-accent-soft); }
+.font-preset-download:not(:disabled):hover { background: var(--color-accent-soft-hover); border-color: var(--color-accent); }
+.font-library-empty { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 40px 20px; color: var(--color-muted); text-align: center; font-size: 14px; line-height: 1.7; }
+.font-library-empty strong { color: var(--color-secondary); font-size: 16px; }
+.font-library-retry { margin: 24px 0; }
+@container settings (width < 640px) { .font-preset-grid { grid-template-columns: minmax(0,1fr); } }
+@container settings (width < 440px) { .font-library-filters { grid-template-columns: minmax(0,1fr); } .font-library-navigation { width: 100%; } .font-library-navigation button { flex: 1; padding-inline: 10px; } }
 .settings-shortcut-tabs { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 24px; padding-bottom: 12px; border-bottom: 1px solid var(--color-line-subtle); }
 .settings-shortcut-tabs button { min-height: 44px; padding: 0 var(--control-padding-x); border-radius: var(--control-radius); color: var(--color-secondary); font-size: var(--settings-font-body); font-weight: 500; line-height: 1.5; cursor: pointer; }
 .settings-shortcut-tabs button:not(:disabled):hover { background: var(--color-hover); color: var(--color-ink); }
@@ -124,13 +167,6 @@
 .settings-placeholder-input { height: 44px; width: 100%; border-radius: var(--control-radius); }
 .settings-skeleton-control { display: flex; min-width: 0; flex-direction: column; gap: 8px; }
 .settings-placeholder-button { width: 96px; height: 44px; border-radius: var(--control-radius); }
-[data-dialog-overlay]:has(> .settings-dialog) { padding: 16px; }
-.settings-dialog[role='dialog'] { width: min(820px,calc(100vw - 32px)); background: var(--color-app); border-radius: 14px; }
-.settings-dialog > header [data-dialog-eyebrow] { display: none; }
-.settings-dialog > header { padding: 24px 60px 20px 24px; background: var(--color-app); }
-.settings-dialog > header h2 { font-size: 22px; font-weight: 600; line-height: 1.4; }
-.settings-dialog [data-dialog-body] { display: flex; flex-direction: column; overflow: hidden; background: var(--color-app); }
-.settings-dialog [data-dialog-close] { right: 12px; top: 16px; }
 .settings-recommendations { display: flex; flex-direction: column; min-width: 0; min-height: 0; max-height: calc(100dvh - 160px); color: var(--color-ink); background: var(--color-app); }
 .recommendation-scroll { flex: 1 1 auto; min-width: 0; min-height: 0; padding: 0 24px 24px; overflow: auto; overscroll-behavior: contain; }
 .recommendation-scroll > .settings-error { margin: 20px 0 0; }
@@ -188,14 +224,10 @@
 .settings-recommendations .settings-primary:hover { background: #215bb5; }
 .settings-advanced > summary, .settings-runtime-detail > summary, .recommendation-guide > summary, .recommendation-preload { border-radius: var(--control-radius); }
 :is(.settings-advanced, .settings-runtime-detail, .recommendation-guide) > summary:hover, .recommendation-preload:not(:disabled):hover { background: var(--color-hover); color: var(--color-ink); }
-:is(.settings-workspace, .settings-dialog) :is(button, summary, .settings-style-toggle) { touch-action: manipulation; }
+.settings-workspace :is(button, summary, .settings-style-toggle) { touch-action: manipulation; }
 .settings-recommendations button:not(.icon-button):focus-visible, .settings-recommendations summary:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 3px; }
 .settings-recommendations .recommendation-candidate-select:focus-visible { outline-offset: -3px; }
 @media (width < 700px) {
-  [data-dialog-overlay]:has(> .settings-dialog) { padding: 12px; }
-  .settings-dialog[role='dialog'] { width: calc(100vw - 24px); max-height: calc(100dvh - 24px); }
-  .settings-dialog > header { padding: 20px 60px 20px 16px; }
-  .settings-dialog [data-dialog-close] { top: 10px; right: 8px; }
   .settings-recommendations { max-height: calc(100dvh - 112px); }
   .recommendation-scroll { padding: 0 16px 20px; }
   .recommendation-hardware { flex-wrap: wrap; gap: 12px; padding: 16px 0; }
@@ -215,9 +247,8 @@
   .recommendation-actions { grid-template-columns: minmax(0,1fr); }
 }
 @media (width < 1100px) {
-  .settings-workspace { grid-template-columns: 224px minmax(0,1fr); }
-  .settings-sidebar { padding: 20px 16px; }
-  .settings-main { padding: 28px 24px 40px; }
+  .settings-sidebar { padding: var(--settings-top-padding) 16px; }
+  .settings-main { padding: var(--settings-top-padding) 24px 40px; }
   .settings-font-row { grid-template-columns: minmax(0,1fr); gap: 12px; }
   .settings-padding-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }
 }
@@ -238,10 +269,10 @@
 }
 @media (width < 768px) {
   .settings-workspace { grid-template-columns: minmax(0,1fr); }
-  .settings-sidebar { position: absolute; top: 0; bottom: 0; left: 0; width: min(304px,calc(100% - 40px)); z-index: 35; visibility: hidden; }
+  .settings-sidebar { position: absolute; top: 0; bottom: 0; left: 0; width: min(var(--settings-sidebar-width),calc(100% - 40px)); z-index: 35; visibility: hidden; }
   .settings-sidebar.is-open { visibility: visible; }
   .settings-backdrop { display: block; position: absolute; inset: 0; z-index: 30; background: var(--color-overlay); cursor: pointer; }
-  .settings-main { padding: 24px 16px 32px; }
+  .settings-main { padding: var(--settings-top-padding) 16px 32px; }
   .settings-breadcrumb { display: none; }
   .settings-page-heading { margin-bottom: 24px; }
   .settings-section-body { gap: 16px; }

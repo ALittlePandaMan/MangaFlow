@@ -76,6 +76,8 @@ describe('mask editor session', () => {
     expect(screen.queryByText('蒙版只决定修复范围，原图始终保留。')).not.toBeInTheDocument()
     expect(screen.queryByText('自动同步')).not.toBeInTheDocument()
     expect(screen.queryByText('同步中')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('蒙版画布缩放')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button',{name:/放大蒙版画布|缩小蒙版画布|查看整页/})).not.toBeInTheDocument()
     expect(onSave).not.toHaveBeenCalled()
   })
   it('repaints the theme in the mutation microtask even when animation frames are suspended', async () => {
@@ -245,7 +247,7 @@ describe('mask editor session', () => {
       fireEvent.pointerDown(canvas,{pointerId:1,clientX,clientY,button:0})
       fireEvent.pointerUp(canvas,{pointerId:1,clientX,clientY,button:0})
     }
-    if (zoomed) fireEvent.click(screen.getByRole('button', {name:'放大蒙版画布'}))
+    if (zoomed) fireEvent.wheel(canvas,{deltaY:-Math.log(1.25)/.001,clientX:400,clientY:300,cancelable:true})
     const first = zoomed ? [350,250] : [360,260]
     // Inside the fixed target at both zoom levels, but not exactly on the vertex.
     const event = {pointerId:1,clientX:first[0]+11,clientY:first[1],button:0}

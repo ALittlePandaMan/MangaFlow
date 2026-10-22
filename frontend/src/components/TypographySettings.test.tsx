@@ -1,10 +1,14 @@
-import {act, fireEvent, render, screen} from '@testing-library/react'
+import {act, fireEvent, render as renderView, screen, within} from '@testing-library/react'
+import type {ReactElement} from 'react'
+import {GlobalDialogProvider} from './GlobalDialog'
 import userEvent from '@testing-library/user-event'
 import {beforeEach, describe, expect, it, vi} from 'vitest'
 import {api} from '../services/api'
 import {DEFAULT_TEXT_STYLE, setTextStyleDefaults} from '../features/settings/textStyle'
 import {draftRegion} from '../features/editor/lib/regionEditing'
 import {TypographySettings} from './TypographySettings'
+
+const render=(element:ReactElement)=>renderView(element,{wrapper:GlobalDialogProvider})
 
 beforeEach(() => {vi.restoreAllMocks(); setTextStyleDefaults(DEFAULT_TEXT_STYLE)})
 
@@ -39,11 +43,15 @@ describe('default text style settings', () => {
     await user.click(screen.getByRole('button',{name:'默认文字方向'}))
     await user.click(screen.getByRole('option',{name:'横排'}))
     await user.click(screen.getByRole('button',{name:'保存默认样式'}))
-    expect(await screen.findByRole('status')).toHaveTextContent('默认样式已保存')
+    expect(await screen.findByRole('status',{name:'保存成功'})).toHaveTextContent('默认样式已保存。')
+    expect(document.querySelector('.settings-form .settings-notice')).toBeNull()
     expect(save).toHaveBeenCalledWith(expect.objectContaining({font_size:42,auto_font_size:false,orientation:'horizontal'}))
     const after = draftRegion('page',[[0,0],[30,0],[30,90]],[0,0,30,90],[])
     expect(after).toMatchObject({font_size:42,auto_font_size:false,orientation:'horizontal'})
     expect(before).toMatchObject({font_size:28,orientation:'vertical'})
+    await user.click(within(screen.getByRole('status',{name:'保存成功'})).getByRole('button',{name:'关闭提示'}))
+    expect(screen.queryByText('默认样式已保存。')).not.toBeInTheDocument()
+    expect(screen.getByRole('button',{name:'保存默认样式'})).toBeEnabled()
   })
   it('does not change saved defaults when merely restoring the form',async () => {
     setTextStyleDefaults({...DEFAULT_TEXT_STYLE,font_size:44})
@@ -54,5 +62,24 @@ describe('default text style settings', () => {
     await user.click(screen.getByRole('button',{name:'恢复默认'}))
     expect(screen.getByLabelText('默认固定字号')).toHaveValue('28')
     expect(draftRegion('page',[],[0,0,50,50],[]).font_size).toBe(44)
+  })
+  it.each(['request','missing-response'] as const)('does not report success or change defaults after a %s failure',async failure => {
+    vi.spyOn(api.preferences,'get').mockResolvedValue({shortcuts:{},text_style:{...DEFAULT_TEXT_STYLE,auto_font_size:false}})
+    const save=vi.spyOn(api.preferences,'updateTextStyle')
+    if(failure === 'request') save.mockRejectedValue(new Error('无法保存样式'))
+    else save.mockResolvedValue({shortcuts:{}})
+    const user=userEvent.setup()
+    render(<TypographySettings fonts={[]}/>)
+    const input=await screen.findByLabelText('默认固定字号')
+    fireEvent.change(input,{target:{value:'42'}})
+    await user.click(screen.getByRole('button',{name:'保存默认样式'}))
+    const dialog=await screen.findByRole('alert',{name:'保存失败'})
+    expect(dialog).toHaveTextContent(failure === 'request' ? '无法保存样式' : '服务未返回已保存的文本样式')
+    expect(document.querySelector('.settings-form .settings-error')).toBeNull()
+    expect(screen.queryByRole('status',{name:'保存成功'})).not.toBeInTheDocument()
+    expect(draftRegion('page',[],[0,0,50,50],[]).font_size).toBe(28)
+    await user.click(within(dialog).getByRole('button',{name:'关闭提示'}))
+    expect(input).toHaveValue('42')
+    expect(screen.getByRole('button',{name:'保存默认样式'})).toBeEnabled()
   })
 })

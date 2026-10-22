@@ -22,7 +22,7 @@ def providers(monkeypatch, request):
         def ensure_loaded(self):
             self.loaded += 1
 
-        def recognize(self, source, bbox, orientation, padding):
+        def recognize(self, source, bbox, orientation, padding, *, polygon=None, crop_angle=None):
             self.calls.append((list(bbox), orientation, padding))
             value = self.responses.get(bbox[0], "识别的原文")
             if isinstance(value, Exception):
@@ -35,8 +35,8 @@ def providers(monkeypatch, request):
             def ensure_loaded(self):
                 recorder.ensure_loaded()
 
-            def recognize_once(self, *args):
-                return recorder.recognize(*args)
+            def recognize_once(self, *args, **kwargs):
+                return recorder.recognize(*args, **kwargs)
 
         ocr = FakeCloud({"base_url": "https://auto-ocr-test.invalid", "model": "fake", "retries": 0, "max_concurrency": 2})
     else:
@@ -205,10 +205,10 @@ def test_auto_ocr_reports_translation_substep_and_honors_cancellation(client, pr
     started, release = threading.Event(), threading.Event()
     recognize = ocr.recognize
 
-    def blocking_recognize(*args):
+    def blocking_recognize(*args, **kwargs):
         started.set()
         assert release.wait(timeout=5)
-        return recognize(*args)
+        return recognize(*args, **kwargs)
 
     monkeypatch.setattr(ocr, "recognize", blocking_recognize)
     response = client.post(f"/api/regions/{regions[0]['id']}/translate", json={"force": True})

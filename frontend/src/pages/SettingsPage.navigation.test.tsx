@@ -4,9 +4,11 @@ import {MemoryRouter} from 'react-router-dom'
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest'
 import {GlobalDialogProvider} from '../components/GlobalDialog'
 import {SettingsNavigationControl, SettingsNavigationProvider} from '../components/SettingsNavigation'
+import {SETTINGS_PAGES} from '../features/settings/navigation'
 import {api} from '../services/api'
 import type {ModelConfiguration, ModelDescriptor} from '../types'
 import {SettingsPage} from './SettingsPage'
+import {changeLocale} from '../i18n'
 
 vi.mock('../components/LoadingUI', async original => ({...await original<typeof import('../components/LoadingUI')>(),useMinimumLoadingTime:(value:boolean) => value}))
 const descriptor = {kind:'detection',name:'rfdetr',devices:['cpu','cuda'],description:'RF-DETR',supports_batch:false,installed:true,orientations:[],capabilities:{},is_fallback:false} as ModelDescriptor
@@ -27,11 +29,29 @@ beforeEach(() => {
   resizeListeners = new Set()
   vi.stubGlobal('matchMedia',vi.fn(() => ({get matches() {return compact},addEventListener:(_type:string,listener:() => void) => resizeListeners.add(listener),removeEventListener:(_type:string,listener:() => void) => resizeListeners.delete(listener)})))
   vi.spyOn(api.models,'list').mockResolvedValue({available:[descriptor],configured:[config]})
+  vi.spyOn(api.models,'recommendedStatus').mockResolvedValue({state:'idle',installed:false,configured:false,models:[],error:null})
   vi.spyOn(api.fonts,'list').mockResolvedValue([])
 })
-afterEach(() => vi.unstubAllGlobals())
+afterEach(() => {
+  Reflect.deleteProperty(HTMLElement.prototype, 'animate')
+  vi.unstubAllGlobals()
+})
 
 describe('settings workspace', () => {
+  it('uses a short English sidebar label with a descriptive tooltip and preserves the dialog title',async () => {
+    changeLocale('en')
+    const user=userEvent.setup()
+    openSettings()
+    await waitFor(()=>expect(screen.getByRole('button',{name:'Quick setup'})).toBeEnabled())
+    const sidebar=screen.getByRole('complementary',{name:'Settings categories'})
+    const quickSetup=within(sidebar).getByRole('button',{name:'Quick setup'})
+    expect(quickSetup).toHaveAttribute('title','Install recommended models and settings')
+    expect(within(sidebar).queryByRole('button',{name:'Install recommended setup'})).not.toBeInTheDocument()
+    await user.click(quickSetup)
+    expect(screen.getByRole('dialog',{name:'Install recommended setup'})).toBeVisible()
+    await user.click(screen.getByRole('button',{name:'Cancel'}))
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  })
   it('keeps the sidebar and form layout in place while reading settings',async () => {
     let finish!: (value: {available: ModelDescriptor[], configured: ModelConfiguration[]}) => void
     vi.mocked(api.models.list).mockReturnValueOnce(new Promise(resolve => {finish=resolve}))
@@ -40,7 +60,7 @@ describe('settings workspace', () => {
     expect(screen.getByRole('heading',{level:1,name:'文字检测'})).toBeVisible()
     expect(screen.getByRole('status',{name:'正在读取设置…'})).toHaveClass('settings-form-skeleton')
     const sidebar = screen.getByRole('complementary',{name:'设置分类'})
-    expect(within(sidebar).getAllByRole('button')).toHaveLength(11)
+    expect(within(sidebar).getAllByRole('button')).toHaveLength(SETTINGS_PAGES.length+2)
     expect(within(sidebar).getByRole('button',{name:'编辑文字检测配置'})).toBeDisabled()
     expect(document.querySelector('.loading-skeleton-page')).not.toBeInTheDocument()
     await act(async () => {finish({available:[descriptor],configured:[config]})})
@@ -58,18 +78,19 @@ describe('settings workspace', () => {
     expect(await screen.findByLabelText('文字检测置信度')).toBeVisible()
     expect(api.models.list).toHaveBeenCalledTimes(2)
   })
-  it('uses the updated recommendation dialog with category-only stage navigation',async () => {
+  it('closes the mobile drawer and shows a simple fixed-model confirmation',async () => {
     const user = userEvent.setup()
     openSettings()
     await screen.findByLabelText('文字检测置信度')
     await user.click(screen.getByRole('button',{name:'设置'}))
     await user.click(screen.getByRole('button',{name:'安装推荐配置'}))
-    const dialog = screen.getByRole('dialog',{name:'安装推荐配置'})
-    expect(dialog).toHaveClass('settings-dialog')
+    const dialog = await screen.findByRole('dialog',{name:'安装推荐配置'})
     expect(screen.getByRole('button',{name:'设置'})).toHaveAttribute('aria-expanded','false')
-    expect(within(dialog).getByRole('navigation',{name:'推荐配置阶段'})).toHaveClass('recommendation-navigation')
-    expect(within(dialog).getByRole('button',{name:'文字检测'})).toHaveAttribute('aria-current','step')
-    expect(within(dialog).getByRole('button',{name:/RF-DETR 漫画版面检测/,pressed:true})).toHaveAttribute('aria-pressed','true')
+    expect(within(dialog).queryByRole('navigation')).not.toBeInTheDocument()
+    expect(dialog).toHaveTextContent('RF-DETR')
+    expect(dialog).toHaveTextContent('PaddleOCR-VL 1.6')
+    expect(dialog).toHaveTextContent('LaMa 复杂背景修复')
+    expect(dialog).toHaveTextContent('Pillow 排版渲染')
     await user.click(within(dialog).getByRole('button',{name:'取消'}))
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   })
@@ -100,6 +121,32 @@ describe('settings workspace', () => {
     expect(threshold).toBeVisible()
     expect(threshold).toHaveValue('0.7')
     expect(api.models.list).toHaveBeenCalledTimes(1)
+  })
+  it('reveals the whole content on entry and category changes, without replaying while editing',async () => {
+    compact = false
+    const cancel = vi.fn()
+    const animate = vi.fn(() => ({cancel}))
+    Object.defineProperty(HTMLElement.prototype, 'animate', {configurable:true, value:animate})
+    const user = userEvent.setup()
+    const {unmount} = openSettings()
+    const threshold = await screen.findByLabelText('文字检测置信度')
+    const content = document.querySelector('.settings-content')!
+    expect(animate).toHaveBeenCalledOnce()
+    expect(animate.mock.contexts[0]).toBe(content)
+    expect(animate).toHaveBeenLastCalledWith([{opacity:0}, {opacity:1}], expect.objectContaining({duration:220}))
+    fireEvent.change(threshold,{target:{value:'0.7'}})
+    expect(animate).toHaveBeenCalledOnce()
+    await user.click(screen.getByRole('button',{name:'界面语言'}))
+    await user.click(screen.getByRole('button',{name:'编辑文字检测配置'}))
+    expect(animate).toHaveBeenCalledTimes(3)
+    expect(animate.mock.contexts.every(target => target === content)).toBe(true)
+    expect(screen.getByLabelText('文字检测置信度')).toBe(threshold)
+    expect(threshold).toHaveValue('0.7')
+    await user.click(screen.getByRole('button',{name:'编辑文字检测配置'}))
+    expect(animate).toHaveBeenCalledTimes(3)
+    expect(cancel).toHaveBeenCalledTimes(2)
+    unmount()
+    expect(cancel).toHaveBeenCalledTimes(3)
   })
   it('closes the mobile menu with Escape and returns focus to its trigger',async () => {
     const user = userEvent.setup()

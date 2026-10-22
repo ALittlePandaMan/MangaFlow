@@ -84,9 +84,6 @@ SELECTABLE_MODELS.update(
         ("ocr", "review-fallback"): RecommendedModel(
             "ocr", "人工审核占位 OCR", "review-fallback", {}
         ),
-        ("inpainting", "hybrid"): RecommendedModel(
-            "inpainting", "LaMa 兼容修复", "hybrid", {"device": "auto"}
-        ),
         ("inpainting", "opencv"): RecommendedModel(
             "inpainting", "OpenCV 快速修复", "opencv", {"device": "cpu"}
         ),
@@ -116,27 +113,6 @@ ADDITIONAL_RECOMMENDED_MODELS = (
 for _additional_model in ADDITIONAL_RECOMMENDED_MODELS:
     SELECTABLE_MODELS[(_additional_model.kind, _additional_model.provider)] = _additional_model
 
-LEGACY_DEEPSEEK_TEMPLATE_NAME = "推荐云端翻译（DeepSeek）"
-LEGACY_DEEPSEEK_TEMPLATE_CONFIG = {
-    "base_url": "https://api.deepseek.com",
-    "model": "deepseek-v4-flash",
-    "timeout": 90,
-    "retries": 2,
-    "temperature": 0.2,
-    "prompt": "Translate manga dialogue naturally and preserve character voice. Return only valid JSON.",
-}
-LEGACY_CUSTOM_TRANSLATION_TEMPLATE_CONFIG = {
-    "timeout": 90,
-    "retries": 2,
-    "temperature": 0.2,
-    "prompt": "Translate manga dialogue naturally and preserve character voice. Return only valid JSON.",
-}
-
-
-def _recommendation(kind: str) -> RecommendedModel:
-    return RECOMMENDED_MODELS[kind]
-
-
 def _is_fallback(item: ModelConfig) -> bool:
     descriptor = next(
         (
@@ -156,7 +132,7 @@ def ensure_recommended_config(
     upgrade_fallbacks: bool = False,
 ) -> tuple[ModelConfig, str]:
     """Ensure one usable default config exists for a pipeline stage."""
-    recommendation = _recommendation(kind)
+    recommendation = RECOMMENDED_MODELS[kind]
     current = db.scalar(
         select(ModelConfig)
         .where(ModelConfig.kind == kind, ModelConfig.enabled.is_(True), ModelConfig.is_default.is_(True))
@@ -208,36 +184,7 @@ def ensure_additional_recommended_config(
         )
     )
     if existing is not None:
-        if (
-            recommendation.kind == "translation"
-            and recommendation.provider == "openai-compatible"
-            and not existing.encrypted_api_key
-            and dict(existing.config or {}) == LEGACY_CUSTOM_TRANSLATION_TEMPLATE_CONFIG
-        ):
-            existing.config = dict(recommendation.config)
-            db.flush()
-            return existing, "updated"
         return existing, "kept"
-    # Older releases installed a DeepSeek-specific card even though the runtime
-    # provider supports any OpenAI-compatible endpoint. Only migrate the exact,
-    # untouched and keyless template so real user configurations are preserved.
-    if recommendation.kind == "translation" and recommendation.provider == "openai-compatible":
-        legacy = db.scalar(
-            select(ModelConfig).where(
-                ModelConfig.kind == "translation",
-                ModelConfig.name == LEGACY_DEEPSEEK_TEMPLATE_NAME,
-                ModelConfig.provider == "openai-compatible",
-            )
-        )
-        if (
-            legacy is not None
-            and not legacy.encrypted_api_key
-            and dict(legacy.config or {}) == LEGACY_DEEPSEEK_TEMPLATE_CONFIG
-        ):
-            legacy.name = recommendation.name
-            legacy.config = dict(recommendation.config)
-            db.flush()
-            return legacy, "updated"
     item = ModelConfig(
         kind=recommendation.kind,
         name=recommendation.name,

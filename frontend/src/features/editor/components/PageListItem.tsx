@@ -1,3 +1,4 @@
+import {t, useLocale} from '../../../i18n'
 import {memo, useEffect, useRef} from 'react'
 import type {MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent} from 'react'
 import type {ImagePage, ProcessingTask} from '../../../types'
@@ -34,6 +35,7 @@ export const PageListItem = memo(function PageListItem({
   onPointerDown,
   onContextMenu,
 }: PageListItemProps) {
+  useLocale()
   const touchPress = useRef<{timer: number, x: number, y: number} | null>(null)
   const suppressTouchClick = useRef(false)
   const cancelTouchPress = () => {
@@ -51,7 +53,7 @@ export const PageListItem = memo(function PageListItem({
     aria-haspopup="menu"
     aria-current={selected ? 'page' : undefined}
     className={cn(
-      'relative mb-2.5 block w-full cursor-grab touch-pan-y rounded-xl border p-2.5 text-left outline-none transition-[background-color,border-color,opacity,transform,box-shadow,filter] [content-visibility:auto] [contain-intrinsic-size:auto_280px] focus-visible:border-accent/70 focus-visible:ring-2 focus-visible:ring-accent/25 active:cursor-grabbing',
+      'motion-page-item relative mb-2.5 block w-full cursor-grab touch-pan-y rounded-xl border p-2.5 text-left outline-none [content-visibility:auto] [contain-intrinsic-size:auto_280px] focus-visible:border-accent/70 focus-visible:ring-2 focus-visible:ring-accent/25 active:cursor-grabbing',
       selected
         ? 'border-accent-line !bg-accent-soft !text-accent-soft-ink hover:!bg-accent-soft-hover'
         : 'border-transparent bg-transparent hover:bg-raised',
@@ -98,7 +100,7 @@ export const PageListItem = memo(function PageListItem({
         {...fetchPriorityAttributes}
       />
       <span className={cn('absolute bottom-1 left-1 bg-canvas px-1 py-0.5 font-mono text-[12px]', selected && 'text-accent')}>{String(index + 1).padStart(2,'0')}</span>
-      {activeTask && <span className="absolute right-1 top-1 grid rounded-full bg-canvas/90 p-1 shadow-panel"><CircularProgress value={activeTask.progress} size={34} label={`${item.filename} 处理进度`}/></span>}
+      {activeTask && <span className="absolute right-1 top-1 grid rounded-full bg-canvas/90 p-1 shadow-panel"><CircularProgress value={activeTask.progress} size={34} label={t("{{v0}} 处理进度", {v0: item.filename})}/></span>}
     </div>
     <small className={cn('mt-2 block truncate text-[13px]', selected ? 'font-semibold text-accent-soft-ink' : 'text-secondary')} title={item.filename}>{item.filename}</small>
     <i className={cn('mt-1 block truncate font-mono text-[12px] not-italic', state.emphasized && 'font-semibold', selected ? 'text-accent-soft-ink' : state.className)}>{state.label}</i>

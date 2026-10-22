@@ -1,11 +1,14 @@
+import {t, useLocale} from '../i18n'
 import {AlertTriangle, CheckCircle2, Info, X} from 'lucide-react'
-import {createContext, useCallback, useContext, useEffect, useMemo, useRef, useState} from 'react'
+import {createContext, useCallback, useContext, useEffect, useId, useMemo, useRef, useState} from 'react'
 import type {ReactNode} from 'react'
 import {createPortal} from 'react-dom'
 import {buttonClass, cn, ghostIconButtonClass, primaryButtonClass, scrollbarClass} from '../ui'
+import {GlobalAlertProvider} from './GlobalAlert'
+import {useModalFocus} from '../hooks/useModalFocus'
 
-export type DialogTone = 'info' | 'success' | 'warning' | 'danger'
-export type ContentDialogSize = 'small' | 'medium' | 'large' | 'xlarge'
+type DialogTone = 'info' | 'success' | 'warning' | 'danger'
+type ContentDialogSize = 'small' | 'medium' | 'large' | 'xlarge'
 
 export interface DialogOptions {
   title?: string
@@ -15,11 +18,11 @@ export interface DialogOptions {
   cancelLabel?: string
 }
 
-export interface ContentDialogControls {
+interface ContentDialogControls {
   close: () => void
 }
 
-export interface ContentDialogOptions {
+interface ContentDialogOptions {
   title: string
   className?: string
   description?: string
@@ -30,10 +33,9 @@ export interface ContentDialogOptions {
 }
 
 type DialogInput = string | DialogOptions
-type PromptDialogMode = 'alert' | 'confirm'
 type PromptDialogRequest = {
   id: number
-  mode: PromptDialogMode
+  mode: 'confirm'
   options: Required<DialogOptions>
   resolve: (accepted: boolean) => void
 }
@@ -55,35 +57,40 @@ type DialogRequest = PromptDialogRequest | ContentDialogRequest
 
 interface GlobalDialogApi {
   isOpen: boolean
-  alert: (input: DialogInput) => Promise<void>
   confirm: (input: DialogInput) => Promise<boolean>
   openDialog: (options: ContentDialogOptions) => () => void
-  closeDialog: () => void
 }
 
 const GlobalDialogContext = createContext<GlobalDialogApi | null>(null)
-let nextDialogId = 1
 
-const normalizeOptions = (mode: PromptDialogMode, input: DialogInput): Required<DialogOptions> => {
+const normalizeOptions = (input: DialogInput): Required<DialogOptions> => {
   const options = typeof input === 'string' ? {message: input} : input
   return {
-    title: options.title || (mode === 'alert' ? '提示' : '请确认'),
+    title: options.title || t("请确认"),
     message: options.message,
-    tone: options.tone || (mode === 'alert' ? 'info' : 'warning'),
-    confirmLabel: options.confirmLabel || (mode === 'alert' ? '知道了' : '确认'),
-    cancelLabel: options.cancelLabel || '取消',
+    tone: options.tone || 'warning',
+    confirmLabel: options.confirmLabel || t("确认"),
+    cancelLabel: options.cancelLabel || t("取消"),
   }
 }
 
 export function GlobalDialogProvider({children}: {children: ReactNode}) {
+  return <GlobalAlertProvider><ModalDialogProvider>{children}</ModalDialogProvider></GlobalAlertProvider>
+}
+
+function ModalDialogProvider({children}: {children: ReactNode}) {
+  useLocale()
   const [active, setActive] = useState<DialogRequest | null>(null)
   const activeRef = useRef<DialogRequest | null>(null)
   const queueRef = useRef<DialogRequest[]>([])
   const dialogRef = useRef<HTMLDivElement>(null)
-  const confirmRef = useRef<HTMLButtonElement>(null)
   const cancelRef = useRef<HTMLButtonElement>(null)
+  const dialogId = useId()
+  const nextId = useRef(0)
+  const mounted = useRef(true)
 
   const enqueue = useCallback((request: DialogRequest) => {
+    if (!mounted.current) {request.resolve(false); return}
     if (activeRef.current) {
       queueRef.current.push(request)
       return
@@ -94,23 +101,23 @@ export function GlobalDialogProvider({children}: {children: ReactNode}) {
 
   const close = useCallback((accepted: boolean, requestId: number) => {
     const current = activeRef.current
-    if (!current || current.id !== requestId) return
+    if (!current || current.id !== requestId) {
+      const index = queueRef.current.findIndex(item => item.id === requestId)
+      if (index >= 0) queueRef.current.splice(index, 1)[0].resolve(false)
+      return
+    }
     const next = queueRef.current.shift() || null
     activeRef.current = next
     setActive(next)
     current.resolve(accepted)
   }, [])
 
-  const alert = useCallback((input: DialogInput) => new Promise<void>(resolve => {
-    enqueue({id:nextDialogId++, mode:'alert', options:normalizeOptions('alert', input), resolve:() => resolve()})
-  }), [enqueue])
-
   const confirm = useCallback((input: DialogInput) => new Promise<boolean>(resolve => {
-    enqueue({id:nextDialogId++, mode:'confirm', options:normalizeOptions('confirm', input), resolve})
+    enqueue({id:++nextId.current, mode:'confirm', options:normalizeOptions(input), resolve})
   }), [enqueue])
 
   const openDialog = useCallback((options: ContentDialogOptions) => {
-    const id = nextDialogId++
+    const id = ++nextId.current
     enqueue({
       id,
       mode:'content',
@@ -120,64 +127,44 @@ export function GlobalDialogProvider({children}: {children: ReactNode}) {
     return () => close(false, id)
   }, [close, enqueue])
 
-  const closeDialog = useCallback(() => {
-    const current = activeRef.current
-    if (current) close(false, current.id)
-  }, [close])
-
   useEffect(() => {
-    if (!active) return
-    const previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null
-    const focusFrame = requestAnimationFrame(() => {
-      const contentTarget = active.mode === 'content'
-        ? dialogRef.current?.querySelector<HTMLElement>('[autofocus]') || dialogRef.current?.querySelector<HTMLElement>('[data-dialog-body] input:not([type="hidden"]):not(:disabled), [data-dialog-body] textarea:not(:disabled), [data-dialog-body] button:not(:disabled)')
-        : null
-      const target = contentTarget || (active.mode === 'confirm' ? cancelRef.current : confirmRef.current) || dialogRef.current?.querySelector<HTMLElement>('[data-dialog-close]')
-      target?.focus()
-    })
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.defaultPrevented) return
-      if (event.key === 'Escape') {
-        if (active.mode === 'content' && !active.options.dismissible) return
-        event.preventDefault()
-        close(false, active.id)
-        return
-      }
-      if (event.key !== 'Tab' || !dialogRef.current) return
-      const controls = [...dialogRef.current.querySelectorAll<HTMLElement>('button:not(:disabled), input:not([type="hidden"]):not(:disabled), textarea:not(:disabled), [href], [tabindex]:not([tabindex="-1"])')]
-      if (!controls.length) return
-      const first = controls[0]
-      const last = controls.at(-1)!
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault(); last.focus()
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault(); first.focus()
-      }
-    }
-    document.addEventListener('keydown', handleKeyDown)
+    mounted.current = true
     return () => {
-      cancelAnimationFrame(focusFrame)
-      document.removeEventListener('keydown', handleKeyDown)
-      previouslyFocused?.focus()
+      mounted.current = false
+      // StrictMode immediately remounts effects; only dispose a real unmount.
+      queueMicrotask(() => {
+        if (mounted.current) return
+        activeRef.current?.resolve(false)
+        queueRef.current.forEach(request => request.resolve(false))
+        activeRef.current = null
+        queueRef.current = []
+      })
     }
-  }, [active, close])
+  }, [])
 
-  const api = useMemo<GlobalDialogApi>(() => ({isOpen:!!active, alert, confirm, openDialog, closeDialog}), [active, alert, closeDialog, confirm, openDialog])
+  useModalFocus(dialogRef, {enabled:!!active, focusKey:active?.id,
+    initialFocus:() => active?.mode === 'content'
+      ? dialogRef.current?.querySelector<HTMLElement>('[data-dialog-body] input:not([type="hidden"]):not(:disabled), [data-dialog-body] textarea:not(:disabled), [data-dialog-body] select:not(:disabled), [data-dialog-body] button:not(:disabled)')
+      : cancelRef.current,
+    onEscape:() => {if (active && (active.mode === 'confirm' || active.options.dismissible)) close(false, active.id)},
+  })
+
+  const api = useMemo<GlobalDialogApi>(() => ({isOpen:!!active, confirm, openDialog}), [active, confirm, openDialog])
 
   return <GlobalDialogContext.Provider value={api}>
     {children}
-    {active && createPortal(<div data-dialog-overlay className="fixed inset-0 z-[200] grid animate-[dialog-backdrop-in_.16s_ease-out] place-items-center bg-overlay p-6 backdrop-blur-md" onMouseDown={event => {
+    {active && createPortal(<div data-dialog-overlay className="fixed inset-0 z-[200] grid motion-backdrop place-items-center bg-overlay p-6 backdrop-blur-md" onMouseDown={event => {
       if (event.target === event.currentTarget && (active.mode !== 'content' || active.options.dismissible)) close(false, active.id)
     }}>
-      <div ref={dialogRef} className={cn('relative max-h-[calc(100dvh-48px)] animate-[dialog-card-in_.2s_cubic-bezier(.2,.8,.2,1)] overflow-hidden rounded-2xl bg-surface text-ink shadow-dialog', active.mode === 'content' ? cn(active.options.className, 'flex w-[min(620px,calc(100vw-48px))] flex-col', active.options.size === 'small' && 'w-[min(420px,calc(100vw-48px))]', active.options.size === 'large' && 'w-[min(760px,calc(100vw-48px))]', active.options.size === 'xlarge' && 'w-[min(960px,calc(100vw-48px))]') : 'w-[min(440px,calc(100vw-48px))]')} role={active.mode === 'alert' ? 'alertdialog' : 'dialog'} aria-modal="true" aria-labelledby="global-dialog-title" aria-describedby={active.mode === 'content' ? active.options.description ? 'global-dialog-description' : undefined : 'global-dialog-message'}>
-        {(active.mode !== 'content' || active.options.dismissible) && <button data-dialog-close className={cn(ghostIconButtonClass, 'absolute right-3 top-3 z-10')} aria-label="关闭" onClick={() => close(false, active.id)}><X aria-hidden="true" size={17}/></button>}
+      <div ref={dialogRef} id={dialogId} tabIndex={-1} className={cn('relative max-h-[calc(100dvh-48px)] motion-dialog overflow-hidden rounded-2xl bg-surface text-ink shadow-dialog', active.mode === 'content' ? cn(active.options.className, 'flex w-[min(620px,calc(100vw-48px))] flex-col', active.options.size === 'small' && 'w-[min(420px,calc(100vw-48px))]', active.options.size === 'large' && 'w-[min(760px,calc(100vw-48px))]', active.options.size === 'xlarge' && 'w-[min(960px,calc(100vw-48px))]') : 'flex min-h-0 w-[min(440px,calc(100vw-48px))] flex-col')} role="dialog" aria-modal="true" aria-labelledby="global-dialog-title" aria-describedby={active.mode === 'content' ? active.options.description ? 'global-dialog-description' : undefined : 'global-dialog-message'}>
+        {(active.mode !== 'content' || active.options.dismissible) && <button data-dialog-close className={cn(ghostIconButtonClass, 'absolute right-3 top-3 z-10')} aria-label={t("关闭")} onClick={() => close(false, active.id)}><X aria-hidden="true" size={17}/></button>}
         {active.mode === 'content' ? <>
-          <header className="shrink-0 border-b border-line-subtle bg-surface pb-4 pl-6 pr-14 pt-5"><div><span data-dialog-eyebrow className={cn('mb-1 block font-mono text-[9px] font-medium leading-[normal] tracking-[2px]', toneTextClass(active.options.tone))}>MANGAFLOW · DIALOG</span><h2 className="m-0 text-xl leading-tight" id="global-dialog-title">{active.options.title}</h2>{active.options.description && <p className="mb-0 mt-2 text-[13px] leading-relaxed text-muted" id="global-dialog-description">{active.options.description}</p>}</div></header>
+          <header className="shrink-0 border-b border-line-subtle bg-surface pb-4 pl-6 pr-14 pt-5"><div><span data-dialog-eyebrow className={cn('mb-1 block font-mono text-[9px] font-medium leading-[normal] tracking-[2px]', toneTextClass(active.options.tone))}>MANGAFLOW · DIALOG</span><h2 className="m-0 break-words text-xl leading-tight [overflow-wrap:anywhere]" id="global-dialog-title">{t(active.options.title)}</h2>{active.options.description && <p className="mb-0 mt-2 break-words text-[13px] leading-relaxed text-muted [overflow-wrap:anywhere]" id="global-dialog-description">{t(active.options.description)}</p>}</div></header>
           <div data-dialog-body className={cn('min-h-0 overflow-auto overscroll-contain bg-surface', scrollbarClass)}>{typeof active.options.content === 'function' ? active.options.content({close:() => close(false, active.id)}) : active.options.content}</div>
         </> : <>
-          <div className="grid grid-cols-[44px_1fr] items-center gap-4 pb-2 pl-6 pr-14 pt-6"><span className={cn('grid size-11 place-items-center rounded-xl', toneSoftClass(active.options.tone), toneTextClass(active.options.tone))}><DialogIcon tone={active.options.tone}/></span><div><span className={cn('mb-1 block font-mono text-[9px] font-medium leading-[normal] tracking-[2px]', toneTextClass(active.options.tone))}>MANGAFLOW</span><h2 className="m-0 text-xl leading-tight tracking-[-.25px]" id="global-dialog-title">{active.options.title}</h2></div></div>
-          <p className="m-0 min-h-[42px] whitespace-pre-wrap break-words pb-6 pl-[84px] pr-6 pt-3 text-sm leading-[1.7] text-secondary" id="global-dialog-message">{active.options.message}</p>
-          <div className="flex justify-end gap-2 px-5 pb-5">{active.mode === 'confirm' && <button className={cn(buttonClass, 'min-w-[88px]')} ref={cancelRef} onClick={() => close(false, active.id)}>{active.options.cancelLabel}</button>}<button ref={confirmRef} className={cn(primaryButtonClass, 'min-w-[88px]', toneConfirmClass(active.options.tone))} onClick={() => close(true, active.id)}>{active.options.confirmLabel}</button></div>
+          <div className="grid shrink-0 grid-cols-[44px_minmax(0,1fr)] items-center gap-4 pb-2 pl-6 pr-14 pt-6"><span className={cn('grid size-11 place-items-center rounded-xl', toneSoftClass(active.options.tone), toneTextClass(active.options.tone))}><DialogIcon tone={active.options.tone}/></span><div><span className={cn('mb-1 block font-mono text-[9px] font-medium leading-[normal] tracking-[2px]', toneTextClass(active.options.tone))}>MANGAFLOW</span><h2 className="m-0 text-xl leading-tight tracking-[-.25px] [overflow-wrap:anywhere]" id="global-dialog-title">{active.options.title}</h2></div></div>
+          <p className="m-0 min-h-0 flex-1 overflow-auto overscroll-contain whitespace-pre-wrap [overflow-wrap:anywhere] pb-6 pl-[84px] pr-6 pt-3 text-sm leading-[1.7] text-secondary" id="global-dialog-message">{active.options.message}</p>
+          <div className="flex shrink-0 flex-wrap justify-end gap-2 px-5 pb-5"><button type="button" className={cn(buttonClass, 'min-w-[88px]')} ref={cancelRef} onClick={() => close(false, active.id)}>{active.options.cancelLabel}</button><button type="button" className={cn(primaryButtonClass, 'min-w-[88px]', toneConfirmClass(active.options.tone))} onClick={() => close(true, active.id)}>{active.options.confirmLabel}</button></div>
         </>}
       </div>
     </div>, document.body)}
@@ -212,7 +199,7 @@ export function useGlobalDialog(): GlobalDialogApi {
 }
 
 function DialogIcon({tone}: {tone: DialogTone}) {
-  if (tone === 'success') return <CheckCircle2 size={21}/>
-  if (tone === 'info') return <Info size={21}/>
-  return <AlertTriangle size={21}/>
+  if (tone === 'success') return <CheckCircle2 aria-hidden="true" size={21}/>
+  if (tone === 'info') return <Info aria-hidden="true" size={21}/>
+  return <AlertTriangle aria-hidden="true" size={21}/>
 }

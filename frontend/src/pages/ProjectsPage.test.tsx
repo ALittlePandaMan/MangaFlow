@@ -56,6 +56,18 @@ describe('project card alignment',() => {
 })
 
 describe('project details',() => {
+  it('shows deletion failures through the global toast without adding a page error box',async () => {
+    vi.spyOn(api.projects,'remove').mockRejectedValue(new Error('暂时无法删除'))
+    open()
+    const card=(await screen.findAllByRole('article'))[0]
+    fireEvent.click(within(card).getByRole('button',{name:`删除项目 ${projects[0].name}`}))
+    fireEvent.click(screen.getByRole('button',{name:'删除项目'}))
+    const toast=await screen.findByRole('alert',{name:'删除项目'})
+    expect(toast).toHaveClass('global-alert')
+    expect(toast).toHaveTextContent('暂时无法删除')
+    expect(screen.getAllByRole('alert')).toHaveLength(1)
+    expect(card).toBeInTheDocument()
+  })
   it('omits descriptions and displays the saved language direction on cards',async () => {
     open([{...projects[0],description:'不需要展示的项目说明',source_language:'en',target_language:'ja'}])
     const card = (await screen.findAllByRole('article'))[0]

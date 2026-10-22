@@ -18,6 +18,7 @@ from app.schemas.domain import ExportRequest, ImageRead, ProjectCreate, ProjectR
 from app.services.editor_history import PAGE_FIELDS
 from app.services.export_render import refresh_export_page
 from app.services.exporting import export_project, import_project_archive
+from app.services.font_library import font_family, notify_fonts_changed
 from app.services.page_edits import apply_page_order, prepare_project_edit, publish_project_edit
 from app.services.rendering.pillow_renderer import RENDER_OUTPUT_VERSION
 from app.storage import StorageError, get_storage
@@ -206,24 +207,24 @@ def upload_project_font(project_id: str, file: UploadFile = File(...), db: Sessi
     font_dir = get_storage().project_dir(project_id) / "fonts"
     font_dir.mkdir(parents=True, exist_ok=True)
     destination = font_dir / safe_name
-    with destination.open("wb") as output:
-        shutil.copyfileobj(file.file, output)
+    temporary = font_dir / f".upload-{uuid.uuid4().hex}{destination.suffix}"
     try:
-        from fontTools.ttLib import TTFont
-
-        font = TTFont(destination, lazy=True)
-        family = safe_name.rsplit(".", 1)[0]
-        for record in font["name"].names:
-            if record.nameID == 1:
-                try:
-                    family = record.toUnicode()
-                    break
-                except Exception:
-                    continue
-        font.close()
-    except Exception as exc:
-        destination.unlink(missing_ok=True)
-        raise HTTPException(400, "The uploaded file is not a valid TrueType/OpenType font") from exc
+        maximum = get_settings().max_upload_mb * 1024 * 1024
+        written = 0
+        with temporary.open("wb") as output:
+            while chunk := file.file.read(1024 * 1024):
+                written += len(chunk)
+                if written > maximum:
+                    raise HTTPException(413, f"Font exceeds the {get_settings().max_upload_mb} MB limit")
+                output.write(chunk)
+        try:
+            family = font_family(temporary, fallback=destination.stem)
+        except Exception as exc:
+            raise HTTPException(400, "The uploaded file is not a valid TrueType/OpenType font") from exc
+        temporary.replace(destination)
+        notify_fonts_changed()
+    finally:
+        temporary.unlink(missing_ok=True)
     entry = {"name": family, "filename": safe_name, "path": get_storage().relative(destination)}
     settings = dict(project.settings or {})
     settings["fonts"] = [item for item in settings.get("fonts", []) if item.get("filename") != safe_name] + [entry]

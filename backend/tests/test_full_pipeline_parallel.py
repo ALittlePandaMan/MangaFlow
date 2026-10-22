@@ -8,10 +8,10 @@ from app.pipeline import workflow
 from app.pipeline.processor import PipelineProcessor
 from app.services.base import DetectionResult
 from sqlalchemy import select
-from test_checkpoint_pipeline import checkpoint_mode as checkpoint_mode  # noqa: F401
+from test_checkpoint_pipeline import checkpoint_mode as checkpoint_mode
 from test_checkpoint_pipeline import stopped
 from test_editor_history import apply as undo
-from test_translation_auto_ocr import providers as providers  # noqa: F401
+from test_translation_auto_ocr import providers as providers
 from test_translation_auto_ocr import setup
 
 
@@ -30,7 +30,7 @@ def detector(monkeypatch):
 
 
 @pytest.mark.parametrize("start", ["detection", "ocr", "translation"])
-def test_every_whole_page_prefix_reaches_parallel_join_and_one_undo(client, providers, monkeypatch, start):  # noqa: F811
+def test_every_whole_page_prefix_reaches_parallel_join_and_one_undo(client, providers, monkeypatch, start):
     page, old = setup(client, [""])
     detection_calls = detector(monkeypatch)
     barrier, started, release = threading.Barrier(2), threading.Event(), threading.Event()
@@ -64,7 +64,7 @@ def test_every_whole_page_prefix_reaches_parallel_join_and_one_undo(client, prov
     assert undo(client, page["project_id"])["regions"][0]["id"] == old[0]["id"]
 
 
-def test_full_pipeline_retry_reuses_detection_ocr_and_successful_sibling(client, providers, monkeypatch):  # noqa: F811
+def test_full_pipeline_retry_reuses_detection_ocr_and_successful_sibling(client, providers, monkeypatch):
     page, _ = setup(client, [""])
     detect_calls = detector(monkeypatch)
     run, calls = workflow.run_stage, []
@@ -85,7 +85,7 @@ def test_full_pipeline_retry_reuses_detection_ocr_and_successful_sibling(client,
     assert calls.count("inpainting") == 2
 
 
-def test_full_pipeline_target_frame_repair_remains_serial(client, providers, monkeypatch):  # noqa: F811
+def test_full_pipeline_target_frame_repair_remains_serial(client, providers, monkeypatch):
     page, _ = setup(client, [""])
     detector(monkeypatch)
     run, calls = workflow.run_stage, []
@@ -103,7 +103,7 @@ def test_full_pipeline_target_frame_repair_remains_serial(client, providers, mon
 
 
 @pytest.mark.parametrize('action', ['pause','cancel'])
-def test_full_original_pipeline_drains_branches_and_never_publishes_after_stop(client, providers, monkeypatch, action):  # noqa: F811
+def test_full_original_pipeline_drains_branches_and_never_publishes_after_stop(client, providers, monkeypatch, action):
     page, old = setup(client,[''])
     detector(monkeypatch)
     started, release = threading.Event(), threading.Event()
@@ -133,7 +133,7 @@ def test_full_original_pipeline_drains_branches_and_never_publishes_after_stop(c
 
 
 @pytest.mark.parametrize("mode", ["snapshot", "previous_page"])
-def test_full_batch_freezes_config_and_honors_context_mode(client, providers, monkeypatch, mode):  # noqa: F811
+def test_full_batch_freezes_config_and_honors_context_mode(client, providers, monkeypatch, mode):
     from app.tasks import task_manager
     from test_pipeline import solid_page
 

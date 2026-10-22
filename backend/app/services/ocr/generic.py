@@ -92,15 +92,15 @@ class GenericCloudOCRProvider(OCRProvider):
             raise ProviderError("云端 OCR 缺少 API Key，请先保存密钥。")
         super().load()
 
-    def recognize(self, image_path: Path, bbox: list[float], orientation: str, padding: int = 4) -> OCRResult:
-        return self._recognize(image_path, bbox, orientation, padding, int(self.config.get("retries", 2)))
+    def recognize(self, image_path: Path, bbox: list[float], orientation: str, padding: int = 4, *, polygon=None, crop_angle=None) -> OCRResult:
+        return self._recognize(image_path, bbox, orientation, padding, int(self.config.get("retries", 2)), polygon=polygon, crop_angle=crop_angle)
 
-    def recognize_once(self, image_path: Path, bbox: list[float], orientation: str, padding: int = 4) -> OCRResult:
-        return self._recognize(image_path, bbox, orientation, padding, 0)
+    def recognize_once(self, image_path: Path, bbox: list[float], orientation: str, padding: int = 4, *, polygon=None, crop_angle=None) -> OCRResult:
+        return self._recognize(image_path, bbox, orientation, padding, 0, polygon=polygon, crop_angle=crop_angle)
 
-    def _recognize(self, image_path: Path, bbox: list[float], orientation: str, padding: int, retries: int) -> OCRResult:
+    def _recognize(self, image_path: Path, bbox: list[float], orientation: str, padding: int, retries: int, *, polygon=None, crop_angle=None) -> OCRResult:
         self.ensure_loaded()
-        png = region_png(image_path, bbox, padding)
+        png = region_png(image_path, bbox, padding, polygon=polygon, orientation=orientation, crop_angle=crop_angle)
         field = str(self.config.get("image_field", "image"))
         extra = dict(self.config.get("extra_fields", {}))
         headers = {}

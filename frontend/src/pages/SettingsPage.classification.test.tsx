@@ -1,10 +1,11 @@
-import {fireEvent, render, screen, waitFor} from '@testing-library/react'
+import {act, fireEvent, render, screen, waitFor, within} from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import {beforeEach, describe, expect, it, vi} from 'vitest'
 import {GlobalDialogProvider} from '../components/GlobalDialog'
 import {api} from '../services/api'
 import type {ModelConfiguration, ModelDescriptor} from '../types'
 import {SettingsPage} from './SettingsPage'
+import {changeLocale, t} from '../i18n'
 
 vi.mock('../components/LoadingUI', async importOriginal => ({
   ...await importOriginal<typeof import('../components/LoadingUI')>(),
@@ -22,6 +23,72 @@ beforeEach(() => {
 })
 
 describe('classification model form', () => {
+  it.each(['zh-CN','zh-TW','en','ja'] as const)('shows a localized success toast after model settings are saved in %s',async locale => {
+    changeLocale(locale)
+    const user=userEvent.setup()
+    render(<GlobalDialogProvider><SettingsPage/></GlobalDialogProvider>)
+    await screen.findByLabelText(t('文字检测置信度'))
+    await user.click(screen.getByRole('button',{name:t('保存配置')}))
+    const dialog=await screen.findByRole('status',{name:t('保存成功')})
+    expect(dialog).toHaveTextContent(t('{{v0}}配置已保存。',{v0:t('文字检测')}))
+    expect(screen.getAllByRole('status',{name:t('保存成功')})).toHaveLength(1)
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(document.querySelector('.settings-main .settings-notice')).toBeNull()
+    await user.click(within(dialog).getByRole('button',{name:t('关闭提示')}))
+    expect(screen.queryByRole('status',{name:t('保存成功')})).not.toBeInTheDocument()
+    expect(screen.queryByText(t('{{v0}}配置已保存。',{v0:t('文字检测')}))).not.toBeInTheDocument()
+    expect(screen.getByRole('button',{name:t('保存配置')})).toBeEnabled()
+  })
+
+  it('waits for the save request before showing success and blocks repeated clicks',async () => {
+    let finish!:(value:ModelConfiguration)=>void
+    vi.mocked(api.models.update).mockReturnValue(new Promise(resolve=>{finish=resolve}))
+    const user=userEvent.setup()
+    render(<GlobalDialogProvider><SettingsPage/></GlobalDialogProvider>)
+    await screen.findByLabelText('文字检测置信度')
+    await user.click(screen.getByRole('button',{name:'保存配置'}))
+    expect(screen.queryByRole('status',{name:'保存成功'})).not.toBeInTheDocument()
+    const saving=screen.getByRole('button',{name:'正在保存…'})
+    expect(saving).toBeDisabled()
+    await user.click(saving)
+    expect(api.models.update).toHaveBeenCalledTimes(1)
+    await act(async()=>{finish(configuration)})
+    expect(await screen.findByRole('status',{name:'保存成功'})).toBeVisible()
+  })
+
+  it('reports model save errors without clearing the edited configuration and permits retry',async () => {
+    vi.mocked(api.models.update).mockRejectedValueOnce(new Error('服务暂不可用')).mockResolvedValue(configuration)
+    const user=userEvent.setup()
+    render(<GlobalDialogProvider><SettingsPage/></GlobalDialogProvider>)
+    const threshold=await screen.findByLabelText('文字检测置信度')
+    fireEvent.change(threshold,{target:{value:'0.42'}})
+    await user.click(screen.getByRole('button',{name:'保存配置'}))
+    const dialog=await screen.findByRole('alert',{name:'保存失败'})
+    expect(dialog).toHaveTextContent('服务暂不可用')
+    expect(document.querySelector('.settings-form .settings-error')).toBeNull()
+    expect(screen.queryByRole('status',{name:'保存成功'})).not.toBeInTheDocument()
+    await user.click(within(dialog).getByRole('button',{name:'关闭提示'}))
+    expect(threshold).toHaveValue('0.42')
+    await user.click(screen.getByRole('button',{name:'保存配置'}))
+    expect(await screen.findByRole('status',{name:'保存成功'})).toBeVisible()
+    expect(api.models.update).toHaveBeenCalledTimes(2)
+  })
+
+  it('switches languages from settings and retains other unsaved settings', async () => {
+    render(<GlobalDialogProvider><SettingsPage/></GlobalDialogProvider>)
+    await screen.findByRole('button',{name:'编辑文字检测配置'})
+    fireEvent.change(screen.getByRole('textbox',{name:'文字检测置信度'}),{target:{value:'0.31'}})
+    fireEvent.click(within(screen.getByRole('navigation',{name:'设置分类导航'})).getByRole('button',{name:'界面语言'}))
+    expect(screen.getByRole('heading',{name:'界面语言',level:1})).toBeVisible()
+    const selector=screen.getAllByRole('button',{name:'界面语言'}).find(button => button.getAttribute('aria-haspopup') === 'listbox')!
+    fireEvent.click(selector)
+    fireEvent.click(screen.getByRole('option',{name:'English'}))
+    expect(screen.getByRole('heading',{name:'Interface language',level:1})).toBeVisible()
+    fireEvent.click(screen.getByRole('button',{name:'Configure Text detection'}))
+    expect(screen.getByRole('textbox',{name:'Text confidence'})).toHaveValue('0.31')
+    expect(api.models.update).not.toHaveBeenCalled()
+  })
+
   it('saves four independent margins while preserving legacy uniform padding', async () => {
     const rfdetr={...descriptor,name:'rfdetr',supports_batch:false,description:'Unified layout'}
     const configured={...configuration,provider:'rfdetr',name:'RF-DETR',capabilities:rfdetr,config:{device:'cpu',text_threshold:0.25,bubble_threshold:0.5,panel_threshold:0.5,containment_threshold:0.9,text_box_padding:6,text_classification:{filter_sfx:true,min_sfx_confidence:0.6}}}

@@ -7,11 +7,10 @@ from app.services.inpainting.masking import (
     mask_is_empty,
     process_mask,
 )
-from app.services.inpainting.providers import HybridInpainter, OpenCVInpainter, SimpleLaMaInpainter
+from app.services.inpainting.providers import OpenCVInpainter, SimpleLaMaInpainter
 
 __all__ = [
     "OpenCVInpainter",
-    "HybridInpainter",
     "SimpleLaMaInpainter",
     "apply_balloon_constraint",
     "create_region_mask",

@@ -4,8 +4,9 @@ from datetime import datetime, timezone
 from alembic import command
 from alembic.autogenerate import compare_metadata
 from alembic.runtime.migration import MigrationContext
+from alembic.script import ScriptDirectory
 from app.core.database import Base
-from app.core.migrations import HEAD, database_revision, migration_config, upgrade_database
+from app.core.migrations import migration_config, upgrade_database
 from app.models import ProcessingTask, StageCheckpoint, TaskWorkflow
 from sqlalchemy import MetaData
 from sqlalchemy.orm import Session
@@ -14,9 +15,9 @@ from sqlalchemy.orm import Session
 def test_fresh_and_repeated_schema_upgrade_matches_orm(target):
     upgrade_database(target)
     upgrade_database(target)
-    assert database_revision(target) == HEAD
     with target.connect() as connection:
         context = MigrationContext.configure(connection)
+        assert context.get_current_revision() == ScriptDirectory.from_config(migration_config()).get_current_head()
         assert compare_metadata(context, Base.metadata) == []
 
 

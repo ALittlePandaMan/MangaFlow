@@ -21,12 +21,18 @@ from app.services.execution import ExecutionPolicy, execution_runtime
 from app.tasks import task_manager
 from sqlalchemy import select
 from test_batch_repair_translate import batch
-from test_checkpoint_pipeline import checkpoint_mode as checkpoint_mode  # noqa: F401
+from test_checkpoint_pipeline import checkpoint_mode as checkpoint_mode
 from test_checkpoint_pipeline import stopped
 from test_editor_history import apply as apply_history
 from test_pipeline import solid_page, wait_for_task
-from test_translation_auto_ocr import providers as providers  # noqa: F401
+from test_translation_auto_ocr import providers as providers
 from test_translation_auto_ocr import setup
+
+
+def worker_started(task_id: str) -> bool:
+    with task_manager.lock:
+        attempt = task_manager.attempts.get(task_id)
+        return bool(attempt and attempt.started)
 
 
 def setup_two(client, mode="snapshot"):
@@ -42,7 +48,7 @@ def setup_two(client, mode="snapshot"):
     return first, second, first_regions[0], second_region
 
 
-def test_snapshot_context_is_frozen_at_submission_and_private(client, providers, monkeypatch):  # noqa: F811
+def test_snapshot_context_is_frozen_at_submission_and_private(client, providers, monkeypatch):
     _, translator, _ = providers
     first, second, first_region, _ = setup_two(client)
     dispatched = []
@@ -80,7 +86,7 @@ def test_snapshot_context_is_frozen_at_submission_and_private(client, providers,
     assert status["completed"] == status["total"] == 2 and status["progress"] == 1
 
 
-def test_previous_page_waits_for_translation_not_repair_and_takes_no_capacity(client, providers, monkeypatch):  # noqa: F811
+def test_previous_page_waits_for_translation_not_repair_and_takes_no_capacity(client, providers, monkeypatch):
     _, translator, _ = providers
     first, second, _, _ = setup_two(client, "previous_page")
     unrelated, _ = setup(client, ["无关项目"])
@@ -110,7 +116,7 @@ def test_previous_page_waits_for_translation_not_repair_and_takes_no_capacity(cl
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline:
             waiting = client.get(f"/api/tasks/{tasks[1]['id']}").json()
-            if waiting["waiting_reason"] and waiting["status"] == "QUEUED" and not task_manager.has_started(tasks[1]["id"]):
+            if waiting["waiting_reason"] and waiting["status"] == "QUEUED" and not worker_started(tasks[1]["id"]):
                 with SessionLocal() as db:
                     repaired = db.scalar(select(StageCheckpoint.id).join(TaskWorkflow).where(
                         TaskWorkflow.task_id == tasks[1]["id"],StageCheckpoint.stage == "inpainting",StageCheckpoint.status == "SUCCEEDED"))
@@ -140,7 +146,7 @@ def test_previous_page_waits_for_translation_not_repair_and_takes_no_capacity(cl
         runtime.update(policy, persist=False)
 
 
-def test_previous_translation_failure_is_explicit_and_retryable(client, providers, monkeypatch):  # noqa: F811
+def test_previous_translation_failure_is_explicit_and_retryable(client, providers, monkeypatch):
     first, _, _, _ = setup_two(client, "previous_page")
     original = workflow.run_stage
 
@@ -174,7 +180,7 @@ def test_context_mode_rejects_invalid_values(client, mode):
     assert client.post("/api/projects", json={"name": "invalid", "settings": {"translation_context_mode": mode}}).status_code == 422
 
 
-def test_project_delete_cascades_private_batch_and_checkpoint_rows(client, providers):  # noqa: F811
+def test_project_delete_cascades_private_batch_and_checkpoint_rows(client, providers):
     first, _, _, _ = setup_two(client)
     tasks = batch(client, first["project_id"]).json()
     for task in tasks:
@@ -190,7 +196,7 @@ def wait_reason(client, identifier, reason):
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline:
         value = client.get(f"/api/tasks/{identifier}").json()
-        if value["waiting_reason"] == reason and value["status"] == "QUEUED" and not task_manager.has_started(identifier):
+        if value["waiting_reason"] == reason and value["status"] == "QUEUED" and not worker_started(identifier):
             with SessionLocal() as db:
                 repaired = db.scalar(select(StageCheckpoint.id).join(TaskWorkflow).where(
                     TaskWorkflow.task_id == identifier,StageCheckpoint.stage == "inpainting",StageCheckpoint.status == "SUCCEEDED"))
@@ -202,7 +208,7 @@ def wait_reason(client, identifier, reason):
     pytest.fail(f"Dependency reason did not become {reason}: {value}")
 
 
-def test_paused_dependency_resumes_or_cancels_without_consuming_a_page_slot(client, providers, monkeypatch):  # noqa: F811
+def test_paused_dependency_resumes_or_cancels_without_consuming_a_page_slot(client, providers, monkeypatch):
     first, _, _, _ = setup_two(client, "previous_page")
     dispatch = task_manager.dispatch
     monkeypatch.setattr(task_manager, "dispatch", lambda identifier: None)
@@ -212,7 +218,7 @@ def test_paused_dependency_resumes_or_cancels_without_consuming_a_page_slot(clie
     monkeypatch.setattr(task_manager, "dispatch", dispatch)
     dispatch(child["id"])
     wait_reason(client, child["id"], "previous_page_paused")
-    assert not task_manager.has_started(child["id"])
+    assert not worker_started(child["id"])
     assert client.post(f"/api/tasks/{child['id']}/pause").status_code == 200
     stopped(client, child["id"], "PAUSED")
     assert client.post(f"/api/tasks/{child['id']}/resume").status_code == 202
@@ -227,7 +233,7 @@ def test_paused_dependency_resumes_or_cancels_without_consuming_a_page_slot(clie
         stopped(client, task["id"], "COMPLETED")
 
 
-def test_missing_dependency_never_silently_falls_back_to_old_text(client, providers, monkeypatch):  # noqa: F811
+def test_missing_dependency_never_silently_falls_back_to_old_text(client, providers, monkeypatch):
     first, _, _, _ = setup_two(client, "previous_page")
     dispatch = task_manager.dispatch
     monkeypatch.setattr(task_manager, "dispatch", lambda identifier: None)
@@ -238,11 +244,11 @@ def test_missing_dependency_never_silently_falls_back_to_old_text(client, provid
     dispatch(child["id"])
     failed = stopped(client, child["id"], "FAILED")
     assert failed["error_kind"] == "dependency_missing"
-    assert not task_manager.has_started(child["id"])
+    assert not worker_started(child["id"])
 
 
 @pytest.mark.parametrize("status", ["RUNNING", "CANCELLING"])
-def test_restart_before_workflow_creation_preserves_published_page(client, providers, monkeypatch, status):  # noqa: F811
+def test_restart_before_workflow_creation_preserves_published_page(client, providers, monkeypatch, status):
     first, _, _, _ = setup_two(client)
     monkeypatch.setattr(task_manager, "dispatch", lambda identifier: None)
     tasks = batch(client, first["project_id"]).json()
@@ -258,7 +264,7 @@ def test_restart_before_workflow_creation_preserves_published_page(client, provi
     assert result["status"] == ("FAILED" if status == "RUNNING" else "CANCELLED")
 
 
-def test_recovery_does_not_interrupt_live_stage_or_timing_run(client, providers, monkeypatch):  # noqa: F811
+def test_recovery_does_not_interrupt_live_stage_or_timing_run(client, providers, monkeypatch):
     first, _, _, _ = setup_two(client)
     entered, release = threading.Event(), threading.Event()
     original = workflow.run_stage
@@ -287,7 +293,7 @@ def test_recovery_does_not_interrupt_live_stage_or_timing_run(client, providers,
         stopped(client, identifier, "COMPLETED")
 
 
-def test_previous_page_outside_batch_uses_its_frozen_context(client, providers):  # noqa: F811
+def test_previous_page_outside_batch_uses_its_frozen_context(client, providers):
     _, translator, _ = providers
     first, second, _, _ = setup_two(client, "previous_page")
     tasks = batch(client, first["project_id"], image_ids=[second["id"]]).json()
@@ -296,7 +302,7 @@ def test_previous_page_outside_batch_uses_its_frozen_context(client, providers):
     assert translator.calls[0][1]["previous_page"]["regions"][0]["source"] == "前页原文"
 
 
-def test_queued_pause_can_resume_while_another_page_still_owns_capacity(client,providers,monkeypatch):  # noqa: F811
+def test_queued_pause_can_resume_while_another_page_still_owns_capacity(client,providers,monkeypatch):
     first, _, _, _ = setup_two(client)
     entered,release = threading.Event(),threading.Event()
     original = workflow.run_stage
@@ -325,7 +331,7 @@ def test_queued_pause_can_resume_while_another_page_still_owns_capacity(client,p
         runtime.update(policy,persist=False)
 
 
-def test_prepared_repair_waits_without_a_worker_and_reuses_all_results_after_parent_resume(client,providers,monkeypatch):  # noqa: F811
+def test_prepared_repair_waits_without_a_worker_and_reuses_all_results_after_parent_resume(client,providers,monkeypatch):
     first,second,_,_ = setup_two(client,"previous_page")
     dispatch = task_manager.dispatch
     monkeypatch.setattr(task_manager,"dispatch",lambda identifier: None)
@@ -343,7 +349,7 @@ def test_prepared_repair_waits_without_a_worker_and_reuses_all_results_after_par
     dispatch(child["id"])
     wait_reason(client,child["id"],"previous_page_paused")
     assert calls == [(second["id"],stage) for stage in ("ocr","mask","inpainting")]
-    assert execution_runtime().pages.active == 0 and not task_manager.has_started(child["id"])
+    assert execution_runtime().pages.active == 0 and not worker_started(child["id"])
     assert client.get(f"/api/images/{second['id']}").json()["clean_url"] is None
     with SessionLocal() as db:
         assert not db.scalar(select(EditorHistoryEntry.id).where(EditorHistoryEntry.task_id == child["id"]))

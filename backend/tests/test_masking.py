@@ -14,7 +14,7 @@ from app.services.inpainting.masking import (
     mask_is_empty,
     process_mask,
 )
-from app.services.inpainting.providers import HybridInpainter, OpenCVInpainter, SimpleLaMaInpainter
+from app.services.inpainting.providers import OpenCVInpainter, SimpleLaMaInpainter
 from PIL import Image, ImageCms
 
 
@@ -560,24 +560,22 @@ def test_lama_composites_only_inside_mask_and_preserves_icc(tmp_path: Path) -> N
     assert np.all(output[mask_array > 0] == (240, 10, 20))
 
 
-def test_legacy_hybrid_provider_routes_simple_regions_to_complex_lama(tmp_path: Path) -> None:
-    calls: list[str] = []
+def test_lama_handles_simple_and_complex_regions_with_the_same_model(tmp_path: Path) -> None:
+    source, mask = tmp_path / "source.png", tmp_path / "mask.png"
+    Image.new("RGB", (32, 40), "black").save(source)
+    Image.new("L", (32, 40), 255).save(mask)
+    calls = []
 
-    class FakeLama:
-        def inpaint(
-            self,
-            _image_path: Path,
-            _mask_path: Path,
-            output_path: Path,
-            region_type: str,
-        ) -> Path:
-            calls.append(region_type)
-            return output_path
+    def infer(image, selected):
+        calls.append((image.size, selected.size))
+        return Image.new("RGB", image.size, "white")
 
-    provider = HybridInpainter()
-    provider._lama = FakeLama()  # type: ignore[assignment]
+    provider = SimpleLaMaInpainter()
+    provider._model = infer
     provider.state = ProviderState.READY
-
-    output = tmp_path / "output.png"
-    assert provider.inpaint(tmp_path / "source.png", tmp_path / "mask.png", output, "bubble_simple") == output
-    assert calls == ["background_complex"]
+    for region_type in ("bubble_simple", "background_complex"):
+        output = tmp_path / f"{region_type}.png"
+        assert provider.inpaint(source, mask, output, region_type) == output
+        with Image.open(output) as repaired:
+            assert repaired.getpixel((16, 20)) == (255, 255, 255)
+    assert calls == [((32, 40), (32, 40))] * 2

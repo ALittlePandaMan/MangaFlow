@@ -45,6 +45,7 @@ from app.services.inpainting.local_text import (
     polygon_boxes,
     refine_probability,
 )
+from app.services.inpainting.masking import _glyph_integrity
 from app.services.inpainting.repair import repair_masks
 from app.services.inpainting.text_segmentation import text_probability
 from app.services.inpainting.verification import verify_and_retry
@@ -52,6 +53,7 @@ from app.services.layout.text_rotation import can_initialize_rotation, free_text
 from app.services.ocr.checkpoint import recognize_local
 from app.services.ocr.cloud import CloudMultimodalOCRProvider
 from app.services.ocr.concurrency import OCRJob, recognize_regions
+from app.services.ocr.crops import source_crop_angle
 from app.services.ocr.generic import GenericCloudOCRProvider
 from app.services.ocr.providers import MangaOCRProvider
 from app.services.quality import evaluate_page
@@ -75,10 +77,11 @@ logger = logging.getLogger(__name__)
 
 def _generate_mask_job(source, output, polygon, source_polygons, arguments, constraint, segmentation):
     """CPU worker: plain values/read-only arrays only, no ORM or session."""
+    audit = {}
     if source_polygons:
-        metadata = create_text_mask_union(source, source_polygons, output, **arguments)
+        metadata = create_text_mask_union(source, source_polygons, output, **arguments, audit_sink=audit)
     else:
-        metadata = create_text_mask(source, polygon, output, **arguments)
+        metadata = create_text_mask(source, polygon, output, **arguments, audit_sink=audit)
     if constraint is not None:
         metadata["constraint"] = constraint
     metadata["text_segmentation"] = segmentation
@@ -98,6 +101,26 @@ def _generate_mask_job(source, output, polygon, source_polygons, arguments, cons
             metadata["repair"] = {**fill, "mask_sha256": hashlib.sha256(generated.tobytes()).hexdigest()}
         metadata["mask_expansion"] = round(cv2.countNonZero(generated) / max(1, cv2.countNonZero(boundary)), 4)
     metadata["region_boundary"] = {"version": 1, "status": "clipped" if clipped else "within", "clipped_pixels": clipped}
+    reference = audit.get("glyphs")
+    if reference is not None:
+        integrity = _glyph_integrity(reference, generated)
+        incomplete = bool(integrity["clipped_glyph_pixels"])
+        uncertain = bool(metadata.get("segmentation_disagreement"))
+        status = "partial" if incomplete else "uncertain" if uncertain else "passed"
+        metadata["mask_integrity"] = {"scope": "final_mask", "status": status, **integrity}
+        note = metadata.get("constraint")
+        if isinstance(note, dict) and ("glyph_area" in note or "final_mask_area" in note):
+            note.update(integrity)
+            note["final_mask_area"] = cv2.countNonZero(generated)
+            if note.get("raw_mask_area"):
+                note["raw_mask_retention"] = round(note["final_mask_area"] / note["raw_mask_area"], 4)
+        if isinstance(note, dict) and incomplete:
+            if clipped:
+                note.update(status="partial", reason="region_boundary_glyphs_clipped")
+            elif note.get("status") in {"applied", "relaxed"}:
+                note.update(status="partial", reason="glyph_strokes_clipped")
+        if incomplete or uncertain:
+            metadata.pop("repair", None)
     metadata["automatic_mask_sha256"] = hashlib.sha256(generated.tobytes()).hexdigest()
     return metadata
 
@@ -471,7 +494,9 @@ class PipelineProcessor:
         if isinstance(provider, (CloudMultimodalOCRProvider, GenericCloudOCRProvider)):
             self.db.commit()
             versions = {region.id: region.updated_at for region in pending_regions}
-            jobs = [OCRJob(region.id, tuple(region.bbox), str(options.get("orientation") or region.orientation)) for region in pending_regions]
+            jobs = [OCRJob(region.id, tuple(region.bbox), str(options.get("orientation") or region.orientation),
+                          tuple(tuple(point) for point in region.polygon) if region.polygon else None, source_crop_angle(region))
+                    for region in pending_regions]
             completed = skipped = 0
 
             def report(status: str) -> None:
@@ -490,6 +515,7 @@ class PipelineProcessor:
             return
         if isinstance(provider, MangaOCRProvider):
             from app.services.ocr.prose import native_boxes
+            from app.utils.geometry import bbox_to_polygon
             # An explicit whole-page redetection writes its requested OCR even
             # when a frame is edited during inference. Automatic runs retain
             # version checks; deleted frames are never recreated by OCR saves.
@@ -499,7 +525,9 @@ class PipelineProcessor:
                 orientation = str(options.get("orientation") or region.orientation)
                 boxes = native_boxes(region, orientation, padding)
                 expected[region.id] = len(boxes)
-                jobs.extend((region.id, box, orientation, region.updated_at, 0 if len(boxes)>1 else padding) for box in boxes)
+                jobs.extend((region.id, box, orientation, region.updated_at, 0 if len(boxes)>1 else padding,
+                             bbox_to_polygon(box) if len(boxes)>1 else region.polygon or None,
+                             0. if len(boxes)>1 else source_crop_angle(region)) for box in boxes)
             chunks = {}
             completed = skipped = 0
             position = 0
@@ -510,11 +538,12 @@ class PipelineProcessor:
                 # Keep each native microbatch's crop padding uniform; result
                 # cache keys already include the effective padding and crop.
                 batch = batch[:next((i for i,job in enumerate(batch) if job[4] != batch[0][4]), len(batch))]
-                results = recognize_local(provider,source,[(box, orientation) for _, box, orientation, _, _ in batch],
-                    batch[0][4],batch=True,check=self._check_interruption)
+                results = recognize_local(provider,source,[(box, orientation) for _, box, orientation, _, _, _, _ in batch],
+                    batch[0][4],polygons=[job[5] for job in batch],crop_angles=[job[6] for job in batch],
+                    batch=True,check=self._check_interruption)
                 if len(results) != len(batch):
                     raise ValueError("MangaOCR batch result count mismatch")
-                for (identifier, _, _, version, _), result in zip(batch, results, strict=True):
+                for (identifier, _, _, version, _, _, _), result in zip(batch, results, strict=True):
                     self._check_interruption()
                     received = chunks.setdefault(identifier, [])
                     received.append(result)
@@ -537,7 +566,8 @@ class PipelineProcessor:
         for completed, region in enumerate(pending_regions, start=1):
             self._check_interruption()
             orientation = str(options.get("orientation") or region.orientation)
-            result, = recognize_local(provider,source,[(region.bbox,orientation)],int(options.get("crop_padding",4)))
+            result, = recognize_local(provider,source,[(region.bbox,orientation)],int(options.get("crop_padding",4)),
+                                      polygons=[region.polygon or None],crop_angles=[source_crop_angle(region)])
             # Retain the computed result while retrying only its short save.
             # Every successful region is durable before the next inference.
             self._save_ocr_result(page, region.id, result)

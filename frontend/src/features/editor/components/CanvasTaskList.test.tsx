@@ -39,7 +39,7 @@ it.each([true,false])('extends the progress track below the stop-button column w
   expect(track).toHaveClass('col-start-2','col-span-2','row-start-2')
   expect(stop).toHaveClass('col-start-3','row-start-1')
   expect(track).toHaveAttribute('aria-valuenow','60')
-  expect(track.firstElementChild).toHaveStyle({width:'60%'})
+  expect(track.firstElementChild).toHaveStyle({transform:'scaleX(0.6)'})
   expect(screen.getByText('第 3 页：00000003.jpg').parentElement).toHaveClass('col-start-2','row-start-1')
   rerender(<CanvasTaskList activity={activity} pages={pages}/>)
   expect(screen.queryByRole('button',{name:/停止.*任务/})).not.toBeInTheDocument()

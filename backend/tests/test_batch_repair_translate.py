@@ -6,7 +6,8 @@ from app.models import ProcessingTask
 from app.pipeline.processor import PipelineProcessor
 from app.services.inpainting.providers import SimpleLaMaInpainter
 from test_pipeline import rectangular_mask, solid_page, wait_for_task
-from test_translation_auto_ocr import providers, setup  # noqa: F401
+from test_translation_auto_ocr import providers as providers
+from test_translation_auto_ocr import setup
 
 
 def batch(client, project_id, **extra):
@@ -70,7 +71,7 @@ def test_batch_skips_empty_and_busy_pages_and_rechecks_duplicates(client, monkey
             db.commit()
 
 
-def test_batch_translates_existing_frames_auto_ocrs_blanks_and_preserves_manual_masks(client, providers, monkeypatch):  # noqa: F811
+def test_batch_translates_existing_frames_auto_ocrs_blanks_and_preserves_manual_masks(client, providers, monkeypatch):
     ocr, translator, _ = providers
     page, regions = setup(client, [" \n\u3000", "已有原文", ""])
     ocr.responses[regions[2]["bbox"][0]] = ""

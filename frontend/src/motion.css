@@ -1,0 +1,154 @@
+/* Shared interaction rhythm. Keep layout/geometry changes immediate, especially
+   canvas gestures and menus whose bounds are measured before being clamped. */
+:root {
+  --motion-fast: 120ms;
+  --motion-standard: 160ms;
+  --motion-reveal: 200ms;
+  --motion-ease: cubic-bezier(.2, .8, .2, 1);
+  --motion-feedback: cubic-bezier(.4, 0, .2, 1);
+}
+
+.motion-button,
+.icon-button,
+.motion-control,
+.motion-feedback,
+.app-navigation > a,
+.app-navigation > button,
+.editor-view-tabs button,
+.editor-dock button,
+.inspector-section-toggle,
+.inspector-group-toggle,
+.inspector-text-row,
+.inspector-text-select,
+.inspector-alignment-buttons > button,
+.mask-brush-presets button,
+.number-control button,
+.translation-context-mode,
+.translation-context-editor textarea,
+.settings-nav-item,
+.settings-nav-group,
+.font-library-navigation button,
+.settings-shortcut-tabs button,
+.settings-shortcut-key,
+.recommendation-navigation button,
+.recommendation-candidate-select,
+.recommendation-radio,
+.recommendation-preload,
+.translation-context-format,
+:is(.settings-advanced, .settings-runtime-detail, .recommendation-guide) > summary,
+:is([role='menu'], [role='listbox']) > button {
+  transition-property: background-color, border-color, color, box-shadow, outline-color, opacity;
+  transition-duration: var(--motion-standard);
+  transition-timing-function: var(--motion-feedback);
+}
+
+/* Scale, not translate: no layout shift, and no conflict with positioned menus.
+   Compound inputs, tabs, rows and drag handles deliberately do not shrink. */
+.motion-button,
+.icon-button {
+  transition-property: background-color, border-color, color, box-shadow, opacity, scale;
+}
+:is(.motion-button, .icon-button):not(:disabled):not([aria-disabled='true']):active {
+  scale: .97;
+  transition-duration: var(--motion-fast);
+}
+
+.motion-chevron,
+.inspector-section-chevron,
+.inspector-group-chevron,
+.settings-nav-group > svg:last-child,
+:is(.settings-advanced, .recommendation-guide) > summary svg {
+  transition: transform var(--motion-standard) var(--motion-ease), color var(--motion-standard) var(--motion-feedback);
+  transform-origin: center;
+}
+
+.project-card,
+.font-preset-card {
+  transition: border-color var(--motion-standard) var(--motion-feedback), box-shadow var(--motion-reveal) var(--motion-ease), transform var(--motion-reveal) var(--motion-ease);
+}
+@media (hover: hover) and (pointer: fine) {
+  .project-card:hover { transform: translateY(-2px); }
+  .font-preset-card:hover { border-color: var(--color-line-strong); box-shadow: var(--shadow-card-hover); }
+}
+.font-preset-card:focus-within { border-color: var(--color-line-strong); }
+
+.mask-switch,
+.recommendation-switch { transition: background-color var(--motion-standard) var(--motion-feedback), box-shadow var(--motion-standard) var(--motion-feedback); }
+.mask-switch::after,
+.recommendation-switch i { transition: transform var(--motion-standard) var(--motion-ease); }
+
+.motion-swatch { transition: scale var(--motion-fast) var(--motion-ease), box-shadow var(--motion-standard) var(--motion-feedback); }
+@media (hover: hover) and (pointer: fine) {
+  .motion-swatch:hover { scale: 1.05; }
+}
+.motion-range::-webkit-slider-thumb { transition: scale var(--motion-fast) var(--motion-ease), box-shadow var(--motion-standard) var(--motion-feedback); }
+.motion-range::-moz-range-thumb { transition: scale var(--motion-fast) var(--motion-ease), box-shadow var(--motion-standard) var(--motion-feedback); }
+.motion-range:enabled:active::-webkit-slider-thumb { scale: 1.13; }
+.motion-range:enabled:active::-moz-range-thumb { scale: 1.13; }
+@media (hover: hover) and (pointer: fine) {
+  .motion-range:enabled:hover::-webkit-slider-thumb { scale: 1.13; box-shadow: 0 0 0 4px var(--color-accent-soft); }
+  .motion-range:enabled:hover::-moz-range-thumb { scale: 1.13; box-shadow: 0 0 0 4px var(--color-accent-soft); }
+}
+
+/* Opacity-only on anchored/scrolling surfaces. Transformed children can create
+   temporary scrollbars and disturb centering or measured menu coordinates. */
+.motion-popover,
+.motion-panel,
+.settings-model-navigation,
+.settings-shortcut-row,
+.font-preset-grid,
+.settings-font-list,
+.font-library-empty,
+.inspector-layer-list,
+.inspector-text-details,
+.inspector-typesetting-fields,
+.canvas-task-list,
+.immersive-reader,
+.editor-project-actions[data-compact='true'],
+:is(.settings-advanced, .settings-runtime-detail, .recommendation-guide)[open] > :not(summary) {
+  animation: motion-fade-in var(--motion-standard) var(--motion-ease);
+}
+.motion-backdrop,
+.settings-backdrop,
+.translation-context-overlay { animation: motion-fade-in var(--motion-standard) var(--motion-ease); }
+.motion-dialog,
+.translation-context-dialog { animation: motion-dialog-in var(--motion-reveal) var(--motion-ease); transform-origin: center; }
+
+.motion-progress-fill { transform-origin: left center; transition: transform 300ms var(--motion-ease); }
+.motion-page-item { transition: background-color var(--motion-standard) var(--motion-feedback), border-color var(--motion-standard) var(--motion-feedback), opacity var(--motion-standard) var(--motion-feedback), box-shadow var(--motion-standard) var(--motion-feedback); }
+
+/* Small-screen panels reveal without moving the canvas or their hit targets. */
+@media (width < 960px) {
+  .editor-pages:not([hidden]),
+  .editor-properties:not([hidden]),
+  .editor-sheet-heading { animation: motion-fade-in var(--motion-standard) var(--motion-ease); }
+}
+@media (width < 768px) {
+  .settings-sidebar.is-open { animation: motion-fade-in var(--motion-standard) var(--motion-ease); }
+}
+
+@keyframes motion-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes motion-dialog-in {
+  from { opacity: 0; transform: translateY(4px) scale(.985); }
+  to { opacity: 1; transform: none; }
+}
+
+/* Include legacy utility transitions and portals, not only the new classes.
+   No completion handler relies on these decorative animations. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0s !important;
+    transition-delay: 0s !important;
+    scroll-behavior: auto !important;
+  }
+  :is(.motion-button, .icon-button):not(:disabled):not([aria-disabled='true']):active,
+  .motion-swatch:hover { scale: 1; }
+  .project-card:hover { transform: none; }
+  .motion-range:enabled:is(:hover, :active)::-webkit-slider-thumb { scale: 1; }
+  .motion-range:enabled:is(:hover, :active)::-moz-range-thumb { scale: 1; }
+}

@@ -63,6 +63,8 @@ jobs:
         run: npm run lint --prefix frontend
       - name: Test
         run: npm test --prefix frontend
+      - name: Validate translations and visual fixtures
+        run: npm run i18n:check --prefix frontend && npm run visual:typecheck --prefix frontend
       - name: Build
         run: npm run build --prefix frontend
 
@@ -85,13 +87,21 @@ jobs:
       - name: Verify runtime wheel contents
         run: |
           python - <<'PY'
+          import sys
           from pathlib import Path
           from zipfile import ZipFile
-          with ZipFile(next(Path('/tmp/mangaflow-wheel').glob('*.whl'))) as wheel:
-              names = wheel.namelist()
+          archive = next(Path('/tmp/mangaflow-wheel').glob('*.whl'))
+          with ZipFile(archive) as wheel:
+              names = set(wheel.namelist())
               assert not any(name.startswith('tests/') for name in names), 'Tests belong in the source tree, not the runtime wheel'
-              assert 'app/services/database_transfer.py' not in names, 'Deleted migration tools must not return via build caches'
-              assert any(name.startswith('app/migrations/versions/v') for name in names), 'Database migrations must ship with the application'
+              sources = {p.relative_to('backend').as_posix() for p in Path('backend/app').rglob('*.py')}
+              packaged = {name for name in names if name.startswith('app/') and name.endswith('.py')}
+              assert packaged == sources, f'Runtime modules differ from source: {packaged ^ sources}'
+              licenses = {p.relative_to('backend').as_posix() for p in Path('backend/app/assets/font-licenses').glob('*.txt')}
+              assert licenses and licenses <= names, 'Reviewed font licenses must ship with the application'
+          sys.path.insert(0, str(archive))
+          from app.version import APP_VERSION
+          assert APP_VERSION == Path('VERSION').read_text().strip(), 'Installed package must report its release version'
           PY
       - name: Validate PostgreSQL Docker Compose
         env:

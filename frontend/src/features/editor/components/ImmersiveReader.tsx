@@ -1,3 +1,4 @@
+import {t, useLocale} from '../../../i18n'
 import {useEffect, useLayoutEffect, useRef, useState} from 'react'
 import {createPortal} from 'react-dom'
 import {Group, Image as KonvaImage, Layer, Rect, Stage} from 'react-konva'
@@ -17,6 +18,7 @@ interface Props {
 
 /** A read-only scene: same artwork/text as the editor, no editor state writes. */
 export function ImmersiveReader({page, regions, busy, error, onPreviousPage, onNextPage, onClose}: Props) {
+  useLocale()
   const root = useRef<HTMLDivElement>(null)
   const mounted = useRef(false)
   const fullscreenRequested = useRef(false)
@@ -121,10 +123,10 @@ export function ImmersiveReader({page, regions, busy, error, onPreviousPage, onN
   }, [viewport.height])
 
   return createPortal(<div ref={root} className="immersive-reader" role="dialog" aria-modal="true"
-    aria-label="沉浸式阅读" aria-describedby="immersive-reader-help" aria-busy={busy || loading} data-page-id={page.id} tabIndex={-1}
+    aria-label={t("沉浸式阅读")} aria-describedby="immersive-reader-help" aria-busy={busy || loading} data-page-id={page.id} tabIndex={-1}
     onClick={() => onClose()} onContextMenu={event => event.preventDefault()}>
-    <span id="immersive-reader-help" className="sr-only">点击任意位置或按 Escape 退出，滚轮向下翻到下一页，向上翻到上一页。</span>
-    {image && <Stage width={viewport.width} height={viewport.height} listening={false} aria-label={`翻译后的漫画：${page.filename}`}>
+    <span id="immersive-reader-help" className="sr-only">{t("点击任意位置或按 Escape 退出，滚轮向下翻到下一页，向上翻到上一页。")}</span>
+    {image && <Stage width={viewport.width} height={viewport.height} listening={false} aria-label={t("翻译后的漫画：{{v0}}", {v0: page.filename})}>
       <Layer listening={false}>
         <Group x={(viewport.width-page.width*scale)/2} y={(viewport.height-page.height*scale)/2}
           scaleX={scale} scaleY={scale} clipX={0} clipY={0} clipWidth={page.width} clipHeight={page.height}>
@@ -134,7 +136,7 @@ export function ImmersiveReader({page, regions, busy, error, onPreviousPage, onN
         </Group>
       </Layer>
     </Stage>}
-    {(error || imageError) ? <span className="immersive-reader-message" role="alert">{error || '图片加载失败，请点击任意位置退出后重试。'}</span>
-      : !image && <span className="immersive-reader-message" role="status">正在加载漫画…</span>}
+    {(error || imageError) ? <span className="immersive-reader-message" role="alert">{error || t("图片加载失败，请点击任意位置退出后重试。")}</span>
+      : !image && <span className="immersive-reader-message" role="status">{t("正在加载漫画…")}</span>}
   </div>,document.body)
 }

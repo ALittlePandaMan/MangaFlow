@@ -1,3 +1,4 @@
+import {t} from '../i18n'
 import type {ImagePage} from '../types'
 
 const MiB = 1024 * 1024
@@ -65,7 +66,7 @@ export async function uploadImagesInBatches(
     try {
       added = await send(batch)
       if (!Array.isArray(added) || added.length !== batch.length) {
-        throw new Error('服务器返回的图片数量与本批次不一致')
+        throw new Error(t("服务器返回的图片数量与本批次不一致"))
       }
     } catch (cause) {
       const status = cause && typeof cause === 'object' && 'status' in cause ? Number(cause.status) : 0
@@ -80,13 +81,13 @@ export async function uploadImagesInBatches(
       }
       const uncertain = ![400, 401, 403, 404, 409, 413, 415, 422].includes(status)
       const reason = status === 413
-        ? `单张图片「${batch[0].name}」超过服务器请求大小限制，分批无法拆分单张图片。`
+        ? t("单张图片「{{v0}}」超过服务器请求大小限制，分批无法拆分单张图片。", {v0: batch[0].name})
         : `${cause instanceof Error ? cause.message : String(cause)}。`
       const next = uncertain
-        ? '本批次结果未能确认，请先检查页面列表，避免重复导入。'
-        : `尚有 ${files.length - cursor} 张未导入（从「${batch[0].name}」开始），可以只重选剩余图片继续导入。`
+        ? t("本批次结果未能确认，请先检查页面列表，避免重复导入。")
+        : t("尚有 {{v0}} 张未导入（从「{{v1}}」开始），可以只重选剩余图片继续导入。", {v0: files.length - cursor, v1: batch[0].name})
       throw new ImageUploadError([...completed], files.length, uncertain,
-        `已成功导入 ${cursor}/${files.length} 张。${reason}${next}`, cause)
+        t("已成功导入 {{v0}}/{{v1}} 张。{{v2}}{{v3}}", {v0: cursor, v1: files.length, v2: reason, v3: next}), cause)
     }
     completed.push(...added)
     completedBytes += batchBytes

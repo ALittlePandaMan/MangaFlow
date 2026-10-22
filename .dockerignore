@@ -8,6 +8,9 @@
 config.yaml
 .venv
 docs
+designs
+backend/tests
+frontend/visual-tests
 **/__pycache__
 **/*.py[cod]
 **/.pytest_cache

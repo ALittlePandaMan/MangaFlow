@@ -38,5 +38,8 @@ def native_boxes(region, orientation, padding=0):
                     left = max(left,(ox+ow+bx)/2)
                 if ox >= bx+bw:
                     right = min(right,(ox+bx+bw)/2)
-        expanded.append([math.floor(left), math.floor(top), math.ceil(right)-math.floor(left), math.ceil(bottom)-math.floor(top)])
+        # Keep exact fractional edges as the crop's polygon. Rounding belongs
+        # only to raster allocation; rounding this selection outwards would
+        # reveal pixels outside the parent frame and across shared line gaps.
+        expanded.append([left, top, right-left, bottom-top])
     return expanded

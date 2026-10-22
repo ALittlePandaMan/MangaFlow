@@ -1,3 +1,4 @@
+import {t, useLocale} from '../i18n'
 import {useEffect, useRef, useState} from 'react'
 import type {ReactNode} from 'react'
 import {FileImage, Focus} from 'lucide-react'
@@ -20,41 +21,48 @@ export function useMinimumLoadingTime(active: boolean, minimumMs = 500) {
   return visible
 }
 
-export function ActivitySpinner({label = '正在处理', size = 20, className}: {label?: string, size?: number, className?: string}) {
+export function ActivitySpinner({label = t("正在处理"), size = 20, className}: {label?: string, size?: number, className?: string}) {
+  useLocale()
   return <span className={cn('inline-flex shrink-0 items-center justify-center', className)} role="status" aria-label={label} style={{width:size, height:size}}><i className="loading-spinner block size-full rounded-full"/><span className="sr-only">{label}</span></span>
 }
 
 export function ButtonLoading({label, compact = false}: {label: string, compact?: boolean}) {
+  useLocale()
   return <span className="inline-flex items-center justify-center gap-1.5" role="status" aria-label={label}><span className="inline-flex h-3 items-center gap-[3px]" aria-hidden="true"><i className="loading-dot size-1 rounded-full bg-current"/><i className="loading-dot size-1 rounded-full bg-current [animation-delay:.14s]"/><i className="loading-dot size-1 rounded-full bg-current [animation-delay:.28s]"/></span>{compact ? <span className="sr-only">{label}</span> : <span>{label}</span>}</span>
 }
 
 export function ProgressBar({value, label, detail, className}: {value: number, label?: string, detail?: string, className?: string}) {
+  useLocale()
   const progress = Math.min(1, Math.max(0, Number.isFinite(value) ? value : 0))
   const percent = Math.round(progress * 100)
-  return <div className={cn('min-w-0', className)} role="progressbar" aria-label={label || '任务进度'} aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent}>
+  return <div className={cn('min-w-0', className)} role="progressbar" aria-label={label || t("任务进度")} aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent}>
     {(label || detail) && <div className="mb-2 flex items-end justify-between gap-3"><span className="min-w-0 truncate text-[13px] text-secondary">{label}</span><span className="shrink-0 font-mono text-[13px] text-accent">{detail || `${percent}%`}</span></div>}
-    <div className="relative h-1.5 overflow-hidden rounded-full bg-raised"><span className="absolute inset-y-0 left-0 rounded-full bg-accent transition-[width] duration-300 ease-out" style={{width:`${percent}%`}}/><span className="loading-progress-glint absolute inset-y-0 w-16 bg-gradient-to-r from-transparent via-white/30 to-transparent" style={{left:`max(-4rem,calc(${percent}% - 4rem))`}}/></div>
+    <div className="relative h-1.5 overflow-hidden rounded-full bg-raised"><span className="motion-progress-fill absolute inset-0 rounded-full bg-accent" style={{transform:`scaleX(${progress})`}}/></div>
   </div>
 }
 
 export function IndeterminateProgress({label, className}: {label?: string, className?: string}) {
-  return <div className={cn('min-w-0', className)} role="status" aria-label={label || '正在处理'}>{label && <span className="mb-2 block text-[13px] text-secondary">{label}</span>}<div className="h-1.5 overflow-hidden rounded-full bg-raised"><span className="loading-progress-indeterminate block h-full w-2/5 rounded-full bg-accent"/></div></div>
+  useLocale()
+  return <div className={cn('min-w-0', className)} role="status" aria-label={label || t("正在处理")}>{label && <span className="mb-2 block text-[13px] text-secondary">{label}</span>}<div className="h-1.5 overflow-hidden rounded-full bg-raised"><span className="loading-progress-indeterminate block h-full w-2/5 rounded-full bg-accent"/></div></div>
 }
 
 export function CircularProgress({value, size = 42, label, className}: {value: number, size?: number, label?: string, className?: string}) {
+  useLocale()
   const progress = Math.min(1, Math.max(0, Number.isFinite(value) ? value : 0))
   const percent = Math.round(progress * 100)
   const stroke = Math.max(3, Math.round(size * .085))
   const radius = (size - stroke) / 2
   const circumference = radius * 2 * Math.PI
-  return <span className={cn('relative inline-grid shrink-0 place-items-center', className)} role="progressbar" aria-label={label || '任务进度'} aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent} style={{width:size, height:size}}><svg className="-rotate-90" width={size} height={size} viewBox={`0 0 ${size} ${size}`} aria-hidden="true"><circle cx={size / 2} cy={size / 2} r={radius} fill="none" stroke="var(--color-raised)" strokeWidth={stroke}/><circle className="transition-[stroke-dashoffset] duration-300 ease-out" cx={size / 2} cy={size / 2} r={radius} fill="none" stroke="var(--color-accent)" strokeLinecap="round" strokeWidth={stroke} strokeDasharray={circumference} strokeDashoffset={circumference * (1 - progress)}/></svg><strong className="absolute font-mono text-[9px] font-medium text-ink">{percent}</strong></span>
+  return <span className={cn('relative inline-grid shrink-0 place-items-center', className)} role="progressbar" aria-label={label || t("任务进度")} aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent} style={{width:size, height:size}}><svg className="-rotate-90" width={size} height={size} viewBox={`0 0 ${size} ${size}`} aria-hidden="true"><circle cx={size / 2} cy={size / 2} r={radius} fill="none" stroke="var(--color-raised)" strokeWidth={stroke}/><circle className="transition-[stroke-dashoffset] duration-300 ease-out" cx={size / 2} cy={size / 2} r={radius} fill="none" stroke="var(--color-accent)" strokeLinecap="round" strokeWidth={stroke} strokeDasharray={circumference} strokeDashoffset={circumference * (1 - progress)}/></svg><strong className="absolute font-mono text-[9px] font-medium text-ink">{percent}</strong></span>
 }
 
 function SkeletonBlock({className}: {className?: string}) {
+  useLocale()
   return <span aria-hidden="true" className={cn('loading-shimmer relative block overflow-hidden rounded-md bg-raised/75', className)}/>
 }
 
-export function PageLoader({label = '正在打开 MangaFlow', detail = '正在准备工作区与核心资源'}: {label?: string, detail?: string}) {
+export function PageLoader({label = t("正在打开 MangaFlow"), detail = t("正在准备工作区与核心资源")}: {label?: string, detail?: string}) {
+  useLocale()
   return <div className="relative grid h-full min-h-0 place-items-center overflow-hidden bg-app" role="status" aria-live="polite" aria-label={label}>
     <div className="absolute inset-0 opacity-50 [background-image:radial-gradient(circle_at_50%_38%,var(--color-accent-soft),transparent_30%),linear-gradient(var(--workspace-grid-line)_1px,transparent_1px),linear-gradient(90deg,var(--workspace-grid-line)_1px,transparent_1px)] [background-size:auto,36px_36px,36px_36px]"/>
     <div className="relative flex w-[min(360px,calc(100%-48px))] flex-col items-center text-center"><span className="loading-page-mark grid size-14 place-items-center rounded-2xl bg-ink text-2xl font-extrabold text-app">漫</span><strong className="mt-5 text-sm tracking-[.2px] text-ink">{label}</strong><small className="mt-2 text-[13px] leading-relaxed text-muted">{detail}</small><IndeterminateProgress className="mt-5 w-full"/></div>
@@ -62,23 +70,26 @@ export function PageLoader({label = '正在打开 MangaFlow', detail = '正在�
 }
 
 export function ProjectsSkeleton() {
-  return <section className={cn(pageClass, 'loading-skeleton-page')} aria-busy="true" aria-label="正在读取项目"><div className="mb-8 flex items-end justify-between"><div className="w-[420px] max-w-[55vw]"><SkeletonBlock className="h-2 w-28"/><SkeletonBlock className="mt-4 h-9 w-64"/><SkeletonBlock className="mt-3 h-3 w-full"/></div><SkeletonBlock className="h-11 w-28"/></div><div className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,310px),1fr))] gap-5">{[0,1,2].map(item => <div className="overflow-hidden rounded-xl border border-line-subtle bg-panel" key={item}><SkeletonBlock className="h-[150px] rounded-none"/><div className="p-5"><SkeletonBlock className="h-2.5 w-36"/><SkeletonBlock className="mt-4 h-6 w-3/5"/><SkeletonBlock className="mt-3 h-3 w-full"/><SkeletonBlock className="mt-2 h-3 w-4/5"/><div className="mt-5 flex gap-2"><SkeletonBlock className="h-9 w-28"/><SkeletonBlock className="ml-auto size-9"/><SkeletonBlock className="size-9"/></div></div></div>)}</div></section>
+  useLocale()
+  return <section className={cn(pageClass, 'loading-skeleton-page')} aria-busy="true" aria-label={t("正在读取项目")}><div className="mb-8 flex items-end justify-between"><div className="w-[420px] max-w-[55vw]"><SkeletonBlock className="h-2 w-28"/><SkeletonBlock className="mt-4 h-9 w-64"/><SkeletonBlock className="mt-3 h-3 w-full"/></div><SkeletonBlock className="h-11 w-28"/></div><div className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,310px),1fr))] gap-5">{[0,1,2].map(item => <div className="overflow-hidden rounded-xl border border-line-subtle bg-panel" key={item}><SkeletonBlock className="h-[150px] rounded-none"/><div className="p-5"><SkeletonBlock className="h-2.5 w-36"/><SkeletonBlock className="mt-4 h-6 w-3/5"/><SkeletonBlock className="mt-3 h-3 w-full"/><SkeletonBlock className="mt-2 h-3 w-4/5"/><div className="mt-5 flex gap-2"><SkeletonBlock className="h-9 w-28"/><SkeletonBlock className="ml-auto size-9"/><SkeletonBlock className="size-9"/></div></div></div>)}</div></section>
 }
 
 export function EditorSkeleton({canvasControls}: {canvasControls?: ReactNode}) {
-  return <div className="editor-skeleton loading-skeleton-page grid min-h-0 grid-cols-[200px_minmax(0,1fr)_320px]" aria-busy="true" aria-label="正在打开工作台"><aside className="border-r border-line-subtle bg-panel p-3"><SkeletonBlock className="h-3 w-16"/>{[0,1,2].map(item => <div className="mt-4" key={item}><SkeletonBlock className="aspect-[3/4] w-full"/><SkeletonBlock className="mt-2 h-2.5 w-4/5"/><SkeletonBlock className="mt-2 h-2 w-2/5"/></div>)}</aside><main className="relative grid place-items-center workspace-background">{canvasControls}<div className="w-[min(420px,60%)]"><SkeletonBlock className="aspect-[3/4] w-full rounded-none"/><div className="mt-4 flex justify-center gap-2"><SkeletonBlock className="h-2 w-16"/><SkeletonBlock className="h-2 w-10"/></div></div></main><aside className="border-l border-line-subtle bg-panel p-5"><SkeletonBlock className="h-4 w-24"/>{[0,1,2,3,4,5].map(item => <div className="mt-5" key={item}><SkeletonBlock className="h-2.5 w-20"/><SkeletonBlock className="mt-2 h-10 w-full"/></div>)}</aside></div>
+  useLocale()
+  return <div className="editor-skeleton loading-skeleton-page grid min-h-0 grid-cols-[200px_minmax(0,1fr)_320px]" aria-busy="true" aria-label={t("正在打开工作台")}><aside className="border-r border-line-subtle bg-panel p-3"><SkeletonBlock className="h-3 w-16"/>{[0,1,2].map(item => <div className="mt-4" key={item}><SkeletonBlock className="aspect-[3/4] w-full"/><SkeletonBlock className="mt-2 h-2.5 w-4/5"/><SkeletonBlock className="mt-2 h-2 w-2/5"/></div>)}</aside><main className="relative grid place-items-center workspace-background">{canvasControls}<div className="w-[min(420px,60%)]"><SkeletonBlock className="aspect-[3/4] w-full rounded-none"/><div className="mt-4 flex justify-center gap-2"><SkeletonBlock className="h-2 w-16"/><SkeletonBlock className="h-2 w-10"/></div></div></main><aside className="border-l border-line-subtle bg-panel p-5"><SkeletonBlock className="h-4 w-24"/>{[0,1,2,3,4,5].map(item => <div className="mt-5" key={item}><SkeletonBlock className="h-2.5 w-20"/><SkeletonBlock className="mt-2 h-10 w-full"/></div>)}</aside></div>
 }
 
 export type ProcessingScope = {kind: 'page', filename: string} | {kind: 'regions', filename: string, regionKeys: string[]}
 
-export function BlockingLoader({label, detail = '任务完成前暂时不能进行其他操作', progress, scope}: {label: string, detail?: string, progress?: number | null, scope?: ProcessingScope}) {
+export function BlockingLoader({label, detail = t("任务完成前暂时不能进行其他操作"), progress, scope}: {label: string, detail?: string, progress?: number | null, scope?: ProcessingScope}) {
+  useLocale()
   const known = typeof progress === 'number' && progress >= 0
   const regional = scope?.kind === 'regions'
   const target = regional ? scope.regionKeys.join('、') : ''
-  const scopeTitle = regional ? `区域处理 · ${scope.regionKeys.length} 个` : '整页处理'
+  const scopeTitle = regional ? t("区域处理 · {{v0}} 个", {v0: scope.regionKeys.length}) : t("整页处理")
   const ScopeIcon = regional ? Focus : FileImage
-  const scopeDetail = regional ? '仅处理这些区域，不执行整页重跑。任务完成前暂时不能编辑。' : '处理范围：本页全部文字区域。任务完成前暂时不能编辑。'
-  return <div className="fixed inset-0 z-[75] flex cursor-wait items-center justify-center bg-canvas/55 backdrop-blur-[3px]" role="status" aria-live="polite" aria-label={scope ? `${regional ? `区域处理：${target}` : `整页处理：${scope.filename}`} · ${label}` : label}><div className="w-[min(390px,calc(100vw-40px))] rounded-2xl bg-surface p-5 text-ink shadow-dialog">
+  const scopeDetail = regional ? t("仅处理这些区域，不执行整页重跑。任务完成前暂时不能编辑。") : t("处理范围：本页全部文字区域。任务完成前暂时不能编辑。")
+  return <div className="motion-backdrop fixed inset-0 z-[75] flex cursor-wait items-center justify-center bg-canvas/55 backdrop-blur-[3px]" role="status" aria-live="polite" aria-label={scope ? `${regional ? t("区域处理：{{v0}}", {v0: target}) : t("整页处理：{{v0}}", {v0: scope.filename})} · ${label}` : label}><div className="motion-dialog w-[min(390px,calc(100vw-40px))] rounded-2xl bg-surface p-5 text-ink shadow-dialog">
     {scope && <div className="mb-4 flex min-w-0 items-center gap-2 text-[13px]"><ScopeIcon size={16} className="shrink-0 text-accent" aria-hidden="true"/><strong className="shrink-0 text-accent-soft-ink">{scopeTitle}</strong><span className="min-w-0 truncate text-muted" title={scope.filename}>{scope.filename}</span></div>}
-    <div className="flex items-center gap-4">{known ? <CircularProgress value={progress} size={48} label={label}/> : <span className="grid size-12 shrink-0 place-items-center rounded-xl bg-accent/10"><ActivitySpinner className="text-accent" size={23} label={label}/></span>}<span className="min-w-0 flex-1"><strong className="block text-sm">{label}</strong>{regional && <span className="mt-1.5 block max-h-20 overflow-y-auto break-words font-mono text-[13px] leading-relaxed text-accent-soft-ink" title={target}>{target}</span>}<small className="mt-1.5 block text-[13px] leading-relaxed text-muted">{scope ? scopeDetail : detail}</small></span></div>{known ? <ProgressBar className="mt-4" value={progress} label={scope ? (regional ? '区域进度' : '整页进度') : '整体进度'}/> : <IndeterminateProgress className="mt-4"/>}</div></div>
+    <div className="flex items-center gap-4">{known ? <CircularProgress value={progress} size={48} label={label}/> : <span className="grid size-12 shrink-0 place-items-center rounded-xl bg-accent/10"><ActivitySpinner className="text-accent" size={23} label={label}/></span>}<span className="min-w-0 flex-1"><strong className="block text-sm">{label}</strong>{regional && <span className="mt-1.5 block max-h-20 overflow-y-auto break-words font-mono text-[13px] leading-relaxed text-accent-soft-ink" title={target}>{target}</span>}<small className="mt-1.5 block text-[13px] leading-relaxed text-muted">{scope ? scopeDetail : detail}</small></span></div>{known ? <ProgressBar className="mt-4" value={progress} label={scope ? (regional ? t("区域进度") : t("整页进度")) : t("整体进度")}/> : <IndeterminateProgress className="mt-4"/>}</div></div>
 }

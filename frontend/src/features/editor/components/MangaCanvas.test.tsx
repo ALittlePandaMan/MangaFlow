@@ -115,17 +115,15 @@ describe('MangaCanvas image loading', () => {
   })
   afterEach(() => vi.useRealTimers())
 
-  it('shows only zoom percentage text without a badge background, border or shadow', () => {
+  it('does not show zoom percentage overlays when changing scale', () => {
     render(<MangaCanvas page={page} regions={[]} onCreate={vi.fn(async()=>true)} onUpdate={vi.fn(async()=>undefined)}
       onRegionAction={vi.fn()} runningAction={null} interactionKey="zoom-label"/>)
-    const percentage=screen.getByLabelText('画布缩放比例')
-    expect(percentage).toHaveTextContent('100%')
-    expect(percentage).toHaveClass('pointer-events-none')
-    expect(percentage.className).not.toMatch(/(?:^|\s)(?:bg-|border(?:-|\s|$)|rounded-|shadow-|backdrop-)/)
+    expect(screen.queryByLabelText('画布缩放比例')).not.toBeInTheDocument()
     act(() => useEditorStore.getState().setZoom(1.22))
-    expect(percentage).toHaveTextContent('122%')
+    expect(screen.queryByText('122%')).not.toBeInTheDocument()
     act(() => useEditorStore.getState().setZoom(.75))
-    expect(percentage).toHaveTextContent('75%')
+    expect(screen.queryByText('75%')).not.toBeInTheDocument()
+    expect(useEditorStore.getState().zoom).toBe(.75)
   })
 
   it('keeps the canvas visible without showing an image-loading overlay', () => {

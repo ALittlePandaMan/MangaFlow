@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 from app.services.base import ProviderError, ProviderState
 from app.services.detection.classification import LayoutTextClassifier
-from app.services.inpainting.providers import HybridInpainter
+from app.services.inpainting.providers import SimpleLaMaInpainter
 from app.services.ocr import local
 
 
@@ -158,8 +158,7 @@ def test_rfdetr_cpu_retry_fails_closed_and_stops(monkeypatch):
     assert starts == ["auto", "cpu"]
 
 
-def test_hybrid_top_level_auto_overrides_legacy_nested_cpu():
-    instance = HybridInpainter({"device": "auto", "lama": {"device": "cpu", "other": 7}})
-    assert instance._lama.config == {"device": "auto", "other": 7}
-    legacy = HybridInpainter({"lama": {"device": "cpu"}})
-    assert legacy._lama.config["device"] == "cpu"
+@pytest.mark.parametrize("device", ["auto", "cpu", "cuda:0"])
+def test_lama_retains_explicit_runtime_options(device):
+    instance = SimpleLaMaInpainter({"device": device, "crop_context": False})
+    assert instance.config == {"device": device, "crop_context": False}

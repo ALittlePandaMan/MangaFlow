@@ -16,7 +16,7 @@ from app.services.inpainting.background import (
 from app.services.inpainting.text_segmentation import learned_text_mask
 from PIL import Image, ImageDraw
 
-MASK_ALGORITHM_VERSION = 5
+MASK_ALGORITHM_VERSION = 7
 
 
 def load_text_mask_source(image_path: Path) -> tuple[np.ndarray, np.ndarray]:
@@ -61,6 +61,7 @@ def create_text_mask(
     glyph_output_path: Path | None = None,
     sample_exclusion: np.ndarray | None = None,
     text_probability: np.ndarray | None = None,
+    audit_sink: dict[str, np.ndarray] | None = None,
 ) -> dict[str, Any]:
     """Create a glyph-level mask by learning colors around a detected text line."""
     if source_image is None:
@@ -82,6 +83,7 @@ def create_text_mask(
             color_threshold=color_threshold, context=balloon_context,
             sample_exclusion=sample_exclusion, glyph_output_path=glyph_output_path,
             text_probability=text_probability,
+            audit_sink=audit_sink,
         )
         if result is not None:
             return result
@@ -184,6 +186,12 @@ def create_text_mask(
     full_glyph_evidence[y : y + box_height, x : x + box_width] = glyph_evidence
     learned_pixels = 0
     learned_available = False
+    color_disagreement = 0
+    flat_color = (
+        clear_glyphs and dominant_ratio >= .9 and background_residual <= 6
+        and float(np.percentile(ring_distances, 95)) <= 12
+        and float(np.linalg.norm(inner_background - centers[0])) <= 6
+    )
     if text_probability is not None:
         learned = learned_text_mask(text_probability, region)
         learned_available = cv2.countNonZero(learned) > 0
@@ -191,6 +199,14 @@ def create_text_mask(
             # Without verified plain paper, disconnected dark lines are not
             # extra characters. Recover fringe near model-confirmed text only.
             support = cv2.dilate(learned, np.ones((3, 3), np.uint8))
+            # A partial model prediction is not a veto on equally sized,
+            # aligned ink on a verified uniform local background. Keep the
+            # artwork veto on textured/unrelated components.
+            if flat_color:
+                support[y:y+box_height, x:x+box_width] |= _coherent_color_components(
+                    candidate, support[y:y+box_height, x:x+box_width],
+                )
+                color_disagreement = int(np.count_nonzero((mask > 0) & (support == 0)))
             mask = cv2.bitwise_and(mask, support)
             full_glyph_evidence = cv2.bitwise_and(full_glyph_evidence, support)
         learned_pixels = cv2.countNonZero(cv2.bitwise_and(learned, cv2.bitwise_not(mask)))
@@ -218,10 +234,18 @@ def create_text_mask(
             source_lab=lab,
             source_polygons=[polygon],
             context=balloon_context,
+            text_probability=text_probability,
+            audit_sink=audit_sink,
         )
     if paper is not None:
         guard = paper_structure_guard(lab, region, paper, ring_radius)
         mask = cv2.bitwise_and(mask, cv2.bitwise_not(guard))
+    elif flat_color:
+        guard = paper_structure_guard(lab, region, {"lab": inner_background.tolist()}, ring_radius)
+        mask = cv2.bitwise_and(mask, cv2.bitwise_not(guard))
+
+    if audit_sink is not None and "glyphs" not in audit_sink:
+        audit_sink["glyphs"] = mask.copy()
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     if not cv2.imwrite(str(output_path), mask):
@@ -247,6 +271,9 @@ def create_text_mask(
         "glyph_source": "combined" if color_reliable and learned_available else "local_color" if color_reliable else "model" if learned_available else None,
         "fallback_reason": fallback_reason,
     }
+    if color_disagreement:
+        metadata["segmentation_disagreement"] = {"unconfirmed_ink_pixels": color_disagreement}
+        metadata["mask_integrity"] = {"scope": "local_color_vs_model", "status": "uncertain"}
     if constraint_metadata is not None:
         metadata["constraint"] = constraint_metadata
     if paper is not None and cv2.countNonZero(mask):
@@ -271,6 +298,7 @@ def create_text_mask_union(
     conservative: bool = False,
     sample_exclusion: np.ndarray | None = None,
     text_probability: np.ndarray | None = None,
+    audit_sink: dict[str, np.ndarray] | None = None,
 ) -> dict[str, Any]:
     """Create and union per-line masks without filling their enclosing box."""
 
@@ -289,6 +317,7 @@ def create_text_mask_union(
             conservative=conservative,
             sample_exclusion=sample_exclusion,
             text_probability=text_probability,
+            audit_sink=audit_sink,
         )
 
     resolved_source_image = source_image
@@ -304,6 +333,7 @@ def create_text_mask_union(
             color_threshold=color_threshold, context=balloon_context,
             sample_exclusion=sample_exclusion,
             text_probability=text_probability,
+            audit_sink=audit_sink,
         )
         if result is not None:
             return result
@@ -362,9 +392,13 @@ def create_text_mask_union(
                 source_lab=resolved_source_lab,
                 source_polygons=polygons,
                 context=balloon_context,
+                text_probability=text_probability,
+                audit_sink=audit_sink,
             )
         if not cv2.imwrite(str(output_path), combined):
             raise ValueError(f"Cannot write mask: {output_path}")
+        if audit_sink is not None and "glyphs" not in audit_sink:
+            audit_sink["glyphs"] = combined.copy()
     finally:
         for temporary in temporary_paths:
             temporary.unlink(missing_ok=True)
@@ -377,6 +411,9 @@ def create_text_mask_union(
         "components": component_metadata,
         "suggested_region_type": "background_complex",
     }
+    if any(component.get("segmentation_disagreement") for component in component_metadata):
+        metadata["segmentation_disagreement"] = {"scope": "source_components"}
+        metadata["mask_integrity"] = {"scope": "local_color_vs_model", "status": "uncertain"}
     if constraint_metadata is not None:
         metadata["constraint"] = constraint_metadata
     return metadata
@@ -394,6 +431,7 @@ def _create_balloon_text_mask(
     sample_exclusion: np.ndarray | None = None,
     glyph_output_path: Path | None = None,
     text_probability: np.ndarray | None = None,
+    audit_sink: dict[str, np.ndarray] | None = None,
 ) -> dict[str, Any] | None:
     """Find connected glyphs jointly, rather than re-learning each line's ink.
 
@@ -444,7 +482,8 @@ def _create_balloon_text_mask(
         glyphs = cv2.bitwise_or(glyphs, learned)
     mask, constraint = apply_balloon_constraint(
         mask, balloon, glyph_evidence=glyphs, source_lab=lab,
-        source_polygons=polygons, context=context,
+        source_polygons=polygons, context=context, text_probability=text_probability,
+        audit_sink=audit_sink,
     )
     output_path.parent.mkdir(parents=True, exist_ok=True)
     if not cv2.imwrite(str(output_path), mask):
@@ -477,6 +516,155 @@ def _create_balloon_text_mask(
     return metadata
 
 
+def _coherent_color_components(candidate: np.ndarray, support: np.ndarray) -> np.ndarray:
+    """Recover peers of model-supported ink, not arbitrary disconnected art."""
+    count, labels, stats, _ = cv2.connectedComponentsWithStats((candidate > 0).astype(np.uint8), connectivity=8)
+    hits = np.bincount(labels[support > 0], minlength=count)
+    reference = stats[(np.arange(count) > 0) & (hits >= 2)]
+    keep = np.zeros(count, np.uint8)
+    if not len(reference):
+        return keep[labels]
+    keep[(np.arange(count) > 0) & (hits >= 2)] = 255
+    rx, ry, rw, rh, _ = reference.T.astype(np.float64)
+    for label in range(1, count):
+        if hits[label] or stats[label, cv2.CC_STAT_AREA] < 3:
+            continue
+        x, y, w, h, _ = stats[label]
+        overlap_y = np.maximum(0, np.minimum(y+h, ry+rh) - np.maximum(y, ry))
+        overlap_x = np.maximum(0, np.minimum(x+w, rx+rw) - np.maximum(x, rx))
+        gap_x = np.maximum(0, np.maximum(x, rx) - np.minimum(x+w, rx+rw))
+        gap_y = np.maximum(0, np.maximum(y, ry) - np.minimum(y+h, ry+rh))
+        row = (overlap_y >= .7*np.minimum(h, rh)) & (h >= .6*rh) & (h <= 1.7*rh) & (gap_x <= 2*np.maximum(h, rh))
+        column = (overlap_x >= .7*np.minimum(w, rw)) & (w >= .6*rw) & (w <= 1.7*rw) & (gap_y <= 2*np.maximum(w, rw))
+        if np.any(row | column):
+            keep[label] = 255
+    return keep[labels]
+
+
+def _recover_balloon_holes(
+    balloon: np.ndarray,
+    glyphs: np.ndarray,
+    lab: np.ndarray | None,
+    scale: float,
+    strong_text: np.ndarray | None = None,
+) -> tuple[np.ndarray, np.ndarray, dict[str, int]]:
+    """Repair small, text-supported segmentation defects, never the exterior.
+
+    The completely filled footprint is inspection-only. Large holes, openings
+    connected to the exterior (including diagonal ones), and textured areas
+    remain protected even if a text model predicts ink there.
+    """
+    holes = np.pad((balloon == 0).astype(np.uint8), 1, constant_values=1)
+    cv2.floodFill(holes, None, (0, 0), 0, flags=8)
+    holes = holes[1:-1, 1:-1]
+    footprint = cv2.bitwise_or(balloon, holes * 255)
+    metadata = {"recovered_holes": 0, "recovered_hole_pixels": 0}
+    if not np.any(holes) or lab is None or not np.any(glyphs):
+        return balloon, footprint, metadata
+
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(holes, connectivity=8)
+    max_area = max(16, min(1024, round(64 * scale * scale)))
+    max_side = max(4, min(48, round(12 * scale)))
+    budget = max(max_area, round(cv2.countNonZero(balloon) * .01))
+    radius = max(1, min(4, round(2 * scale)))
+    support = cv2.dilate(glyphs, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * radius + 1, 2 * radius + 1)))
+    excluded = cv2.dilate(glyphs, np.ones((3, 3), np.uint8))
+    sample_margin = max(5, min(16, round(8 * scale)))
+    result = balloon.copy()
+    height, width = balloon.shape
+    for label in range(1, count):
+        x, y, w, h, area = map(int, stats[label])
+        if area > max_area or max(w, h) > max_side or metadata["recovered_hole_pixels"] + area > budget:
+            continue
+        hole_roi = np.s_[y:y+h, x:x+w]
+        hole = labels[hole_roi] == label
+        if np.count_nonzero(hole & (support[hole_roi] > 0)) < max(1, area * .5):
+            continue
+        roi = np.s_[max(0, y-sample_margin):min(height, y+h+sample_margin),
+                    max(0, x-sample_margin):min(width, x+w+sample_margin)]
+        clean = (balloon[roi] > 0) & (excluded[roi] == 0)
+        samples = lab[roi][clean]
+        if len(samples) < 16:
+            continue
+        background, agreement = dominant_background(samples)
+        if agreement < .9 or np.percentile(np.linalg.norm(samples - background, axis=1), 95) > 12:
+            continue
+        model_confirmed = strong_text is not None and np.count_nonzero(hole & (strong_text[hole_roi] > 0)) >= max(1, area * .5)
+        if not model_confirmed:
+            # Color candidates include icons too. Without independent model
+            # confirmation, require real ink to continue through the defect
+            # into ink on both opposite sides; an enclosed icon cannot seed
+            # its own permission to erase the original protected cutout.
+            local_ink = (np.linalg.norm(lab[roi] - background, axis=2) >= 18).astype(np.uint8)
+            _, ink_labels, ink_stats, _ = cv2.connectedComponentsWithStats(local_ink, connectivity=8)
+            lx, ly = max(0, x-sample_margin), max(0, y-sample_margin)
+            hole_labels = ink_labels[y-ly:y-ly+h, x-lx:x-lx+w][hole]
+            counts_in_hole = np.bincount(hole_labels, minlength=len(ink_stats))
+            model_hits = (
+                np.bincount(ink_labels[(strong_text[roi] > 0) & (local_ink > 0)], minlength=len(ink_stats))
+                if strong_text is not None else np.zeros(len(ink_stats), np.int64)
+            )
+            enclosed_ink = (
+                (np.arange(len(ink_stats)) > 0)
+                & (counts_in_hole >= ink_stats[:, cv2.CC_STAT_AREA] * .8)
+                & (model_hits < 2)
+            )
+            if np.any(enclosed_ink):
+                continue
+            # A defect at the tip of a letter can be mostly white. Confirm
+            # the affected real ink, not a majority of the hole's paper.
+            affected = np.zeros(local_ink.shape, np.uint8)
+            affected[y-ly:y-ly+h, x-lx:x-lx+w] = hole
+            affected = cv2.dilate(affected, np.ones((2*radius+5, 2*radius+5), np.uint8))
+            nearby = np.unique(ink_labels[(affected > 0) & (local_ink > 0)])
+            if np.any(model_hits[nearby[nearby > 0]] >= 2):
+                model_confirmed = True
+            continuation = False
+            for ink_label in np.unique(hole_labels[hole_labels > 0]):
+                ix, iy, iw, ih, _ = ink_stats[ink_label]
+                if ((ix+lx < x-1 and ix+lx+iw > x+w+1)
+                        or (iy+ly < y-1 and iy+ly+ih > y+h+1)):
+                    continuation = True
+                    break
+            if not model_confirmed and not continuation:
+                continue
+        result[hole_roi][hole] = 255
+        metadata["recovered_holes"] += 1
+        metadata["recovered_hole_pixels"] += area
+    return result, footprint, metadata
+
+
+def _glyph_integrity(evidence: np.ndarray, constrained: np.ndarray) -> dict[str, Any]:
+    """Audit the pre-clip ink, including ink near rejected internal holes."""
+    x, y, w, h = cv2.boundingRect((evidence > 0).astype(np.uint8))
+    # Full-resolution pages may have dozens of small masks. Keep connected
+    # component work bounded by the actual evidence, not the whole page.
+    if not w or not h:
+        return {"glyph_safe_retention": 1.0, "glyph_component_min_retention": 1.0,
+            "clipped_glyph_pixels": 0, "fragmented_glyph_components": 0, "missing_glyph_components": 0}
+    foreground = (evidence[y:y+h, x:x+w] > 0).astype(np.uint8)
+    constrained = constrained[y:y+h, x:x+w]
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(foreground, connectivity=8)
+    retained = (foreground > 0) & (constrained > 0)
+    areas = stats[:, cv2.CC_STAT_AREA]
+    kept = np.bincount(labels[retained], minlength=count)
+    meaningful = (np.arange(count) > 0) & (areas >= 3)
+    retentions = kept[meaningful] / areas[meaningful]
+    # One connected stroke split in two matters even if its lost bridge is
+    # less than 1% of the region's total ink. Do not compare only total areas.
+    pieces, piece_labels = cv2.connectedComponents(retained.astype(np.uint8), connectivity=8)
+    pairs, sizes = np.unique(labels[retained].astype(np.int64) * pieces + piece_labels[retained], return_counts=True)
+    fragments = np.bincount((pairs[sizes >= 2] // pieces).astype(np.intp), minlength=count)
+    total = int(np.count_nonzero(foreground))
+    return {
+        "glyph_safe_retention": round(int(np.count_nonzero(retained)) / total, 4) if total else 1.0,
+        "glyph_component_min_retention": round(float(retentions.min()), 4) if retentions.size else 1.0,
+        "clipped_glyph_pixels": total - int(np.count_nonzero(retained)),
+        "fragmented_glyph_components": int(np.count_nonzero(meaningful & (fragments > 1))),
+        "missing_glyph_components": int(np.count_nonzero(meaningful & (kept == 0))),
+    }
+
+
 def apply_balloon_constraint(
     mask: np.ndarray,
     balloon_mask: np.ndarray,
@@ -485,6 +673,8 @@ def apply_balloon_constraint(
     source_lab: np.ndarray | None = None,
     source_polygons: list[list[list[float]]] | None = None,
     context: dict[str, Any] | None = None,
+    text_probability: np.ndarray | None = None,
+    audit_sink: dict[str, np.ndarray] | None = None,
 ) -> tuple[np.ndarray, dict[str, Any]]:
     """Clip a repair mask to an adaptive, shape-independent balloon interior."""
 
@@ -522,6 +712,44 @@ def apply_balloon_constraint(
     binary_mask = full_binary_mask[roi]
     binary_balloon = full_binary_balloon[roi]
 
+    scale = float(np.sqrt((page_height * page_width) / 1_000_000))
+    source_lab_roi = (
+        source_lab[roi]
+        if source_lab is not None and source_lab.shape[:2] == full_binary_mask.shape
+        else None
+    )
+    full_raw_evidence = (
+        np.where(glyph_evidence > 0, 255, 0).astype(np.uint8)
+        if glyph_evidence is not None and glyph_evidence.shape == full_binary_mask.shape
+        else np.zeros_like(full_binary_mask)
+    )
+    raw_evidence_area = cv2.countNonZero(full_raw_evidence)
+    raw_evidence = full_raw_evidence[roi]
+    shifted_polygons: list[list[list[float]]] = []
+    source_polygon_points: list[np.ndarray] = []
+    model_region = np.zeros_like(binary_balloon)
+    for polygon in source_polygons or []:
+        try:
+            original = np.asarray([[float(point[0]), float(point[1])] for point in polygon], dtype=np.float32)
+            shifted = (original - np.asarray([offset_x, offset_y], dtype=np.float32)).tolist()
+        except (TypeError, ValueError, IndexError):
+            continue
+        if len(shifted) >= 3 and np.isfinite(shifted).all():
+            shifted_polygons.append(shifted)
+            source_polygon_points.append(original)
+            cv2.fillPoly(model_region, [np.rint(shifted).astype(np.int32)], 255)
+    if not shifted_polygons:
+        model_region = binary_balloon
+    # Reuse the model's hysteresis/overconfidence rules before treating its
+    # scores as independent permission to reopen geometry or unprotect ink.
+    strong_text = (
+        np.where((text_probability[roi] >= .65) & (learned_text_mask(text_probability[roi], model_region) > 0), 255, 0).astype(np.uint8)
+        if text_probability is not None and text_probability.shape == full_binary_mask.shape
+        else None
+    )
+    binary_balloon, inspection_footprint, hole_metadata = _recover_balloon_holes(
+        binary_balloon, raw_evidence, source_lab_roi, scale, strong_text,
+    )
     # Geometry artifacts are compact instances. Keeping the expensive distance
     # and LAB calculations inside that compact bounding box makes runtime scale
     # with the balloon rather than with the whole manga page. The zero border
@@ -529,31 +757,11 @@ def apply_balloon_constraint(
     padded_balloon = np.pad((binary_balloon > 0).astype(np.uint8), 1, mode="constant")
     distance = cv2.distanceTransform(padded_balloon, cv2.DIST_L2, 5)[1:-1, 1:-1]
     peak_distance = float(distance.max())
-    scale = float(np.sqrt((page_height * page_width) / 1_000_000))
     base_margin = int(np.clip(round(1.5 * scale), 1, 4))
     maximum_margin = max(1, min(int(round(12 * scale)), int(np.floor(peak_distance * 0.25))))
-    source_lab_roi = (
-        source_lab[roi]
-        if source_lab is not None and source_lab.shape[:2] == full_binary_mask.shape
-        else None
-    )
-    guard = outline_guard(source_lab_roi, distance, base_margin)
+    guard = outline_guard(source_lab_roi, distance, base_margin, confirmed_text=strong_text, text_region=model_region)
     protected_pixels = cv2.countNonZero(cv2.bitwise_and(binary_mask, guard))
     binary_mask = cv2.bitwise_and(binary_mask, cv2.bitwise_not(guard))
-    shifted_polygons: list[list[list[float]]] = []
-    source_polygon_points: list[np.ndarray] = []
-    for polygon in source_polygons or []:
-        try:
-            original = np.asarray(
-                [[float(point[0]), float(point[1])] for point in polygon],
-                dtype=np.float32,
-            )
-            shifted = (original - np.asarray([offset_x, offset_y], dtype=np.float32)).tolist()
-        except (TypeError, ValueError, IndexError):
-            continue
-        if len(shifted) >= 3 and all(np.isfinite(point).all() for point in np.asarray(shifted)):
-            shifted_polygons.append(shifted)
-            source_polygon_points.append(original)
     outline_width, outline_reliable = _estimate_balloon_outline_width(
         distance,
         binary_balloon,
@@ -564,13 +772,13 @@ def apply_balloon_constraint(
     )
     requested_margin = int(np.clip(max(base_margin, outline_width), 1, maximum_margin))
 
-    full_raw_evidence = (
-        np.where(glyph_evidence > 0, 255, 0).astype(np.uint8)
-        if glyph_evidence is not None and glyph_evidence.shape == full_binary_mask.shape
-        else np.zeros_like(full_binary_mask)
-    )
-    raw_evidence_area = cv2.countNonZero(full_raw_evidence)
-    raw_evidence = full_raw_evidence[roi]
+    # Quality checks must not discard ink near an internal hole before
+    # measuring loss. Only the true exterior and real outline are excluded.
+    outer_distance = distance if np.array_equal(inspection_footprint, binary_balloon) else cv2.distanceTransform(
+        np.pad((inspection_footprint > 0).astype(np.uint8), 1), cv2.DIST_L2, 5,
+    )[1:-1, 1:-1]
+    audit_guard = guard == 0 if strong_text is None else (guard == 0) | (strong_text > 0)
+    audit_evidence = np.where((outer_distance > base_margin) & audit_guard, raw_evidence, 0).astype(np.uint8)
     outside_before = cv2.countNonZero(
         cv2.bitwise_and(full_binary_mask, cv2.bitwise_not(full_binary_balloon))
     )
@@ -579,6 +787,8 @@ def apply_balloon_constraint(
         restored = np.zeros_like(full_binary_mask)
         restored[roi] = compact
         return restored
+    if audit_sink is not None:
+        audit_sink["glyphs"] = restore(audit_evidence)
     # Candidate pixels on or outside the first protected band are commonly the
     # balloon outline picked up by the rectangular OCR crop. They are not safe
     # evidence for reducing the margin. Only interior glyph seeds participate
@@ -603,8 +813,8 @@ def apply_balloon_constraint(
         component = cv2.bitwise_and(raw_component, base_interior)
         component_evidence.append((component, cv2.countNonZero(component)))
     chosen_margin: int | None = None
-    glyph_retention = 0.0
     component_retentions: list[float] = []
+    best_loss: int | None = None
     for margin in range(requested_margin, base_margin - 1, -1):
         safe = np.where((distance > margin) & (guard == 0), 255, 0).astype(np.uint8)
         if component_evidence:
@@ -623,10 +833,13 @@ def apply_balloon_constraint(
             retention = cv2.countNonZero(cv2.bitwise_and(binary_mask, safe)) / raw_area
             if retention < 0.8:
                 continue
-        chosen_margin = margin
-        glyph_retention = float(retention)
-        component_retentions = retentions if component_evidence else []
-        break
+        loss = int(np.count_nonzero((audit_evidence > 0) & (safe == 0)))
+        if best_loss is None or loss < best_loss:
+            chosen_margin = margin
+            component_retentions = retentions if component_evidence else []
+            best_loss = loss
+        if loss == 0:
+            break
 
     if chosen_margin is None:
         # The segmentation and the text evidence disagree. Never reintroduce
@@ -645,14 +858,10 @@ def apply_balloon_constraint(
             "final_mask_area": cv2.countNonZero(conservative),
             "glyph_area": raw_evidence_area,
             "interior_glyph_area": evidence_area,
-            "glyph_safe_retention": round(
-                cv2.countNonZero(cv2.bitwise_and(evidence, base_interior)) / evidence_area,
-                4,
-            )
-            if evidence_area
-            else 0.0,
             "outside_pixels_before": outside_before,
             "outside_pixels_after": 0,
+            **hole_metadata,
+            **_glyph_integrity(audit_evidence, conservative),
         }
 
     safe_interior = np.where((distance > chosen_margin) & (guard == 0), 255, 0).astype(np.uint8)
@@ -672,6 +881,8 @@ def apply_balloon_constraint(
             "glyph_area": raw_evidence_area,
             "interior_glyph_area": evidence_area,
             "outside_pixels_after": 0,
+            **hole_metadata,
+            **_glyph_integrity(audit_evidence, conservative),
         }
 
     outside_after = cv2.countNonZero(cv2.bitwise_and(constrained, cv2.bitwise_not(safe_interior)))
@@ -688,14 +899,23 @@ def apply_balloon_constraint(
     )
     core_glyph_area = cv2.countNonZero(core_glyph_evidence)
     glyph_balloon_retention = (
-        cv2.countNonZero(cv2.bitwise_and(core_glyph_evidence, full_binary_balloon)) / core_glyph_area
+        cv2.countNonZero(cv2.bitwise_and(core_glyph_evidence[roi], binary_balloon)) / core_glyph_area
         if core_glyph_area
         else 1.0
     )
     partial_glyph_coverage = bool(core_glyph_area and glyph_balloon_retention < 0.85)
+    integrity = _glyph_integrity(audit_evidence, constrained)
+    hole_clipped_pixels = int(np.count_nonzero(
+        (audit_evidence > 0) & (constrained == 0)
+        & (distance <= chosen_margin) & (outer_distance > chosen_margin)
+    ))
+    clipped_strokes = bool(
+        integrity["fragmented_glyph_components"] or integrity["missing_glyph_components"]
+        or integrity["clipped_glyph_pixels"] or hole_clipped_pixels
+    )
     metadata: dict[str, Any] = {
         "version": 1,
-        "status": "partial" if partial_glyph_coverage else margin_status,
+        "status": "partial" if partial_glyph_coverage or clipped_strokes else margin_status,
         "margin_status": margin_status,
         "source": "detection_artifact",
         "base_margin_px": base_margin,
@@ -711,13 +931,17 @@ def apply_balloon_constraint(
         "glyph_core_area": core_glyph_area,
         "interior_glyph_area": evidence_area,
         "glyph_balloon_retention": round(glyph_balloon_retention, 4),
-        "glyph_safe_retention": round(glyph_retention, 4),
+        "internal_hole_clipped_pixels": hole_clipped_pixels,
         "component_glyph_retentions": [round(value, 4) for value in component_retentions],
         "outside_pixels_before": outside_before,
         "outside_pixels_after": outside_after,
+        **hole_metadata,
+        **integrity,
     }
     if partial_glyph_coverage:
         metadata["reason"] = "core_glyph_evidence_outside_balloon"
+    elif clipped_strokes:
+        metadata["reason"] = "glyph_strokes_clipped"
     if context:
         metadata.update(
             {

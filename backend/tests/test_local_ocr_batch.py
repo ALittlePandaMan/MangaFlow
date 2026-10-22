@@ -60,7 +60,7 @@ def test_batch_recognition_followed_by_page_redetection_saves_new_ocr_results(cl
             def ensure_loaded(self):
                 pass
 
-            def recognize_once(self, source, box, orientation, padding):
+            def recognize_once(self, source, box, orientation, padding, *, polygon=None, crop_angle=None):
                 concurrent_edit()
                 calls.append(1)
                 return OCRResult('recognized text', .9, orientation)
@@ -180,7 +180,7 @@ def ready(monkeypatch):
     provider._device = "cuda:0"
     provider._model = lambda crop: str(crop.getpixel((0, 0))[0])
     monkeypatch.setattr(provider, "batch_size", lambda: provider._batch_ceiling)
-    monkeypatch.setattr(providers, "_crop", lambda path, box, padding: Image.new("RGB", (4, 5), (int(box[0]), 0, 0)))
+    monkeypatch.setattr(providers, "_crop", lambda path, box, padding, **kwargs: Image.new("RGB", (4, 5), (int(box[0]), 0, 0)))
     return provider
 
 

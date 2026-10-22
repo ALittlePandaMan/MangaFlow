@@ -90,13 +90,13 @@ class LocalOCRWorker:
                 self.close()
                 raise
 
-    def recognize(self, source, box, orientation, padding, max_tokens, timeout):
+    def recognize(self, source, box, orientation, padding, max_tokens, timeout, *, polygon=None, crop_angle=None):
         with self.lock:
             try:
                 if self.process is None or self.process.poll() is not None:
                     raise RuntimeError("OCR worker is not running")
                 self.sequence += 1
-                request = {"id": self.sequence, "image_path": str(source.resolve()), "bbox": box,
+                request = {"id": self.sequence, "image_path": str(source.resolve()), "bbox": box, "polygon": polygon, "crop_angle": crop_angle,
                            "orientation": orientation, "padding": padding, "max_new_tokens": max_tokens}
                 self.process.stdin.write(json.dumps(request, allow_nan=False) + "\n")
                 self.process.stdin.flush()
@@ -165,7 +165,7 @@ class IsolatedOCRProvider(OCRProvider):
         super().unload()
 
     @serialized_model_call
-    def recognize(self, image_path, bbox, orientation, padding=4):
+    def recognize(self, image_path, bbox, orientation, padding=4, *, polygon=None, crop_angle=None):
         try:
             from app.services.base import ProviderState
             if self.state == ProviderState.READY and (self.worker.process is None or self.worker.process.poll() is not None):
@@ -175,8 +175,10 @@ class IsolatedOCRProvider(OCRProvider):
             arguments = (image_path, bbox, orientation, padding,
                          int(self.config.get("max_new_tokens", LOCAL_OCR_DEFAULT_MAX_TOKENS)),
                          int(self.config.get("timeout", 180)))
+            geometry = {**({"polygon": polygon} if polygon is not None else {}),
+                        **({"crop_angle": crop_angle} if crop_angle is not None else {})}
             try:
-                reply = self.worker.recognize(*arguments)
+                reply = self.worker.recognize(*arguments, **geometry)
             except Exception as exc:
                 if (self.config.get("device", "auto") != "auto" or not str(self._device).startswith("cuda")
                         or not is_accelerator_error(exc)):
@@ -190,7 +192,7 @@ class IsolatedOCRProvider(OCRProvider):
                 self.worker.start(directory, auxiliary)
                 self._device = self.worker.actual_device
                 self._fallback_reason = "accelerator_inference_failed"
-                reply = self.worker.recognize(*arguments)
+                reply = self.worker.recognize(*arguments, **geometry)
             # Several generation configurations may share one worker. Its
             # device can change after another configuration falls back to CPU.
             self._device = self.worker.actual_device

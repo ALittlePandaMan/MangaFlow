@@ -16,6 +16,7 @@ from pathlib import Path
 from app.services.base import OCRResult, ProviderError
 from app.services.cloud_budget import can_retry_request, request_budget
 from app.services.cloud_results import current_cloud_results
+from app.services.ocr.crops import OCR_CROP_VERSION
 from app.services.workflow_state import fingerprint
 
 
@@ -24,6 +25,8 @@ class OCRJob:
     region_id: str
     bbox: tuple[float, ...]
     orientation: str
+    polygon: tuple[tuple[float, float], ...] | None = None
+    crop_angle: float | None = None
 
 
 def recognize_regions(provider, source: Path, jobs: list[OCRJob], padding: int, check: Callable[[], None], report: Callable[[str], None]) -> Iterator[tuple[str, OCRResult]]:
@@ -35,14 +38,18 @@ def recognize_regions(provider, source: Path, jobs: list[OCRJob], padding: int, 
     futures: dict[Future, tuple[OCRJob, int]] = {}
     last_report = 0.0
     cache = current_cloud_results.get()
-    keys = {job.region_id:fingerprint({"format":1,"kind":"ocr","config":provider.config,
-        "region_id":job.region_id,"bbox":job.bbox,"orientation":job.orientation,"padding":padding}) for job in jobs} if cache else {}
+    keys = {job.region_id:fingerprint({"format":2,"crop_version":OCR_CROP_VERSION,"kind":"ocr","config":provider.config,
+        "region_id":job.region_id,"bbox":job.bbox,"polygon":job.polygon,"crop_angle":job.crop_angle,
+        "orientation":job.orientation,"padding":padding}) for job in jobs} if cache else {}
 
     def perform(job: OCRJob) -> OCRResult:
         started = time.monotonic()
         error = None
         try:
-            result = provider.recognize_once(source, list(job.bbox), job.orientation, padding)
+            geometry = {"polygon": [list(point) for point in job.polygon]} if job.polygon is not None else {}
+            if job.crop_angle is not None:
+                geometry["crop_angle"] = job.crop_angle
+            result = provider.recognize_once(source, list(job.bbox), job.orientation, padding, **geometry)
             if cache:
                 cache.put(keys[job.region_id],{"text":result.text,"confidence":result.confidence,
                     "orientation":result.orientation,"metadata":result.metadata})

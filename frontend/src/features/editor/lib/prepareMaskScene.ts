@@ -1,3 +1,4 @@
+import {t} from '../../../i18n'
 import type {ImagePage, TextRegion} from '../../../types'
 import {MaskBitmap, maskCoverage, maskRgba} from './maskBitmap'
 
@@ -11,7 +12,7 @@ const loadImage = (url: string) => new Promise<HTMLImageElement>((resolve, rejec
   const image = new Image()
   image.crossOrigin = 'anonymous'
   image.onload = () => resolve(image)
-  image.onerror = () => reject(new Error('无法加载原图或蒙版，请重试'))
+  image.onerror = () => reject(new Error(t("无法加载原图或蒙版，请重试")))
   image.src = url
 })
 
@@ -34,9 +35,9 @@ export async function prepareMaskScene(page: ImagePage, region: TextRegion, regi
   const others = document.createElement('canvas')
   others.width = page.width; others.height = page.height
   const otherContext = others.getContext('2d')
-  if (!context || !otherContext) throw new Error('浏览器不支持画布编辑')
+  if (!context || !otherContext) throw new Error(t("浏览器不支持画布编辑"))
   const coverage = (image: HTMLImageElement) => {
-    if (image.naturalWidth !== page.width || image.naturalHeight !== page.height) throw new Error('蒙版尺寸与原图不一致，请重新生成蒙版')
+    if (image.naturalWidth !== page.width || image.naturalHeight !== page.height) throw new Error(t("蒙版尺寸与原图不一致，请重新生成蒙版"))
     context.clearRect(0,0,page.width,page.height)
     context.drawImage(image,0,0)
     return maskCoverage(context.getImageData(0,0,page.width,page.height).data)

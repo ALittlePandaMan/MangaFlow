@@ -5,24 +5,13 @@ from pathlib import Path
 
 from alembic import command
 from alembic.config import Config
-from alembic.runtime.migration import MigrationContext
-from sqlalchemy import inspect
 from sqlalchemy.engine import Engine
-
-HEAD = "20261018_05"
 
 
 def migration_config() -> Config:
     config = Config()
     config.set_main_option("script_location", str(Path(__file__).resolve().parents[1] / "migrations"))
     return config
-
-
-def database_revision(engine: Engine) -> str | None:
-    with engine.connect() as connection:
-        if not inspect(connection).has_table("alembic_version"):
-            return None
-        return MigrationContext.configure(connection).get_current_revision()
 
 
 def upgrade_database(engine: Engine) -> None:

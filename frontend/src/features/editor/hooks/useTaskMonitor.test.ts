@@ -28,6 +28,22 @@ it('returns completed tasks without polling again', async () => {
   expect(update).toHaveBeenCalledOnce()
 })
 
+it.each([false,true])('publishes completion only after adopting its page result (batch=%s)',async batch=>{
+  const task={id:'task',status:'COMPLETED',message:'done',progress:1} as ProcessingTask
+  vi.spyOn(api.tasks,'get').mockResolvedValue(task)
+  vi.spyOn(api.tasks,'statuses').mockResolvedValue([task])
+  let finish!:()=>void
+  const adopting=new Promise<void>(resolve=>{finish=resolve})
+  const update=vi.fn(()=>adopting),snapshots=vi.fn()
+  const {result}=renderHook(()=>useTaskMonitor('project',snapshots))
+  const pending=batch ? result.current.waitForTasks(['task'],update) : result.current.waitForTask('task',update)
+  await act(async()=>{await Promise.resolve()})
+  expect(update).toHaveBeenCalledOnce()
+  expect(snapshots.mock.calls.flatMap(([tasks])=>tasks)).not.toContainEqual(task)
+  await act(async()=>{finish();await pending})
+  expect(snapshots.mock.calls.flatMap(([tasks])=>tasks)).toContainEqual(task)
+})
+
 it('monitors 350 pages with one request per round and stops polling completed tasks', async () => {
   vi.useFakeTimers()
   const tasks = Array.from({length:350}, (_, i) => ({id:`task-${i}`,status:'QUEUED',progress:0,updated_at:'first'} as ProcessingTask))

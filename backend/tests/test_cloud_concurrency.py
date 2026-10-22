@@ -28,7 +28,7 @@ def test_ocr_workers_inherit_task_local_checkpoint_policy_and_timings():
         config = {"base_url":"https://context.invalid", "model":"test", "retries":0,
                   "concurrency_mode":"fixed", "requests_per_minute":6000}
 
-        def recognize_once(self,*args):
+        def recognize_once(self,*args, **kwargs):
             assert budgets.checkpoint_requests.get()
             record_timing("cloud.ocr_request",.25)
             return OCRResult("text",.9,"vertical")
@@ -344,7 +344,7 @@ def test_pipeline_discards_late_result_after_manual_edit(client, monkeypatch, ch
     from test_pipeline import manga_page, wait_for_task
     started = threading.Event()
     release = threading.Event()
-    def recognize(*args):
+    def recognize(*args, **kwargs):
         started.set()
         assert release.wait(5)
         return OCRResult("stale cloud text", 0, "vertical")

@@ -1,3 +1,4 @@
+import {t} from '../../../i18n'
 import type {ImagePage, ProcessingTask, TextRegion, ViewMode} from '../../../types'
 import type {DialogOptions} from '../../../components/GlobalDialog'
 import type {TaskUpdateHandler} from '../hooks/useTaskMonitor'
@@ -34,10 +35,10 @@ export function createPageWorkflowCommands(ctx:PageWorkflowContext) {
     const currentRegions = ctx.getRegions()
     if (!canRunPageWorkflowStage(stage, currentRegions.length)) return
     if (stage === 'ocr' && currentRegions.length > 0 && !await confirmDialog({
-      title: '重新检测？',
-      message: '将重新检测整张图片并执行 OCR。所有现有文本框（包括手工创建、调整过和锁定的框）及其原文、译文、样式和蒙版都会替换，净图与译图会失效。',
+      title: t("重新检测？"),
+      message: t("将重新检测整张图片并执行 OCR。所有现有文本框（包括手工创建、调整过和锁定的框）及其原文、译文、样式和蒙版都会替换，净图与译图会失效。"),
       tone: 'info',
-      confirmLabel: '重新检测',
+      confirmLabel: t("重新检测"),
     })) return
     if (ctx.currentPageId() !== page.id || ctx.isBusy()) return
     ctx.onStart?.()
@@ -46,14 +47,14 @@ export function createPageWorkflowCommands(ctx:PageWorkflowContext) {
     const request = buildPageWorkflowRequest(stage)
     if (stage === 'inpainting') request.options = {...request.options, repair_geometry: repairGeometry}
     const startingNotices: Record<PageWorkflowStage, string> = {
-      ocr: '正在重新检测文字区域并执行 OCR…',
-      translation: '正在重新翻译当前页…',
-      inpainting: '正在重新生成文字 Mask、修复背景并自动重新排版…',
+      ocr: t("正在重新检测文字区域并执行 OCR…"),
+      translation: t("正在重新翻译当前页…"),
+      inpainting: t("正在重新生成文字 Mask、修复背景并自动重新排版…"),
     }
     const completedNotices: Record<PageWorkflowStage, string> = {
-      ocr: '重新检测与 OCR 已完成，请核对文字区域和原文；确认无误后再执行重新翻译。',
-      translation: '当前页翻译已完成。',
-      inpainting: '背景修复与重新排版已完成。',
+      ocr: t("重新检测与 OCR 已完成，请核对文字区域和原文；确认无误后再执行重新翻译。"),
+      translation: t("当前页翻译已完成。"),
+      inpainting: t("背景修复与重新排版已完成。"),
     }
     blurActiveControl()
     setSchedulingProcess(true)
@@ -87,7 +88,7 @@ export function createPageWorkflowCommands(ctx:PageWorkflowContext) {
     try {
       const models = await api.models.list()
       const detection = models.configured.find(item => item.kind === 'detection' && item.provider === 'rfdetr' && item.enabled && item.is_default)
-      if (!detection) throw new Error('请先在设置中启用 RF-DETR 版面检测模型')
+      if (!detection) throw new Error(t("请先在设置中启用 RF-DETR 版面检测模型"))
       await api.models.retryClassification(detection.id)
       if (ctx.currentPageId() === pageId && !ctx.isBusy()) await processPageStage('ocr')
     } catch (reason) {setError(reason instanceof Error ? reason.message : String(reason))}

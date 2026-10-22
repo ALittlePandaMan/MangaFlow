@@ -69,7 +69,10 @@ def balloon_background(
     }
 
 
-def outline_guard(lab: np.ndarray | None, distance: np.ndarray, base_margin: int) -> np.ndarray:
+def outline_guard(
+    lab: np.ndarray | None, distance: np.ndarray, base_margin: int, *,
+    confirmed_text: np.ndarray | None = None, text_region: np.ndarray | None = None,
+) -> np.ndarray:
     """Protect long real ink strokes near a possibly imprecise model contour.
 
     This is a safety veto, not a new balloon segmentation: it can only remove
@@ -90,13 +93,41 @@ def outline_guard(lab: np.ndarray | None, distance: np.ndarray, base_margin: int
     band = max(8, min(24, round(min(width, height) * 0.12)))
     near_wall = distance <= band
     near_counts = np.bincount(labels[near_wall], minlength=count)
+    # Merely being in the broad neighbourhood of a wall does not make a
+    # glyph an outline. A structural stroke must reach the actual contour.
+    contour = distance <= max(base_margin + 2, min(8, round(band * .25)))
+    contour_counts = np.bincount(labels[contour], minlength=count)
+    interior_area = int(np.count_nonzero(distance > 0))
+    text_counts = (np.bincount(labels[(confirmed_text > 0) & (text_region > 0)], minlength=count)
+        if confirmed_text is not None and text_region is not None else np.zeros(count, np.int64))
+    frame_counts = (np.bincount(labels[text_region > 0], minlength=count)
+        if text_region is not None else np.zeros(count, np.int64))
     keep = np.zeros(count, dtype=np.uint8)
     for label in range(1, count):
         area = int(stats[label, cv2.CC_STAT_AREA])
         long_stroke = (
             stats[label, cv2.CC_STAT_WIDTH] >= width * 0.55 or stats[label, cv2.CC_STAT_HEIGHT] >= height * 0.55
         )
-        if long_stroke and area >= 24 and near_counts[label] / area >= 0.2:
+        enclosing_outline = False
+        x, y, w, h, _ = stats[label]
+        if w >= width * .8 and h >= height * .8 and near_counts[label] >= area * .6:
+            # The predicted instance can sit several pixels outside the real
+            # closed balloon stroke. Inspect enclosure as well as contact,
+            # without treating an equally tall H or dash as an outline.
+            component = (labels[y:y+h, x:x+w] == label).astype(np.uint8)
+            component = cv2.morphologyEx(component, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
+            contours, hierarchy = cv2.findContours(component, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
+            if hierarchy is not None:
+                enclosing_outline = any(
+                    relation[3] >= 0 and cv2.contourArea(points) >= interior_area * .25
+                    for points, relation in zip(contours, hierarchy[0], strict=True)
+                )
+        if not enclosing_outline and text_counts[label] >= area * .6 and frame_counts[label] >= area * .95:
+            # Direct, validated text evidence in its source frame outranks
+            # proximity alone. Closed enclosing outlines remain protected.
+            continue
+        if (long_stroke and area >= 24 and near_counts[label] / area >= 0.2
+                and (contour_counts[label] >= max(3, area * .05) or enclosing_outline)):
             keep[label] = 255
     guard = keep[labels]
     # Include the antialiased fringe of the outline, never paint it back later.

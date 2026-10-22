@@ -168,7 +168,7 @@ def test_keyless_translation_bootstrap_needs_no_key_or_model_and_preserves_llm_c
 def test_bootstrap_accepts_auto_device_for_all_local_gpu_providers(client):
     response = client.post("/api/models/bootstrap", json={"preload": False, "selections": [
         {"kind": "detection", "provider": "rfdetr", "device": "auto"},
-        {"kind": "inpainting", "provider": "hybrid", "device": "auto"},
+        {"kind": "inpainting", "provider": "lama", "device": "auto"},
         {"kind": "ocr", "provider": "paddleocr-vl-1.6", "device": "auto"},
     ]})
     assert response.status_code == 200, response.text

@@ -305,14 +305,14 @@ def test_auto_manifest_keeps_policy_and_does_not_probe_hardware(monkeypatch):
         manifests._resolved_manifest_configs(manifests.ModelManifest.model_validate(payload))
 
 
-def test_persist_shortcut_preferences_preserves_model_stages(tmp_path) -> None:
+def test_persist_editor_shortcuts_preserves_model_stages(tmp_path) -> None:
     manifest_path = tmp_path / "config.yaml"
     original = manifest_payload(lightweight=True)
     manifest_path.write_text(yaml.safe_dump(original, allow_unicode=True, sort_keys=False), encoding="utf-8")
 
-    saved = manifests.persist_shortcut_preferences(
+    saved = manifests.persist_editor_preferences(
         manifest_path,
-        {"tool.select": "KeyS", "edit.undo": "Mod+KeyZ", "region.cancelSelection": ""},
+        manifests.ManifestPreferences(shortcuts={"tool.select": "KeyS", "edit.undo": "Mod+KeyZ", "region.cancelSelection": ""}),
     )
 
     assert saved.shortcuts["tool.select"] == "KeyS"

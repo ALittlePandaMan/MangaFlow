@@ -1,3 +1,4 @@
+import {t} from '../../../i18n'
 import {useCallback, useEffect, useRef} from 'react'
 import {ApiError, api} from '../../../services/api'
 import type {ProcessingTask} from '../../../types'
@@ -26,14 +27,19 @@ export function useTaskMonitor(pageId: string | undefined, onSnapshots?: (tasks:
       try {
         const task = await api.tasks.get(taskId)
         if (generation !== taskMonitorGeneration.current) return null
-        snapshots.current?.([task])
         transientFailures = 0
+        // Keep the page's previous live task as an edit lock until its final
+        // result has been adopted. Publishing COMPLETED first can unlock a
+        // stale scene while an asynchronous completion callback is still reading it.
+        const terminal = ['COMPLETED','FAILED','CANCELLED'].includes(task.status)
+        if (!terminal) snapshots.current?.([task])
         const version = taskVersion(task)
         if (version !== lastVersion) {
           await onUpdate?.(task)
+          if (generation !== taskMonitorGeneration.current) return null
           lastVersion = version
         }
-        if (['COMPLETED','FAILED','CANCELLED'].includes(task.status)) return task
+        if (terminal) {snapshots.current?.([task]); return task}
         await new Promise(resolve => window.setTimeout(resolve, task.status === 'QUEUED' ? 1600 : 800))
       } catch (reason) {
         if (generation !== taskMonitorGeneration.current) return null
@@ -74,8 +80,10 @@ export function useTaskMonitor(pageId: string | undefined, onSnapshots?: (tasks:
       }
       if (generation !== taskMonitorGeneration.current) return null
       const returned = new Set(updates.map(task => task.id))
-      if (ids.some(id => !returned.has(id))) throw new Error('任务状态返回不完整，请检查任务列表')
-      snapshots.current?.(updates)
+      if (ids.some(id => !returned.has(id))) throw new Error(t("任务状态返回不完整，请检查任务列表"))
+      const terminal = (task: ProcessingTask) => ['COMPLETED','FAILED','CANCELLED'].includes(task.status)
+      const live = updates.filter(task => !terminal(task))
+      if (live.length) snapshots.current?.(live)
       for (const task of updates) {
         if (!pending.has(task.id)) continue
         const version = taskVersion(task)
@@ -89,6 +97,9 @@ export function useTaskMonitor(pageId: string | undefined, onSnapshots?: (tasks:
           pending.delete(task.id)
         }
       }
+      // Publish terminal snapshots together after their scene callbacks finish,
+      // rather than forcing a store/render update for every page in a book.
+      snapshots.current?.(updates)
       if (pending.size) await new Promise(resolve => window.setTimeout(resolve,
         updates.some(task => task.status === 'RUNNING' || task.status === 'CANCELLING') ? 800 : 1600))
     }

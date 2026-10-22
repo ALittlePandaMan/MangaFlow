@@ -1,20 +1,17 @@
 from __future__ import annotations
 
 import io
-import math
 from pathlib import Path
 
 from app.services.base import ProviderError
-from app.services.ocr.providers import _crop
+from app.services.ocr.crops import crop_region
 from PIL import Image
 
 
-def region_png(image_path: Path, bbox: list[float], padding: int = 4) -> bytes:
-    """Encode only the detected region, with bounded padding and upload dimensions."""
-    if len(bbox) != 4 or not all(math.isfinite(v) for v in bbox) or bbox[2] <= 0 or bbox[3] <= 0:
-        raise ProviderError("OCR 区域无效，请重新选择文本区域。")
+def region_png(image_path: Path, bbox: list[float], padding: int = 4, *, polygon=None, orientation=None, crop_angle=None) -> bytes:
+    """Encode only selected pixels, with white padding and bounded upload dimensions."""
     try:
-        crop = _crop(image_path, bbox, max(0, min(padding, 64)))
+        crop = crop_region(image_path, bbox, padding, polygon=polygon, orientation=orientation, crop_angle=crop_angle)
         if not crop.width or not crop.height:
             raise ValueError("empty crop")
     except ValueError as exc:

@@ -73,8 +73,21 @@ function LayerInspectorHarness({onUpdate,onAction,busyAction}: {onUpdate:ReturnT
   return <RegionProperties page={page} regions={layerRegions} selectedRegions={selectedRegions} selectedCount={selectedRegions.length} fontOptions={[]} onUpdate={onUpdate} onAction={onAction} busyAction={busyAction}/>
 }
 
-describe('RegionProperties coordinate rotation', () => {
+describe('RegionProperties inspector', () => {
   beforeEach(() => useEditorStore.setState({view: 'original', selectedIds: [], layers: {original:true, detection:true, clean:false, translated:true, mask:false}}))
+
+  it('allows selecting layers but not mutating their fields during background inference', () => {
+    const update=vi.fn()
+    render(<RegionProperties page={page} regions={layerRegions} region={region} selectedRegions={[region]} selectedCount={1}
+      fontOptions={[]} readOnly onUpdate={update} onAction={vi.fn()}/>)
+    const select=screen.getByRole('button',{name:/选择 R002/})
+    expect(select).toBeEnabled()
+    fireEvent.click(select)
+    expect(useEditorStore.getState().selectedIds).toEqual(['region-2'])
+    expect(screen.getByRole('button',{name:'锁定区域'})).toBeDisabled()
+    expect(screen.getByPlaceholderText('OCR 原文')).toBeDisabled()
+    expect(update).not.toHaveBeenCalled()
+  })
 
   it('shows a computed editable font size without mode controls and preserves user adjustments', () => {
     const onUpdate=renderProperties()
@@ -164,6 +177,11 @@ describe('RegionProperties coordinate rotation', () => {
     expect(within(styles).getByRole('button', {name: '字体'}).closest('label')!.parentElement).toHaveClass('inspector-font-row')
     expect(within(styles).getByRole('textbox', {name: '字号'}).closest('label')!.parentElement).toHaveClass('inspector-size-row')
     expect(within(styles).getByRole('textbox', {name: '描边宽度'}).closest('label')!.parentElement).toHaveClass('inspector-stroke-row')
+    const style=within(styles).getByRole('button',{name:'排版样式'})
+    expect(style.closest('label')!.parentElement).toHaveClass('inspector-stroke-row')
+    expect(styles.querySelector('.inspector-size-row')!.children).toHaveLength(2)
+    expect(styles.querySelector('.inspector-stroke-row')!.children).toHaveLength(3)
+    expect(Array.from(styles.querySelector('.inspector-stroke-row')!.children, label => label.firstChild?.textContent)).toEqual(['样式', '宽度', '颜色'])
     expect(screen.queryByText(/背景修复/)).not.toBeInTheDocument()
     expect(screen.queryByText(/画布像素/)).not.toBeInTheDocument()
     expect(screen.queryByText(/方向键微调/)).not.toBeInTheDocument()
@@ -174,7 +192,21 @@ describe('RegionProperties coordinate rotation', () => {
     expect(screen.queryByText('更多排版')).not.toBeInTheDocument()
     expect(within(styles).getByRole('textbox', {name:'行距'})).toBeVisible()
     expect(within(styles).getByRole('textbox', {name:'字距'})).toBeVisible()
-    expect(within(styles).getByRole('textbox', {name:'译文旋转角度'})).toBeInTheDocument()
+    expect(within(styles).queryByText('译文旋转')).not.toBeInTheDocument()
+    expect(within(styles).getByRole('textbox', {name:'译文 X 坐标（像素）'})).toHaveValue('10')
+    expect(within(styles).getByRole('textbox', {name:'译文 Y 坐标（像素）'})).toHaveValue('10')
+    expect(within(styles).getByRole('textbox', {name:'译文 Z 旋转角度（度）'})).toBeInTheDocument()
+  })
+
+  it('keeps standard and perspective styles editable after moving the selector next to outline width',() => {
+    const onUpdate=renderProperties()
+    const style=screen.getByRole('button',{name:'排版样式'})
+    fireEvent.click(style)
+    fireEvent.click(screen.getByRole('option',{name:'随形透视'}))
+    expect(onUpdate).toHaveBeenLastCalledWith(region.id,{perspective_warp:true})
+    fireEvent.click(style)
+    fireEvent.click(screen.getByRole('option',{name:'常规'}))
+    expect(onUpdate).toHaveBeenLastCalledWith(region.id,{perspective_warp:false})
   })
 
   it('warns that changing the source frame requires OCR rather than implying repair recognizes text', () => {
@@ -215,32 +247,24 @@ describe('RegionProperties coordinate rotation', () => {
     expect(onUpdate).toHaveBeenNthCalledWith(2, region.id, {stroke_color: '#3a9cff'})
   })
 
-  it('rotates the source polygon without changing translated text rotation', () => {
-    const onUpdate = renderProperties()
-
-    fireEvent.click(screen.getByText('位置与旋转 · 原文框坐标'))
-    fireEvent.click(screen.getByRole('button', {name: '原文框旋转角度（度）增大'}))
-
-    expect(onUpdate).toHaveBeenCalledOnce()
-    const [id, patch] = onUpdate.mock.calls[0] as [string, Partial<TextRegion>]
-    expect(id).toBe(region.id)
-    expect(patch).not.toHaveProperty('rotation')
-    expect(patch.polygon).not.toEqual(region.polygon)
-    expect(patch.bbox).toHaveLength(4)
+  it.each(['original','translated','comparison'] as const)('keeps X/Y/Z only in typesetting, not in layer details in %s view',view => {
+    useEditorStore.setState({view})
+    renderProperties()
+    const layer=screen.getByRole('button',{name:'选择 R001：translated'}).closest('article')!
+    expect(layer.querySelector('details')).not.toBeInTheDocument()
+    expect(within(layer).queryByRole('textbox',{name:/坐标|旋转/})).not.toBeInTheDocument()
+    expect(within(layer).getAllByRole('textbox')).toHaveLength(2)
+    expect(within(layer).getByRole('textbox',{name:'原文'})).toBeVisible()
+    expect(within(layer).getByRole('textbox',{name:'译文'})).toBeVisible()
+    expect(within(screen.getByRole('group',{name:'译文位置与旋转'})).getAllByRole('textbox')).toHaveLength(3)
   })
 
-  it('rotates translated geometry without changing the authored text rotation', () => {
-    useEditorStore.setState({view: 'translated'})
-    const onUpdate = renderProperties()
-
-    fireEvent.click(screen.getByText('位置与旋转 · 译文框坐标'))
-    fireEvent.click(screen.getByRole('button', {name: '译文框旋转角度（度）增大'}))
-
-    expect(onUpdate).toHaveBeenCalledOnce()
-    const [, patch] = onUpdate.mock.calls[0] as [string, Partial<TextRegion>]
-    expect(patch).not.toHaveProperty('rotation')
-    expect(patch.translated_polygon).not.toEqual(region.translated_polygon)
-    expect(patch.translated_bbox).toHaveLength(4)
+  it.each([false,true])('retains the layer lock toggle when locked is %s',locked => {
+    const target={...region,locked},onUpdate=vi.fn()
+    render(<RegionProperties region={target} selectedRegions={[target]} selectedCount={1} fontOptions={[]} onUpdate={onUpdate} onAction={vi.fn()}/>)
+    const layer=screen.getByRole('button',{name:'选择 R001：translated'}).closest('article')!
+    fireEvent.click(within(layer).getByRole('button',{name:locked ? '解除锁定' : '锁定区域'}))
+    expect(onUpdate).toHaveBeenCalledExactlyOnceWith(region.id,{locked:!locked})
   })
 
   it.each([1, 2])('commits a complete line spacing once for %i selected regions', count => {
@@ -259,7 +283,7 @@ describe('RegionProperties coordinate rotation', () => {
   it('keeps explicit typography rotation separate from frame geometry', () => {
     useEditorStore.setState({view:'translated'})
     const onUpdate=renderProperties()
-    const input=screen.getByRole('textbox',{name:'译文旋转角度'})
+    const input=screen.getByRole('textbox',{name:'译文 Z 旋转角度（度）'})
     fireEvent.focus(input)
     fireEvent.change(input,{target:{value:'27'}})
     fireEvent.blur(input)
@@ -269,7 +293,7 @@ describe('RegionProperties coordinate rotation', () => {
   it('publishes an intentional zero rotation even when the region is already upright', () => {
     const onUpdate=vi.fn(), upright={...region,rotation:0}
     render(<RegionProperties region={upright} selectedRegions={[upright]} selectedCount={1} fontOptions={[]} onUpdate={onUpdate} onAction={vi.fn()}/>)
-    const input=screen.getByRole('textbox',{name:'译文旋转角度'})
+    const input=screen.getByRole('textbox',{name:'译文 Z 旋转角度（度）'})
     fireEvent.focus(input)
     fireEvent.change(input,{target:{value:'0.0'}})
     fireEvent.keyDown(input,{key:'Enter'})
@@ -282,11 +306,72 @@ describe('RegionProperties coordinate rotation', () => {
       layout_data:{text_rotation:{version:1,source:'detector',role:'free_text',angle:-28}}}
     const props={region:automatic,selectedRegions:[automatic],selectedCount:1,fontOptions:[],onUpdate,onAction:vi.fn()}
     const {rerender}=render(<RegionProperties {...props}/>)
-    expect(screen.getByRole('textbox',{name:'译文旋转角度'})).toHaveValue('0')
+    expect(screen.getByRole('textbox',{name:'译文 Z 旋转角度（度）'})).toHaveValue('0')
     const standard={...automatic,perspective_warp:false}
     rerender(<RegionProperties {...props} region={standard} selectedRegions={[standard]}/>)
-    expect(screen.getByRole('textbox',{name:'译文旋转角度'})).toHaveValue('-28')
+    expect(screen.getByRole('textbox',{name:'译文 Z 旋转角度（度）'})).toHaveValue('-28')
     expect(onUpdate).not.toHaveBeenCalled()
+  })
+
+  it.each(['original','translated','comparison'] as const)('moves only translated geometry with X/Y controls in %s view',view => {
+    useEditorStore.setState({view})
+    const onUpdate=renderProperties()
+    const x=screen.getByRole('textbox',{name:'译文 X 坐标（像素）'})
+    fireEvent.focus(x)
+    fireEvent.change(x,{target:{value:'-15'}})
+    expect(onUpdate).not.toHaveBeenCalled()
+    fireEvent.keyDown(x,{key:'Enter'})
+    fireEvent.blur(x)
+    expect(onUpdate).toHaveBeenCalledExactlyOnceWith(region.id,{
+      translated_bbox:[-15,10,80,40],
+      translated_polygon:[[-15,10],[65,10],[65,50],[-15,50]],
+    })
+    onUpdate.mockClear()
+    fireEvent.click(screen.getByRole('button',{name:'译文 Y 坐标（像素）增大'}))
+    expect(onUpdate).toHaveBeenCalledExactlyOnceWith(region.id,{
+      translated_bbox:[10,11,80,40],
+      translated_polygon:[[10,11],[90,11],[90,51],[10,51]],
+    })
+  })
+
+  it('moves a selection from its top-left position without collapsing the spacing between regions',() => {
+    const second={...region,id:'second',translated_bbox:[50,30,80,40],translated_polygon:[[50,30],[130,30],[130,70],[50,70]]}
+    const onUpdateMany=vi.fn()
+    render(<RegionProperties selectedRegions={[region,second]} selectedCount={2} fontOptions={[]} onUpdate={vi.fn()} onUpdateMany={onUpdateMany} onAction={vi.fn()}/>)
+    expect(screen.getByRole('textbox',{name:'译文 X 坐标（像素）'})).toHaveValue('10')
+    fireEvent.click(screen.getByRole('button',{name:'译文 X 坐标（像素）增大'}))
+    expect(onUpdateMany).toHaveBeenCalledExactlyOnceWith([
+      {id:region.id,patch:{translated_bbox:[11,10,80,40],translated_polygon:[[11,10],[91,10],[91,50],[11,50]]}},
+      {id:second.id,patch:{translated_bbox:[51,30,80,40],translated_polygon:[[51,30],[131,30],[131,70],[51,70]]}},
+    ])
+  })
+
+  it('steps mixed Z angles independently and clamps each angle',() => {
+    const onUpdateMany=vi.fn(), targets=[{...region,rotation:180},{...region,id:'second',rotation:-20}]
+    render(<RegionProperties selectedRegions={targets} selectedCount={2} fontOptions={[]} onUpdate={vi.fn()} onUpdateMany={onUpdateMany} onAction={vi.fn()}/>)
+    expect(screen.getByRole('textbox',{name:'译文 Z 旋转角度（度）'})).toHaveValue('')
+    fireEvent.click(screen.getByRole('button',{name:'译文 Z 旋转角度（度）增大'}))
+    expect(onUpdateMany).toHaveBeenCalledExactlyOnceWith([{id:region.id,patch:{rotation:180}},{id:'second',patch:{rotation:-19}}])
+  })
+
+  it('excludes locked regions from X/Y/Z transformations',() => {
+    const onUpdateMany=vi.fn(),locked={...region,id:'locked',locked:true,translated_bbox:[0,0,80,40],rotation:40}
+    render(<RegionProperties selectedRegions={[locked,region]} selectedCount={2} fontOptions={[]} onUpdate={vi.fn()} onUpdateMany={onUpdateMany} onAction={vi.fn()}/>)
+    expect(screen.getByRole('textbox',{name:'译文 X 坐标（像素）'})).toHaveValue('10')
+    fireEvent.click(screen.getByRole('button',{name:'译文 X 坐标（像素）增大'}))
+    expect(onUpdateMany.mock.calls[0][0].map((change:{id:string}) => change.id)).toEqual([region.id])
+    fireEvent.click(screen.getByRole('button',{name:'译文 Z 旋转角度（度）增大'}))
+    expect(onUpdateMany).toHaveBeenLastCalledWith([{id:region.id,patch:{rotation:13}}])
+  })
+
+  it.each(['empty','locked','busy'] as const)('disables X/Y/Z controls for %s selection',state => {
+    const targets=state === 'empty' ? [] : [{...region,locked:state === 'locked'}]
+    const onUpdateMany=vi.fn()
+    render(<RegionProperties selectedRegions={targets} selectedCount={targets.length} fontOptions={[]} onUpdate={vi.fn()} onUpdateMany={onUpdateMany} onAction={vi.fn()} busyAction={state === 'busy' ? 'translate' : null}/>)
+    const transform=screen.getByRole('group',{name:'译文位置与旋转'})
+    within(transform).getAllByRole('textbox').forEach(input => expect(input).toBeDisabled())
+    within(transform).getAllByRole('button').forEach(button => expect(button).toBeDisabled())
+    expect(onUpdateMany).not.toHaveBeenCalled()
   })
 
   it('reflects and toggles the translated group visibility in comparison view', () => {
@@ -334,18 +419,17 @@ describe('RegionProperties coordinate rotation', () => {
     expect(screen.queryByRole('button',{name:/^选择 R00/})).not.toBeInTheDocument()
   })
 
-  it('preserves the mounted coordinate draft and expanded position details when folding text rows', () => {
+  it('preserves the mounted text editors and lock toggle when folding text rows', () => {
     useEditorStore.getState().select('region-1')
     const onUpdate=vi.fn()
     render(<LayerInspectorHarness onUpdate={onUpdate} onAction={vi.fn()}/>)
-    fireEvent.click(screen.getByText('位置与旋转 · 原文框坐标'))
-    const coordinate=screen.getByRole('textbox',{name:'X 坐标'})
-    fireEvent.focus(coordinate)
-    fireEvent.change(coordinate,{target:{value:'27'}})
+    const source=screen.getByRole('textbox',{name:'原文'}),translation=screen.getByRole('textbox',{name:'译文'})
+    const lock=screen.getByRole('button',{name:'锁定区域'})
     fireEvent.click(screen.getByRole('button',{name:'折叠文本组'}))
     fireEvent.click(screen.getByRole('button',{name:'展开文本组'}))
-    expect(screen.getByRole('textbox',{name:'X 坐标'})).toBe(coordinate)
-    expect(coordinate).toHaveValue('27')
+    expect(screen.getByRole('textbox',{name:'原文'})).toBe(source)
+    expect(screen.getByRole('textbox',{name:'译文'})).toBe(translation)
+    expect(screen.getByRole('button',{name:'锁定区域'})).toBe(lock)
     expect(onUpdate).not.toHaveBeenCalled()
   })
 

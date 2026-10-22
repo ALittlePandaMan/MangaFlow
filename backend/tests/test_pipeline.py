@@ -751,7 +751,7 @@ def test_ocr_commits_incremental_region_progress(client, monkeypatch) -> None:
         def ensure_loaded(self) -> None:
             return
 
-        def recognize(self, _image_path, _bbox, orientation, _padding) -> OCRResult:
+        def recognize(self, _image_path, _bbox, orientation, _padding, *, polygon=None, crop_angle=None) -> OCRResult:
             self.calls += 1
             if self.calls == 2:
                 second_region_started.set()
@@ -814,7 +814,7 @@ def test_cancelling_ocr_stops_before_the_next_region(client, monkeypatch) -> Non
         def ensure_loaded(self) -> None:
             return
 
-        def recognize(self, _image_path, _bbox, orientation, _padding) -> OCRResult:
+        def recognize(self, _image_path, _bbox, orientation, _padding, *, polygon=None, crop_angle=None) -> OCRResult:
             self.calls += 1
             if self.calls == 3:
                 third_region_started.set()
@@ -890,7 +890,7 @@ def test_queued_cancel_can_be_retried_without_the_old_dispatch_running(client, m
         def ensure_loaded(self) -> None:
             return
 
-        def recognize(self, _image_path, _bbox, orientation, _padding) -> OCRResult:
+        def recognize(self, _image_path, _bbox, orientation, _padding, *, polygon=None, crop_angle=None) -> OCRResult:
             self.calls += 1
             if self.calls == 1:
                 first_inference_started.set()
@@ -955,7 +955,7 @@ def test_ocr_process_can_target_multiple_selected_regions(client, monkeypatch) -
         def ensure_loaded(self) -> None:
             return
 
-        def recognize(self, _image_path, _bbox, orientation, _padding) -> OCRResult:
+        def recognize(self, _image_path, _bbox, orientation, _padding, *, polygon=None, crop_angle=None) -> OCRResult:
             self.calls += 1
             return OCRResult(text=f"selected-{self.calls}", confidence=0.95, orientation=orientation)
 
@@ -1008,7 +1008,7 @@ def test_rerun_stages_preserve_source_and_translated_geometry(client, monkeypatc
         def ensure_loaded(self) -> None:
             return
 
-        def recognize(self, _image_path, _bbox, orientation, _padding) -> OCRResult:
+        def recognize(self, _image_path, _bbox, orientation, _padding, *, polygon=None, crop_angle=None) -> OCRResult:
             self.calls += 1
             return OCRResult(text=f"source-{self.calls}", confidence=0.97, orientation=orientation)
 

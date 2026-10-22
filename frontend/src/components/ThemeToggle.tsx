@@ -1,3 +1,4 @@
+import {t, useLocale} from '../i18n'
 import {Moon, Sun} from 'lucide-react'
 import {useCallback, useEffect, useRef, useState} from 'react'
 import {flushSync} from 'react-dom'
@@ -10,14 +11,15 @@ function readSystemDark(): boolean {
 }
 
 export function ThemeToggle() {
+  useLocale()
   const [mode, setMode] = useState(readStoredThemeMode)
   const [systemDark, setSystemDark] = useState(readSystemDark)
   const requestedMode = useRef(mode)
   const requestedSystemDark = useRef(systemDark)
   const resolved = resolveTheme(mode, systemDark)
   const nextMode = nextThemeMode(mode, systemDark)
-  const modeLabel = mode === 'system' ? `跟随系统（当前${resolved === 'dark' ? '深色' : '浅色'}）` : mode === 'dark' ? '深色主题' : '浅色主题'
-  const nextLabel = nextMode === 'system' ? '跟随系统' : nextMode === 'dark' ? '深色主题' : '浅色主题'
+  const modeLabel = mode === 'system' ? t("跟随系统（当前{{v0}}）", {v0: resolved === 'dark' ? t("深色") : t("浅色")}) : mode === 'dark' ? t("深色主题") : t("浅色主题")
+  const nextLabel = nextMode === 'system' ? t("跟随系统") : nextMode === 'dark' ? t("深色主题") : t("浅色主题")
   const Icon = resolved === 'dark' ? Moon : Sun
 
   const switchTheme = useCallback((next: ThemeMode, dark: boolean) => {
@@ -46,8 +48,8 @@ export function ThemeToggle() {
   return <button
     type="button"
     className={cn(iconButtonClass,'app-header-icon')}
-    title={`${modeLabel}，点击切换为${nextLabel}`}
-    aria-label={`主题：${modeLabel}，点击切换为${nextLabel}`}
+    title={t("{{v0}}，点击切换为{{v1}}", {v0: modeLabel, v1: nextLabel})}
+    aria-label={t("主题：{{v0}}，点击切换为{{v1}}", {v0: modeLabel, v1: nextLabel})}
     onClick={() => switchTheme(nextThemeMode(requestedMode.current, requestedSystemDark.current), requestedSystemDark.current)}
   ><Icon aria-hidden="true" size={18}/></button>
 }

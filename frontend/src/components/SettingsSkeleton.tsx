@@ -1,10 +1,13 @@
+import {t, useLocale} from '../i18n'
 import {SettingsHeading, SettingsLayout} from './SettingsLayout'
 
 function Placeholder({className = ''}: {className?: string}) {
+  useLocale()
   return <span aria-hidden="true" className={'settings-placeholder loading-shimmer '+className}/>
 }
 
-export function SettingsFormSkeleton({label = '正在读取设置…', sections = [2,4,4]}: {label?: string, sections?: number[]}) {
+export function SettingsFormSkeleton({label = t("正在读取设置…"), sections = [2,4,4]}: {label?: string, sections?: number[]}) {
+  useLocale()
   return <div className="settings-form-skeleton" role="status" aria-label={label}>
     <span className="sr-only">{label}</span>
     <div aria-hidden="true">{sections.map((fields,index) => <div className="settings-section" key={index}>
@@ -15,5 +18,6 @@ export function SettingsFormSkeleton({label = '正在读取设置…', sections 
 }
 
 export function SettingsSkeleton() {
+  useLocale()
   return <SettingsLayout loading><SettingsHeading id="detection"/><SettingsFormSkeleton/></SettingsLayout>
 }

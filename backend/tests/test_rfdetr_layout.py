@@ -405,7 +405,8 @@ def test_threshold_changes_share_one_worker_but_keep_independent_postprocessing(
     assert first is not second
     assert first._text_classifier is second._text_classifier
     assert first.config["text_threshold"] == .25 and second.config["text_threshold"] == .7
-    registry.clear_cache()
+    first.unload()
+    second.unload()
 
 
 def test_pipeline_persists_independent_texts_and_shared_exact_balloon_without_running_legacy_segmentation(client, monkeypatch):

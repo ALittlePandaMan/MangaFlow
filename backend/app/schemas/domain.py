@@ -260,6 +260,10 @@ class ModelDiscoveryRequest(BaseModel):
     config_id: str | None = None
 
 
+class ModelTestRequest(ModelConfigCreate):
+    config_id: str | None = None
+
+
 class BootstrapModelSelection(BaseModel):
     kind: Literal["detection", "ocr", "translation", "inpainting", "rendering"]
     provider: str

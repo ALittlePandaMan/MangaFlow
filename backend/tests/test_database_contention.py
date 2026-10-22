@@ -78,7 +78,7 @@ def test_ocr_save_contention_does_not_repeat_inference_or_lose_history(client, m
         def ensure_loaded(self):
             pass
 
-        def recognize(self, *args):
+        def recognize(self, *args, **kwargs):
             calls.append(1)
             return OCRResult(f"recognized-{len(calls)}", 1, "vertical")
 
@@ -180,7 +180,7 @@ def test_no_row_lock_is_held_during_ocr(client, monkeypatch):
         def check(self):
             assert_rows_unlocked(engine, page["project_id"], page["id"])
 
-        def recognize(self, *args):
+        def recognize(self, *args, **kwargs):
             self.check()
             return OCRResult("recognized", 1, "vertical")
 

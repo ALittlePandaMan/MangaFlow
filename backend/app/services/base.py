@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 from threading import RLock
-from typing import Any, Generic, TypeVar
+from typing import Any
 
 
 class ProviderState(StrEnum):
@@ -37,13 +37,11 @@ class ProviderError(RuntimeError):
         self.error_kind = error_kind
 
 
-T = TypeVar("T")
-
-SERIALIZED_MODEL_NAMES = {"manga-ocr", "paddleocr", "rfdetr", "lama", "hybrid",
+SERIALIZED_MODEL_NAMES = {"manga-ocr", "paddleocr", "rfdetr", "lama",
                           "paddleocr-vl-1.6", "baberu-ocr", "hayai-ocr"}
 
 
-class ModelProvider(ABC, Generic[T]):
+class ModelProvider(ABC):
     capabilities: ProviderCapabilities
 
     def __init_subclass__(cls, **kwargs):
@@ -120,7 +118,7 @@ class DetectionResult:
     text_mask_origin: tuple[int, int] | None = None
 
 
-class TextDetector(ModelProvider[list[DetectionResult]], ABC):
+class TextDetector(ModelProvider):
     @abstractmethod
     def detect(self, image_path: Path) -> list[DetectionResult]: ...
 
@@ -133,12 +131,13 @@ class OCRResult:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
-class OCRProvider(ModelProvider[OCRResult], ABC):
+class OCRProvider(ModelProvider):
     @abstractmethod
-    def recognize(self, image_path: Path, bbox: list[float], orientation: str, padding: int = 4) -> OCRResult: ...
+    def recognize(self, image_path: Path, bbox: list[float], orientation: str, padding: int = 4,
+                  *, polygon: list[list[float]] | None = None, crop_angle: float | None = None) -> OCRResult: ...
 
 
-class Translator(ModelProvider[dict[str, str]], ABC):
+class Translator(ModelProvider):
     @abstractmethod
     async def translate_regions(
         self,
@@ -150,11 +149,11 @@ class Translator(ModelProvider[dict[str, str]], ABC):
     ) -> dict[str, str]: ...
 
 
-class Inpainter(ModelProvider[Path], ABC):
+class Inpainter(ModelProvider):
     @abstractmethod
     def inpaint(self, image_path: Path, mask_path: Path, output_path: Path, region_type: str) -> Path: ...
 
 
-class Renderer(ModelProvider[dict[str, Any]], ABC):
+class Renderer(ModelProvider):
     @abstractmethod
     def render(self, *args: Any, **kwargs: Any) -> dict[str, Any]: ...

@@ -72,6 +72,14 @@ def evaluate_page(page: ImagePage, failed_tasks: list[ProcessingTask] | None = N
             reasons.append("empty_mask")
             add("empty_mask", "Text mask is missing or empty", region)
         mask_generation = (region.layout_data or {}).get("mask_generation")
+        integrity = (mask_generation.get("mask_integrity")
+            if isinstance(mask_generation, dict) and mask_generation.get("method") != "manual_mask" else None)
+        if isinstance(integrity, dict) and integrity.get("status") == "partial":
+            reasons.append("incomplete_text_mask")
+            add("incomplete_text_mask", "Text mask does not preserve all detected glyphs", region)
+        elif isinstance(integrity, dict) and integrity.get("status") == "uncertain":
+            reasons.append("mask_segmentation_disagreement")
+            add("mask_segmentation_disagreement", "Local ink and text segmentation disagree; inspect the mask", region)
         constraint = mask_generation.get("constraint") if isinstance(mask_generation, dict) else None
         if isinstance(constraint, dict):
             constraint_status = constraint.get("status")

@@ -8,7 +8,7 @@ from typing import Any
 
 from app.services.base import Inpainter, OCRProvider, Renderer, TextDetector, Translator
 from app.services.detection import OpenCVTextDetector, RFDetrTextDetector
-from app.services.inpainting import HybridInpainter, OpenCVInpainter, SimpleLaMaInpainter
+from app.services.inpainting import OpenCVInpainter, SimpleLaMaInpainter
 from app.services.ocr import (
     CloudMultimodalOCRProvider,
     GenericCloudOCRProvider,
@@ -45,7 +45,6 @@ class ProviderRegistry:
     inpainters: dict[str, type[Inpainter]] = {
         "opencv": OpenCVInpainter,
         "lama": SimpleLaMaInpainter,
-        "hybrid": HybridInpainter,
     }
     renderers: dict[str, type[Renderer]] = {"pillow": PillowRenderer}
 
@@ -62,7 +61,6 @@ class ProviderRegistry:
         ("ocr", "manga-ocr"): "manga_ocr",
         ("ocr", "tesseract"): "pytesseract",
         ("inpainting", "lama"): "simple_lama_inpainting",
-        ("inpainting", "hybrid"): "simple_lama_inpainting",
     }
 
     def __init__(self) -> None:
@@ -104,14 +102,6 @@ class ProviderRegistry:
                     instance.worker = self._ocr_workers.setdefault((name, worker.device), worker)
                 self._instances[key] = instance
             return instance
-
-    def clear_cache(self) -> None:
-        with self._lock:
-            for instance in self._instances.values():
-                instance.unload()
-            self._instances.clear()
-            self._layout_workers.clear()
-            self._ocr_workers.clear()
 
     def is_installed(self, kind: str, provider: str) -> bool:
         if kind == "ocr" and provider in {"paddleocr-vl-1.6", "baberu-ocr", "hayai-ocr"}:

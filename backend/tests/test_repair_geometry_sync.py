@@ -44,7 +44,7 @@ def repair_provider(monkeypatch):
         def ensure_loaded(self):
             pass
 
-        def recognize(self, _path, _bbox, orientation, _padding):
+        def recognize(self, _path, _bbox, orientation, _padding, *, polygon=None, crop_angle=None):
             return OCRResult(text="new cropped text", confidence=.99, orientation=orientation)
 
     class TestTranslator:

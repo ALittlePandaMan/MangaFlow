@@ -60,15 +60,15 @@ class CloudMultimodalOCRProvider(OCRProvider):
             if not math.isfinite(temperature) or not 0 <= temperature <= 1:
                 raise ProviderError("云端 OCR 的 Temperature 必须在 0–1 范围内，或留空使用模型默认值。")
 
-    def recognize(self, image_path: Path, bbox: list[float], orientation: str, padding: int = 4) -> OCRResult:
-        return self._recognize(image_path, bbox, orientation, padding, int(self.config.get("retries", 2)))
+    def recognize(self, image_path: Path, bbox: list[float], orientation: str, padding: int = 4, *, polygon=None, crop_angle=None) -> OCRResult:
+        return self._recognize(image_path, bbox, orientation, padding, int(self.config.get("retries", 2)), polygon=polygon, crop_angle=crop_angle)
 
-    def recognize_once(self, image_path: Path, bbox: list[float], orientation: str, padding: int = 4) -> OCRResult:
-        return self._recognize(image_path, bbox, orientation, padding, 0)
+    def recognize_once(self, image_path: Path, bbox: list[float], orientation: str, padding: int = 4, *, polygon=None, crop_angle=None) -> OCRResult:
+        return self._recognize(image_path, bbox, orientation, padding, 0, polygon=polygon, crop_angle=crop_angle)
 
-    def _recognize(self, image_path: Path, bbox: list[float], orientation: str, padding: int, retries: int) -> OCRResult:
+    def _recognize(self, image_path: Path, bbox: list[float], orientation: str, padding: int, retries: int, *, polygon=None, crop_angle=None) -> OCRResult:
         self.ensure_loaded()
-        encoded = base64.b64encode(region_png(image_path, bbox, padding)).decode("ascii")
+        encoded = base64.b64encode(region_png(image_path, bbox, padding, polygon=polygon, orientation=orientation, crop_angle=crop_angle)).decode("ascii")
         base_url = str(self.config["base_url"]).strip()
         protocol = resolve_api_protocol(self.config.get("api_protocol"), base_url)
         endpoint, payload = self._request(protocol, encoded, orientation)

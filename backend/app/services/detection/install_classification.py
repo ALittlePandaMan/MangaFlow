@@ -1,4 +1,4 @@
-"""Explicit, pinned model installation; never called from a web request."""
+"""Explicit, pinned model installation, shared by CLI and confirmed setup jobs."""
 
 from __future__ import annotations
 
@@ -8,10 +8,11 @@ from uuid import uuid4
 
 from app.core.config import get_settings
 from app.services.detection.classification import MODEL_RELATIVE_PATH, MODEL_REPOSITORY, MODEL_REVISION, MODEL_SHA256
-from huggingface_hub import hf_hub_download
 
 
-def main() -> None:
+def install_weights() -> None:
+    from huggingface_hub import hf_hub_download
+
     destination = get_settings().model_dir / MODEL_RELATIVE_PATH
     if destination.is_file():
         with destination.open("rb") as source:
@@ -32,6 +33,10 @@ def main() -> None:
     finally:
         temporary.unlink(missing_ok=True)
     print(f"Classification weights installed: {destination}")
+
+
+def main() -> None:
+    install_weights()
 
 
 if __name__ == "__main__":

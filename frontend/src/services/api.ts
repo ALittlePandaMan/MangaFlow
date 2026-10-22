@@ -1,4 +1,5 @@
-import type { DeviceProfile, FontResource, ImagePage, ModelBootstrapEntry, ModelConfiguration, ModelDescriptor, ProcessingTask, Project, RegionStageAction, SetupStatus, TextRegion } from '../types'
+import {t} from '../i18n'
+import type { DeviceProfile, FontPreset, FontResource, ImagePage, ModelBootstrapEntry, ModelConfiguration, ModelDescriptor, ProcessingTask, Project, RegionStageAction, SetupStatus, TextRegion } from '../types'
 import type {EditorHistoryResult, EditorHistoryState} from '../types'
 import type {ExecutionPolicy, ExecutionStatus} from '../types'
 import type {EditorPreferences, TextStyleDefaults} from '../types'
@@ -8,6 +9,14 @@ export class ApiError extends Error {
   constructor(public status: number, message: string) {
     super(message)
   }
+}
+
+export interface RecommendedSetupStatus {
+  state: 'idle' | 'installing' | 'complete' | 'error'
+  installed: boolean
+  configured: boolean
+  error: string | null
+  models: Array<{kind:string, provider:string, name:string, installed:boolean, status:string, error:string|null}>
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -73,7 +82,7 @@ export const api = {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: json({ formats }),
       })
       if (!response.ok) {
-        let message = '导出失败'
+        let message = t("导出失败")
         try {message = (await response.json()).detail || message} catch { /* response is not JSON */ }
         throw new ApiError(response.status, message)
       }
@@ -136,14 +145,19 @@ export const api = {
     list: () => request<{available: ModelDescriptor[], configured: ModelConfiguration[]}>('/models'),
     deviceProfile: () => request<DeviceProfile>('/models/device-profile'),
     setupStatus: () => request<SetupStatus>('/models/setup-status'),
+    recommendedStatus: () => request<RecommendedSetupStatus>('/models/recommended/status'),
+    installRecommended: () => request<RecommendedSetupStatus>('/models/recommended/install', {method:'POST'}),
     verifySetup: () => request<SetupStatus>('/models/setup-status/verify', {method:'POST'}),
     discover: (payload: {base_url: string, api_protocol?: string, api_key?: string, config_id?: string}) => request<{models: string[], endpoint: string, base_url: string, protocol: string}>('/models/discover', {method: 'POST', body: json(payload)}),
+    testConnection: (payload: Record<string, unknown>) => request<{ok:boolean, mode:'local'|'remote', message?:string, elapsed_ms:number}>('/models/test', {method:'POST', body:json(payload)}),
     create: (payload: Record<string, unknown>) => request<ModelConfiguration>('/models/config', { method: 'POST', body: json(payload) }),
     update: (id: string, payload: Record<string, unknown>) => request<ModelConfiguration>(`/models/config/${id}`, { method: 'PATCH', body: json(payload) }),
     bootstrap: (payload: {preload?: boolean, upgrade_fallbacks?: boolean, stages?: string[], selections?: Array<{kind: string, provider: string, device?: string, config?: Record<string, unknown>, api_key?: string}>} = {preload: true, upgrade_fallbacks: true}) => request<{ok: boolean, models: ModelBootstrapEntry[]}>('/models/bootstrap', { method: 'POST', body: json(payload) }),
   },
   fonts: {
     list: () => request<FontResource[]>('/fonts'),
+    presets: () => request<FontPreset[]>('/fonts/presets'),
+    install: (id: string) => request<FontResource>(`/fonts/presets/${encodeURIComponent(id)}/install`, {method:'POST'}),
     upload: async (file: File) => {
       const form = new FormData(); form.append('file', file)
       return request<FontResource>('/fonts', {method: 'POST', body: form})
