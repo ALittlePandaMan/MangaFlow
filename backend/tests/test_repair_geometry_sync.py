@@ -138,10 +138,10 @@ def test_successful_repair_syncs_only_changed_selected_regions(client, monkeypat
             assert result["layout_data"][TRANSLATION_GEOMETRY_SYNC_KEY]["pending"] is True
 
 
-def test_failure_keeps_pending_sync_and_retry_consumes_it_only_once(client, repair_provider):
+def test_failure_keeps_manual_target_and_retry_resolves_pending_only_once(client, repair_provider):
     page, regions = setup_page(client)
     before = client.patch(f"/api/regions/{regions[0]['id']}", json={"rotation": 18, "perspective_warp": True}).json()
-    source = edit_source(client, before)
+    edit_source(client, before)
     repair_provider.fail = True
     failed = wait_task(client, client.post(f"/api/regions/{before['id']}/inpaint", json={"force": True}).json())
     assert failed["status"] == "FAILED", failed
@@ -153,8 +153,10 @@ def test_failure_keeps_pending_sync_and_retry_consumes_it_only_once(client, repa
     success = wait_task(client, client.post(f"/api/regions/{before['id']}/inpaint", json={"force": True}).json())
     assert success["status"] == "COMPLETED", success
     synchronized = client.get(f"/api/images/{page['id']}/regions").json()[0]
-    assert synchronized["translated_polygon"] == source["polygon"]
-    assert synchronized["rotation"] == 18 and synchronized["perspective_warp"] is False
+    assert synchronized["translated_polygon"] == before["translated_polygon"]
+    assert synchronized["rotation"] == 18 and synchronized["perspective_warp"] is True
+    assert synchronized["layout_data"][TRANSLATION_GEOMETRY_SYNC_KEY]["pending"] is False
+    assert synchronized["layout_data"][TRANSLATION_GEOMETRY_SYNC_KEY]["revision"] == 0
     custom = client.patch(f"/api/regions/{before['id']}", json={
         "translated_bbox": [40, 30, 80, 90], "rotation": -12, "perspective_warp": True,
     }).json()
@@ -165,7 +167,7 @@ def test_failure_keeps_pending_sync_and_retry_consumes_it_only_once(client, repa
     final = client.get(f"/api/images/{page['id']}/regions").json()[0]
     for field in ("bbox", "polygon", "translated_bbox", "translated_polygon", "rotation", "perspective_warp"):
         assert final[field] == custom[field]
-    assert final["layout_data"][TRANSLATION_GEOMETRY_SYNC_KEY]["revision"] == 1
+    assert final["layout_data"][TRANSLATION_GEOMETRY_SYNC_KEY]["revision"] == 0
 
 
 def test_mask_ocr_and_translation_do_not_consume_pending_frame_sync(client, repair_provider):

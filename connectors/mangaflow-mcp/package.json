@@ -1,0 +1,19 @@
+{
+  "name": "mangaflow-mcp",
+  "version": "2.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Portable stdio MCP bridge and streaming local file transfer for MangaFlow",
+  "bin": {
+    "mangaflow-mcp": "index.mjs"
+  },
+  "engines": {
+    "node": ">=20.11"
+  },
+  "scripts": {
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.1"
+  }
+}

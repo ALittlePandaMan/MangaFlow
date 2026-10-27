@@ -1,0 +1,11 @@
+[
+  {"text":"Hello world again","width":8,"lines":["Hello","world","again"]},
+  {"text":"we don’t know","width":6,"lines":["we","don’t","know"]},
+  {"text":"甲1.23乙","width":4,"lines":["甲","1.23","乙"]},
+  {"text":"abcdefghij","width":4,"lines":["abcd","efgh","ij"]},
+  {"text":"你好，世界！再见。","width":3,"lines":["你好，","世界！","再见。"]},
+  {"text":"甲（乙丙）丁","width":3,"lines":["甲（乙","丙）丁"]},
+  {"text":"áb́ć","width":2,"lines":["áb́","ć"]},
+  {"text":"👨‍👩‍👧‍👦甲乙","width":2,"lines":["👨‍👩‍👧‍👦甲","乙"]},
+  {"text":"甲乙……丙丁","width":3,"lines":["甲乙","……丙","丁"]}
+]

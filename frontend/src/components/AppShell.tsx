@@ -1,4 +1,6 @@
 import {t, useLocale} from '../i18n'
+import {FileJobMonitor} from './FileJobMonitor'
+import {GlobalActivityPanel, GlobalProcessingMonitor} from './GlobalActivityPanel'
 import { BookOpen, Boxes, Check, CircleAlert, LockKeyhole, RefreshCw, Sparkles } from 'lucide-react'
 import { createContext, lazy, Suspense, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { NavLink, Outlet } from 'react-router-dom'
@@ -72,6 +74,9 @@ export function AppShell() {
         <ThemeToggle/>
       </header>
       <main className="min-h-0 min-w-0 bg-app"><Outlet /></main>
+      <FileJobMonitor/>
+      <GlobalProcessingMonitor/>
+      <GlobalActivityPanel/>
     </div>
   </AppHeaderContext.Provider></SettingsNavigationProvider>
 }

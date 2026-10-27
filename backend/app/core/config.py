@@ -31,6 +31,10 @@ class Settings(BaseSettings):
     environment_file_path: Path = REPOSITORY_ROOT / ".env"
     database_url: str = "postgresql+psycopg://mangaflow@127.0.0.1:5432/mangaflow"
     max_upload_mb: int = 100
+    max_container_upload_mb: int = Field(default=1024, ge=1)
+    max_import_pages: int = Field(default=2000, ge=1)
+    max_import_uncompressed_mb: int = Field(default=10240, ge=1)
+    max_import_page_pixels: int = Field(default=50_000_000, ge=1)
     ocr_review_threshold: float = 0.65
     task_concurrency: int = Field(default=4, ge=1, le=8)
     execution_mode: Literal["auto", "fixed", "serial"] = "auto"

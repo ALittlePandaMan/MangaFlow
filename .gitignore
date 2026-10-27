@@ -49,6 +49,7 @@ yarn-error.log*
 pnpm-debug.log*
 
 # MangaFlow runtime data
+**/node_modules/
 data/
 
 # Downloaded model weights and provider caches

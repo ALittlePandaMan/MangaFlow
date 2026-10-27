@@ -1496,8 +1496,10 @@ def test_multi_region_inpaint_only_sends_selected_mask_union_to_provider(client,
         expected_geometry[region["id"]] = {
             "bbox": updated["bbox"],
             "polygon": updated["polygon"],
-            "translated_bbox": updated["bbox"],
-            "translated_polygon": updated["polygon"],
+            # Explicit target geometry in the same source edit must survive
+            # repair; only a source-only edit requests automatic target sync.
+            "translated_bbox": updated["translated_bbox"],
+            "translated_polygon": translated_polygon,
         }
 
     rerun = client.post(

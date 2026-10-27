@@ -150,7 +150,7 @@ def test_truncated_local_ocr_is_marked_for_review():
     from app.pipeline.processor import PipelineProcessor
     from app.services.base import OCRResult
 
-    region = SimpleNamespace(review_reasons=[], layout_data={})
+    region = SimpleNamespace(review_reasons=[], layout_data={}, source_text="", translated_text="")
     # Inspect the write through a lightweight fake rather than run inference.
     processor = object.__new__(PipelineProcessor)
     processor.settings = SimpleNamespace(ocr_review_threshold=.65)

@@ -101,7 +101,7 @@ def image_read(page: ImagePage, *, include_history: bool = False, region_count: 
     )
 
 
-def region_read(region: TextRegion) -> RegionRead:
+def region_read(region: TextRegion, *, include_history: bool = True) -> RegionRead:
     from app.services.editor_history import history_state
     result = RegionRead.model_validate(region)
     db = object_session(region)
@@ -114,4 +114,4 @@ def region_read(region: TextRegion) -> RegionRead:
         layout["mask_generation"] = {**generation, "repair_pending": True}
     return result.model_copy(update={"mask_url": get_storage().media_url(region.pixel_mask_path),
         "layout_data": layout,
-        "editor_history": history_state(db, region.image_id) if db else None})
+        "editor_history": history_state(db, region.image_id) if db and include_history else None})

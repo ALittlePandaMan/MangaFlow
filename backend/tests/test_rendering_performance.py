@@ -53,28 +53,12 @@ def test_active_ink_layout_preserves_variable_width_unicode_and_paragraph_breaks
     monkeypatch.setattr(engine, "_ink_bounds", lambda path, size, character: (0, 0, advance(character), 10))
     text = "漫画ABC翻译!?\n\n" + "  漫画 ABC!? " * 30
 
-    def legacy_wrap(text, width):
-        output = []
-        for paragraph in text.replace("\r", "").split("\n"):
-            if not paragraph:
-                output.append("")
-                continue
-            current = ""
-            for character in paragraph:
-                candidate = current + character
-                extent = sum(advance(character) for character in candidate) + (len(candidate)-1)*spacing
-                if current and extent > width:
-                    output.append(current)
-                    current = character
-                else:
-                    current = candidate
-            if current:
-                output.append(current)
-        return output or [""]
-
     for width in [1, 5.5, 17, 44, 180]:
         result = engine._fit_ink(text, width, 10000, 10, "horizontal", 1.1, spacing, "center", lambda _: Path("fake.ttf"))
-        assert result.lines == legacy_wrap(text, width)
+        # Word/kinsoku wrapping intentionally supersedes the old character-only
+        # breaks. Soft-wrap spaces can disappear; text and hard blank lines cannot.
+        assert "".join(result.lines).replace(" ", "") == text.replace("\n", "").replace(" ", "")
+        assert "" in result.lines
 
 
 def test_project_font_catalogue_never_walks_page_assets_and_finds_later_uploads(tmp_path, monkeypatch):

@@ -1,6 +1,7 @@
 import numpy as np
 import pytest
 from app.services.layout.engine import FontResolver, MangaLayoutEngine
+from app.services.layout.line_breaking import WORD_FIT_REFERENCE_SIZE, fitting_chunk_count, word_count
 from app.services.rendering import PillowRenderer
 from PIL import Image
 from test_layout import available_font, simple_render_region
@@ -19,15 +20,30 @@ def fitted(engine, text, box=(160, 140), **kwargs):
 
 @pytest.mark.parametrize("orientation", ["horizontal", "vertical"])
 @pytest.mark.parametrize("text", ["x", "漫画", "MANGA TEXT", "天地玄黄宇宙洪荒", "Hello\n\nWORLD!", "…!?ABC"])
-def test_fits_actual_glyphs_and_next_size_would_overflow(engine, text, orientation):
+def test_fits_actual_glyphs_and_next_size_would_overflow_or_break_boundaries(engine, text, orientation):
     result = fitted(engine, text, orientation=orientation)
     assert not result.overflow
     assert result.width <= 158 and result.height <= 138
     assert all(g.ink_box is not None for g in result.placements)
-    # Same algorithm without the search, tested in the effective frame.
+    # Manual sizing may break an oversized word. Automatic sizing must stop
+    # before that when the word/punctuation fits at the readable reference.
+    # Keep testing maximal *admissible* size, not pixel occupancy alone.
     bigger = fitted(engine, text, box=(158, 138), orientation=orientation,
                     preferred_size=result.font_size+1, auto_fit=False)
-    assert bigger.overflow
+    if orientation == "vertical":
+        assert bigger.overflow
+        return
+    reference = fitted(engine, text, box=(158, 138), orientation=orientation,
+                       preferred_size=WORD_FIT_REFERENCE_SIZE, auto_fit=False)
+    reference_lines, result_lines, bigger_lines = ("\n".join(layout.lines) for layout in (reference, result, bigger))
+    word_limit, chunk_limit = word_count(text), fitting_chunk_count(text)
+    preserve_words = word_limit > 0 and word_count(reference_lines) <= word_limit
+    preserve_chunks = word_limit > 0 and fitting_chunk_count(reference_lines) <= chunk_limit
+    assert not preserve_words or word_count(result_lines) <= word_limit
+    assert not preserve_chunks or fitting_chunk_count(result_lines) <= chunk_limit
+    assert (bigger.overflow
+            or preserve_words and word_count(bigger_lines) > word_limit
+            or preserve_chunks and fitting_chunk_count(bigger_lines) > chunk_limit)
 
 
 def test_single_lowercase_glyph_is_not_limited_to_em_height(engine):

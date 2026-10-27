@@ -9,14 +9,29 @@ export function preserveLocalRegionGeometry(nextRegions: TextRegion[], currentRe
     if (!current) return region
     const synchronized = allowRepairSync && hasNewRepairGeometry(region, current)
     const sourceSynchronized = allowRepairSync && hasNewSourceRepairGeometry(region, current)
+    const incomingSync = region.layout_data.translation_geometry_sync as Record<string,unknown> | undefined
+    const currentSync = current.layout_data.translation_geometry_sync as Record<string,unknown> | undefined
+    const autoSync = incomingSync?.direction === 'automatic_typography'
+    // A deferred response must not acknowledge a geometry generation that was
+    // not applied. Its target baseline is needed to safely retry the refresh.
+    const layout = {...region.layout_data}
+    const currentRevision = typeof currentSync?.revision === 'number' ? currentSync.revision : 0
+    if (!synchronized && !sourceSynchronized && typeof incomingSync?.revision === 'number' && incomingSync.revision !== currentRevision) {
+      for (const key of ['translation_geometry_sync', 'typography_state', 'typography_analysis', 'text_rotation']) {
+        if (Object.hasOwn(current.layout_data, key)) layout[key] = current.layout_data[key]
+        else delete layout[key]
+      }
+    }
     return {
       ...region,
+      layout_data: layout,
       bbox: [...(sourceSynchronized ? region : current).bbox],
       polygon: (sourceSynchronized ? region : current).polygon.map(point => [...point]),
       translated_bbox: [...(synchronized ? region : current).translated_bbox],
       translated_polygon: (synchronized ? region : current).translated_polygon.map(point => [...point]),
       rotation: (synchronized ? region : current).rotation,
       perspective_warp: (synchronized ? region : current).perspective_warp,
+      orientation: autoSync && !synchronized ? current.orientation : region.orientation,
     }
   })
 }

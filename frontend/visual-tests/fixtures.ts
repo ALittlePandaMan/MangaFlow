@@ -16,6 +16,12 @@ export const tasks:ProcessingTask[]=Array.from({length:6},(_,index)=>({id:`task-
 export const execution:ExecutionStatus={policy:{mode:'auto',max_pages:8,cpu_workers:8,memory_reserve_mb:1024,gpu_max_concurrency:1,gpu_memory_reserve_mb:2048},pages:{active:2,limit:4,maximum:8,peak:4,reason:'内存余量不足，降低并发'},cpu:{active:2,limit:4,maximum:8,peak:4,reason:'CPU 繁忙，降低并发'},models:{active:1,limit:1,reason:'单实例安全限制；独立双实例须通过吞吐、P95 和显存验收后才能启用',calls:100,wait_seconds:42.21,run_seconds:123.41},inference:[{kind:'ocr',name:'paddleocr-vl-1.6',backend:'torch-worker',device:'cpu',state:'ready',fallback_reason:'cuda_memory_reserve'}],resources:{known:true,available_bytes:10*1024**3,total_bytes:32*1024**3,cpu_percent:75,cpu_cores:16,rss_bytes:3*1024**3},native_threads:2,recent_stages:[],stage_timings:[{stage:'translation',samples:20,mean_seconds:12,p95_seconds:15}],gpu:{known:true,devices:[{index:0,name:'Sample GPU with a long hardware name',total_bytes:16*1024**3,used_bytes:10*1024**3,free_bytes:6*1024**3,utilization_percent:80}]}}
 const pending=()=>new Promise<never>(()=>{})
 export function installAuditApi(scenario:string) {
+  const originalFetch=window.fetch.bind(window)
+  window.fetch=(input,init)=>{
+    const path=new URL(input instanceof Request ? input.url : String(input),window.location.href).pathname
+    if(path==='/api/mcp-settings')return Promise.resolve(new Response(JSON.stringify({enabled:true,public_url:'',token:'synthetic-audit-token'}),{headers:{'Content-Type':'application/json'}}))
+    return originalFetch(input,init)
+  }
   const clone=<T,>(value:T):Promise<T>=>Promise.resolve(structuredClone(value))
   const reject=()=>Promise.reject(new Error('A long synthetic diagnostic: '+('LongUnbrokenDiagnosticCode'.repeat(4))))
   api.models.setupStatus=scenario==='setup-loading'?pending:scenario==='setup-error'?reject:()=>clone({ready:scenario!=='setup',first_run:scenario==='setup',validated:true,stages:['detection','ocr','translation','inpainting','rendering','font'].map(kind=>({kind,provider:null,status:'missing' as const,message:'等待配置'}))})

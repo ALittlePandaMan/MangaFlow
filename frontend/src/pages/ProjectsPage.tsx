@@ -59,6 +59,11 @@ export function ProjectsPage() {
     try { setProjects(await api.projects.list()) } catch (reason) { setError(String(reason)) } finally { setLoading(false) }
   }
   useEffect(() => { void refresh() }, [])
+  useEffect(() => {
+    const imported = () => {void api.projects.list().then(setProjects).catch(reason => setError(String(reason)))}
+    window.addEventListener('mangaflow:imported', imported)
+    return () => window.removeEventListener('mangaflow:imported', imported)
+  }, [])
 
   const openCreateProjectDialog = () => {
     openDialog({

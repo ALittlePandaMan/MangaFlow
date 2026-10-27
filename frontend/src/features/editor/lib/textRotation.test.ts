@@ -21,4 +21,9 @@ describe('independent automatic and user rotations', () => {
     expect(effectiveTextRotation(fixture({rotation:12}))).toBe(12)
     expect(effectiveTextRotation(fixture({translated_polygon:[[0,0],[1,1],[2,2]]}))).toBe(-28)
   })
+  it.each(['detector','segmentation'])('uses the %s adaptive angle once in perspective', source => {
+    const region=fixture({layout_data:{text_rotation:{version:2,source,role:'text',angle:-28}}})
+    expect(effectiveTextRotation(region)).toBe(0)
+    expect(effectiveTextRotation({...region,perspective_warp:false})).toBe(-28)
+  })
 })

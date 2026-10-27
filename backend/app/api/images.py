@@ -14,7 +14,6 @@ from app.schemas.domain import ImageRead, ProcessRequest, TaskRead
 from app.services.image_previews import PreviewKind, image_preview, preview_source
 from app.services.page_edits import apply_page_order, prepare_project_edit, publish_project_edit
 from app.services.region_edits import apply_page_edit
-from app.tasks import task_manager
 
 router = APIRouter(tags=["images"])
 
@@ -130,20 +129,7 @@ def reorder_image(image_id: str, order_index: int, db: Session = Depends(get_db)
 
 @router.post("/images/{image_id}/process", response_model=TaskRead, status_code=202)
 def process_image(image_id: str, payload: ProcessRequest, db: Session = Depends(get_db)) -> ProcessingTask:
-    page = require_page(db, image_id)
-    task = ProcessingTask(
-        project_id=page.project_id,
-        image_id=page.id,
-        task_type="full",
-        status=TaskStatus.QUEUED.value,
-        payload=payload.model_dump(mode="json"),
-        message="Queued",
-    )
-    db.add(task)
-    db.commit()
-    db.refresh(task)
-    task_manager.dispatch(task.id)
-    return task
+    return enqueue_page_task(db, require_page(db, image_id), "full", payload)
 
 
 def _stage_endpoint(stage: str):

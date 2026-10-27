@@ -1,3 +1,4 @@
+import {graphemes, wrapParagraph} from './lineBreaking'
 /** Ink coordinates relative to an alphabetic baseline, matching Pillow 'ls'. */
 export interface GlyphMetrics {
   advance: number
@@ -31,7 +32,8 @@ export function fitInk(text: string, width: number, height: number, size: number
     if (cached) return cached
     const character = vertical ? VERTICAL_FORMS[original] || original : original
     const ink = measure(character)
-    const rotate = vertical && !VERTICAL_FORMS[original] && original.codePointAt(0)! < 128 && /[\p{L}\p{N}\p{P}]/u.test(original)
+    // Letters and digits stay upright in vertical dialogue; retain punctuation rules.
+    const rotate = vertical && !VERTICAL_FORMS[original] && original.codePointAt(0)! < 128 && /\p{P}/u.test(original)
     const w = ink.right-ink.left, h = ink.bottom-ink.top
     const result = {...ink, text: character, rotate, w: rotate ? h : w, h: rotate ? w : h}
     cache.set(original, result)
@@ -39,26 +41,25 @@ export function fitInk(text: string, width: number, height: number, size: number
   }
   const lines: string[] = []
   for (const paragraph of text.replace(/\r/g, '').split('\n')) {
-    let current = '', count = 0, cursor = 0, left = Infinity, right = -Infinity
-    for (const character of paragraph) {
-      const ink = metrics(character)
-      let nextLeft = Math.min(left, cursor+ink.left), nextRight = Math.max(right, cursor+ink.right)
-      const extent = vertical ? count*step+ink.h : nextRight-nextLeft
-      if (count && extent > (vertical ? height : width)) {
-        lines.push(current)
-        current = ''; count = 0; cursor = 0; nextLeft = ink.left; nextRight = ink.right
+    let fitCount = 0, cursor = 0, left = Infinity, right = -Infinity, extent = 0
+    lines.push(...wrapParagraph(paragraph, items => {
+      if (items.length !== fitCount + 1) {fitCount = 0; cursor = 0; left = Infinity; right = -Infinity; extent = 0}
+      for (let index = fitCount; index < items.length; index++) {
+        const ink = metrics(items[index])
+        left = Math.min(left, cursor + ink.left); right = Math.max(right, cursor + ink.right)
+        extent = vertical ? index * step + ink.h : right - left
+        cursor += ink.advance + characterSpacing
       }
-      current += character; count += 1; cursor += ink.advance+characterSpacing
-      left = nextLeft; right = nextRight
-    }
-    lines.push(current)
+      fitCount = items.length
+      return extent <= (vertical ? height : width)
+    }, !vertical))
   }
   const glyphs: InkGlyph[] = [], lineWidths: number[] = []
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
   lines.forEach((line, index) => {
     const rowGlyphs: {glyph: InkGlyph, w: number, h: number}[] = []
     let cursor = 0, lineLeft = Infinity, lineRight = -Infinity
-    ;[...line].forEach((character, row) => {
+    ;graphemes(line).forEach((character, row) => {
       const ink = metrics(character)
       const x = vertical ? -index*pitch+(size-ink.w)/2 : cursor+ink.left
       const y = vertical ? row*step : index*pitch+ink.top

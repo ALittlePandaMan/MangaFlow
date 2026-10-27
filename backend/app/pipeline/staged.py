@@ -43,18 +43,9 @@ class StageProcessor(PipelineProcessor):
         self._context_is_frozen = True
         self._previous_page_context = deepcopy(policy.get("previous_page"))
         self.stage, self.check = stage, check
-        self.defer_text_rotation = (stage == "translation" and policy["request"].get("end_stage") == "rendering"
-                                   and policy["request"].get("options", {}).get("repair_geometry", "source") == "source")
 
     def _check_interruption(self):
         self.check()
-
-    def _initialize_text_rotation(self, region, evidence=None):
-        # Angle/layout initialization belongs AFTER the repair-geometry join.
-        # Rendering performs the same existing one-time initialization then.
-        # Target-frame repair must first finalize that frame, so its serial
-        # translation branch retains the original initialization order.
-        return False if self.defer_text_rotation else super()._initialize_text_rotation(region, evidence)
 
 
 def run_stage(stage: str, state: dict, policy: dict, output: Path, storage: StorageManager, check, progress=None) -> dict:
@@ -81,19 +72,27 @@ def _run_stage(stage, state, policy, output, storage, check, progress):
         provider = request.get("provider") if stage == request.get("start_stage") else None
         region_id = request.get("region_id")
         region_ids = set(options.get("region_ids", [])) or None
+        empty_text_scope = False
+        if options.get("_workflow_text_only") and stage in {"ocr", "translation"}:
+            region_ids = {row.id for row in processor._regions(page, region_id, region_ids)
+                if not row.locked and row.region_type != "sfx"}
+            region_id = None
+            empty_text_scope = not region_ids
         if stage=="detection" or (stage=="ocr" and request.get("start_stage")!="translation"):
             metadata = dict(page.metadata_json or {})
             metadata.pop("ocr_exempt", None)
             page.metadata_json = metadata
         if stage == "detection":
             processor.detect(page, provider, force=force)
+        elif empty_text_scope:
+            pass  # An empty eligible scope must not become an all-regions call.
         elif stage == "ocr":
             # Translation prerequisites OCR only blanks in the eligible scope.
             if request.get("start_stage") == "translation":
                 explicit_force = bool((region_id or region_ids) and force)
                 region_ids = {region.id for region in processor._regions(page, region_id, region_ids)
                               if not has_text(region.source_text) and (not region.locked or explicit_force)
-                              and (force or not has_text(region.translated_text))}
+                              and (force or region.id in options.get("retranslate_region_ids", []) or not has_text(region.translated_text))}
                 region_id, provider = None, None
                 if region_ids:
                     metadata = dict(page.metadata_json or {})

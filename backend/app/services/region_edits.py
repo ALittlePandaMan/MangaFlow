@@ -7,6 +7,7 @@ from uuid import uuid4
 from app.core.transactions import has_pending_writes, project_write
 from app.models import EditorHistoryEntry, ImagePage, Project, RegionRevision, TextRegion
 from app.services.editor_history import PAGE_FIELDS, _archive_paths, _finish_entry, ensure_page_idle
+from app.services.mcp_context import check_page_version, operation_source
 from app.services.regions import SNAPSHOT_FIELDS
 from app.services.workflow_state import capture_page, decode, delta, page_version, private_page, record
 from app.storage import get_storage
@@ -59,7 +60,7 @@ def apply_region_edits(db, page_id: str, changes, action: str, apply_patch):
     return [db.get(TextRegion,identifier,populate_existing=True) for identifier in identifiers]
 
 
-def apply_page_edit(db, page_id: str, operation, action: str, *, scope=None, prepare_extra=None):
+def apply_page_edit(db, page_id: str, operation, action: str, *, scope=None, prepare_extra=None, capture_version=False):
     """Prepare files and a plain field delta, then publish one undoable edit.
 
     Structural changes require a whole-page snapshot. A scoped edit can only
@@ -69,12 +70,20 @@ def apply_page_edit(db, page_id: str, operation, action: str, *, scope=None, pre
     if has_pending_writes(db):
         raise ValueError("Region edits require committed input")
     initial = _capture(db,page_id,scope)
+    check_page_version(db, page_id)
     project_id = initial["page"]["project_id"]
     version = page_version(initial)
     db.rollback()  # No connection/row/write lock spans the archives or adapter.
     before = _archive(initial,scope)
     with private_page(initial) as (private,page):
         metadata = operation(private,page)
+        from app.services.mcp_context import workflow_run_id
+        if workflow_run_id.get():
+            # Track new/split/copied descendants in the same atomic history
+            # publication, so a local workflow can continue editing them.
+            for region in private.scalars(select(TextRegion).where(TextRegion.image_id == page_id)):
+                if region.id not in initial["regions"]:
+                    region.layout_data = {**(region.layout_data or {}), "workflow_created_by": workflow_run_id.get()}
         private.commit()
         final = capture_page(private,page_id,compact_history=False)
         directory = get_storage().project_dir(project_id)
@@ -100,6 +109,7 @@ def apply_page_edit(db, page_id: str, operation, action: str, *, scope=None, pre
         if page is None:
             raise HTTPException(404,"Image page not found")
         actual = _capture(db,page_id,scope)
+        check_page_version(db, page_id)
         if page_version(actual)!=version:
             raise HTTPException(409,"文本框在保存期间发生变化，请刷新后重试；未覆盖其他编辑")
         for key,value in values["page"].items():
@@ -126,12 +136,21 @@ def apply_page_edit(db, page_id: str, operation, action: str, *, scope=None, pre
         if before!=after:
             entry = EditorHistoryEntry(project_id=project_id,image_id=page_id,action=action,
                 before=before,after=after,region_ids=identifiers)
+            if operation_source.get():
+                entry.action = f"[MCP] {action}"[:100]
             db.add(entry)
             db.flush()
             _finish_entry(db,entry,after)
             if extra:
                 entry.after = {**entry.after,**deepcopy(extra)}
+            if capture_version:
+                from app.services.workflow_state import current_page_version
+                db.flush()
+                metadata["published_version"] = current_page_version(db, page_id)
             return entry.id
+        if capture_version:
+            from app.services.workflow_state import current_page_version
+            metadata["published_version"] = current_page_version(db, page_id)
         return None
     entry_id = project_write(db,project_id,save)
     # Reload database timestamps so mask optimistic-version tokens match the

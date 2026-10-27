@@ -13,15 +13,18 @@ from typing import Any, BinaryIO
 from app.models import ImagePage, Project, TextRegion
 from app.schemas.domain import RegionCreate
 from app.services.detection.artifacts import BUBBLE_GEOMETRY_KEY, bubble_geometry_items
+from app.services.export_archive import ExportArchive
 from app.services.regions import STALE_CLEAN_PATH_KEY
 from app.storage import StorageError, StorageManager
 from app.storage.files import SAFE_FILENAME
+from app.utils.geometry import normalize_region_frames
 from sqlalchemy.orm import Session
 
 PROJECT_ARCHIVE_SCHEMA_VERSION = 2
 
 
-def export_project(project: Project, formats: Iterable[str], storage: StorageManager) -> Path:
+def export_project(project: Project, formats: Iterable[str], storage: StorageManager, *,
+                   check=lambda: None, on_bytes=lambda value: None) -> Path:
     requested = set(formats)
     portable_project = "project" in requested
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -43,12 +46,13 @@ def export_project(project: Project, formats: Iterable[str], storage: StorageMan
         "fonts": [],
         "pages": [],
     }
-    with zipfile.ZipFile(output, "x", compression=zipfile.ZIP_DEFLATED) as archive:
+    with ExportArchive(output, check=check, on_bytes=on_bytes) as archive:
         if portable_project:
             _export_project_fonts(archive, project, manifest, storage)
         ordered_pages = sorted(project.pages, key=lambda item: item.order_index)
         page_number_width = max(1, len(str(len(ordered_pages))))
         for page_number, page in enumerate(ordered_pages, start=1):
+            check()
             export_stem = f"{page_number:0{page_number_width}d}"
             project_page_root = f"project/pages/{page.order_index:04d}-{page.id}"
             portable_metadata = deepcopy(page.metadata_json or {})
@@ -232,7 +236,10 @@ def _import_page(
     assets = _dictionary(page_data.get("assets"))
     original_member = assets.get("original") or f"project/original/{filename}"
     original_payload = _read_member(archive, original_member, "页面原图")
-    original_path, width, height = storage.save_upload(project.id, page_id, filename, BytesIO(original_payload))
+    # Archives already bind masks and region vertices to stored pixel positions.
+    # Strip legacy EXIF rotation hints without changing that coordinate space.
+    original_path, width, height = storage.save_upload(project.id, page_id, filename, BytesIO(original_payload),
+                                                       apply_exif_orientation=False)
     metadata = _dictionary(page_data.get("metadata"))
     # This runtime-only pointer is never portable. Trusting an imported value
     # could make incremental repair read another page's clean composite.
@@ -281,8 +288,8 @@ def _import_page(
             "region_key": region_key,
             "polygon": region_data.get("polygon") or [],
             "bbox": region_data.get("bbox") or [],
-            "translated_polygon": region_data.get("translated_polygon") or region_data.get("polygon") or [],
-            "translated_bbox": region_data.get("translated_bbox") or region_data.get("bbox") or [],
+            "translated_polygon": region_data.get("translated_polygon") or [],
+            "translated_bbox": region_data.get("translated_bbox") or [],
             "source_text": str(region_data.get("source_text") or ""),
             "translated_text": str(region_data.get("translated_text") or ""),
             "confidence": region_data.get("confidence", 0),
@@ -308,7 +315,8 @@ def _import_page(
         })
         # Imports allocate new identities; RegionCreate also has an optional
         # client-generated ID, which must not be passed a second time here.
-        values = validated.model_dump(mode="json", exclude={"id", "region_key", "auto_font_size"})
+        values = validated.model_dump(mode="json", exclude={"id", "region_key", "auto_font_size", "auto_orientation"})
+        values.update(normalize_region_frames(values))
         region = TextRegion(id=str(uuid.uuid4()), image_id=page.id, region_key=region_key, **values)
         region.layout_data = _dictionary(region_data.get("layout"))
         region.needs_review = bool(region_data.get("needs_review", False))

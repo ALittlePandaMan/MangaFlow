@@ -3,6 +3,23 @@ import {TaskActivity} from './taskActivity'
 import {taskFixture} from './taskActivity.testUtils'
 
 describe('current-operation task snapshots', () => {
+  it('keeps MCP page locks while excluding its rows and completion from web activity', () => {
+    const activity=new TaskActivity('project')
+    const remote=taskFixture('remote',{status:'RUNNING',payload:{options:{submitted_via:'mcp'}}})
+    activity.update([remote])
+    expect(activity.getSnapshot().tasks).toEqual([])
+    expect(activity.getSnapshot().completion).toBeNull()
+    expect(activity.getPageTask('page-remote')?.id).toBe('remote')
+    expect(activity.hasPendingTasks()).toBe(true)
+    activity.record(taskFixture('web',{status:'RUNNING'}))
+    expect(activity.getSnapshot().tasks.map(task => task.id)).toEqual(['web'])
+    activity.update([taskFixture('web',{status:'COMPLETED'})])
+    expect(activity.getSnapshot().completion).toMatchObject({total:1,completed:1})
+    expect(activity.getPageTask('page-remote')?.id).toBe('remote')
+    activity.update([{...remote,status:'FAILED'}])
+    expect(activity.getSnapshot().completion).toMatchObject({total:1,failed:0})
+    expect(activity.getPageTask('page-remote')).toBeNull()
+  })
   it.each(['QUEUED','RUNNING','CANCELLING','PAUSED'])('locks only the owning page for a %s task', status=>{
     const activity=new TaskActivity('project')
     activity.begin([taskFixture('1',{status})])

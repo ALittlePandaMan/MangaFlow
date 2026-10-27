@@ -15,6 +15,7 @@ from app.core.config import get_settings
 from app.core.database import SessionLocal
 from app.models import (
     EditorHistoryEntry,
+    FileJob,
     ImagePage,
     ProcessingTask,
     Project,
@@ -127,6 +128,7 @@ def _references(db, project_id, prefix, deadline):
         return cast(column,String).contains(prefix,autoescape=True)
 
     queries = [
+        select(FileJob.snapshot).where(FileJob.project_id == project_id, FileJob.status.in_(["RUNNING", "CANCELLING"])),
         select(Project.settings).where(Project.id == project_id),
         select(ImagePage.original_path,ImagePage.clean_path,ImagePage.rendered_path,ImagePage.text_layer_path,ImagePage.metadata_json).where(ImagePage.project_id == project_id),
         select(TextRegion.pixel_mask_path,TextRegion.inpainted_path,TextRegion.layout_data).join(ImagePage).where(ImagePage.project_id == project_id),

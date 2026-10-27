@@ -1,11 +1,12 @@
 import {t, useLocale} from '../i18n'
+import {queueExport, uploadContainers} from '../services/fileJobs'
 import {PageListItem} from '../features/editor/components/PageListItem'
 import {VirtualPageList, VIRTUAL_PAGE_THRESHOLD} from '../features/editor/components/VirtualPageList'
 import {blurActiveControl, pageTaskBusyLabel, pageNeedsOcr} from '../features/editor/lib/pagePresentation'
 import {preserveLocalRegionGeometry, reconcileRegionSnapshot} from '../features/editor/lib/regionSnapshots'
 import {type TaskUpdateHandler} from '../features/editor/hooks/useTaskMonitor'
 import {useEditorTasks} from '../features/editor/hooks/useEditorTasks'
-import {CanvasTaskList} from '../features/editor/components/CanvasTaskList'
+import {EditorActivitySource} from '../components/EditorActivitySource'
 import {EditorWorkspace} from '../features/editor/components/EditorWorkspace'
 import {ClassificationStatus} from '../features/editor/components/ClassificationStatus'
 import {EditorHeaderActions} from '../features/editor/components/EditorHeaderActions'
@@ -32,7 +33,7 @@ import {draftRegion, moveRegions, constrainGroupMove} from '../features/editor/l
 import {loadTextStyleDefaults} from '../features/settings/textStyle'
 import {invalidateHistoryPreview} from '../features/editor/lib/regionHistory'
 import {RegionCommandQueue,type RegionCommand} from '../features/editor/lib/regionCommandQueue'
-import {isTerminalTask} from '../features/editor/lib/taskActivity'
+import {isMcpTask, isTerminalTask} from '../features/editor/lib/taskActivity'
 import {preloadImage} from '../features/editor/hooks/useImage'
 import {useSelectedPageScroll} from '../features/editor/hooks/useSelectedPageScroll'
 import {useEditorHistory} from '../features/editor/hooks/useEditorHistory'
@@ -52,9 +53,11 @@ type RegionJob = RegionProcessing & {id: number, pageId: string, action: RegionS
 type RegionCommandAction = RegionStageAction | 'merge' | 'delete'
 type PagePress = {pageId: string, fromIndex: number, overIndex: number, pointerId: number, startX: number, startY: number, active: boolean}
 type PageDrag = {pageId: string, fromIndex: number, overIndex: number}
-type ExportKind = 'project' | 'translated' | 'clean'
+type ExportKind = 'project' | 'translated' | 'clean' | 'cbz' | 'psd'
 
 const EXPORT_OPTIONS: Array<{kind: ExportKind, label: string, detail: string, formats: string[]}> = [
+  {kind: 'cbz', get label(){return t('导出 CBZ')}, detail: '', formats: ['cbz']},
+  {kind: 'psd', get label(){return t('导出可编辑 PSD')}, detail: '', formats: ['psd']},
   {kind: 'project', get label(){return t("导出源项目")}, get detail(){return t("完整工程包，可再次导入 MangaFlow 继续编辑")}, formats: ['project']},
   {kind: 'translated', get label(){return t("导出翻译后图片")}, get detail(){return t("仅打包所有页面的最终译图")}, formats: ['translated']},
   {kind: 'clean', get label(){return t("导出净图")}, get detail(){return t("未修复的页面会自动使用原图")}, formats: ['clean']},
@@ -206,7 +209,6 @@ export function EditorPage() {
   const [reorderingPages, setReorderingPages] = useState(false)
   const [reorderProgress, setReorderProgress] = useState<number | null>(null)
   const [exporting, setExporting] = useState(false)
-  const [exportKind, setExportKind] = useState<ExportKind | null>(null)
   const [exportMenuOpen, setExportMenuOpen] = useState(false)
   const exportMenuRef = useRef<HTMLDivElement>(null)
   const [savingContext, setSavingContext] = useState(false)
@@ -447,6 +449,17 @@ export function EditorPage() {
     setPage(current => current ? next.find(item => item.id === current.id) || current : current)
     return next
   }, [projectId, editQueue])
+  useEffect(() => {
+    const imported = (event: Event) => {
+      if ((event as CustomEvent<string>).detail !== projectId) return
+      void refreshPages().then(next => {
+        void historyRefreshRef.current()
+        if (!pageRef.current && next.length) navigate(`/projects/${projectId}/editor/${next[0].id}`)
+      }).catch(reason => setError(String(reason)))
+    }
+    window.addEventListener('mangaflow:imported', imported)
+    return () => window.removeEventListener('mangaflow:imported', imported)
+  }, [projectId, refreshPages, navigate, setError])
   const loadPage = useCallback(async (id: string, preservedSelection?: string | null, preserveGeometry = false, snapshot?: ImagePage,
     initial?: {page:Promise<ImagePage>, regions:Promise<TextRegion[]>, authority:Promise<ImagePage | null>}) => {
     const generation = ++pageLoadGeneration.current
@@ -991,7 +1004,7 @@ export function EditorPage() {
     editQueue.record(preview)
     try {
       await saveRegionCommand(preview,async () => {
-        const created = await api.regions.create(requestedPageId,{id:draft.id,polygon,bbox,reading_order:draft.reading_order,orientation:draft.orientation})
+        const created = await api.regions.create(requestedPageId,{id:draft.id,polygon,bbox,reading_order:draft.reading_order,orientation:draft.orientation,auto_orientation:draft.auto_orientation})
         await acceptCommandHistory(preview,created.editor_history)
         const nextPage=rememberPageEdit(preview)
         if (currentPageId.current === requestedPageId) {
@@ -1017,6 +1030,54 @@ export function EditorPage() {
   }, [loadedPageId, loadPage, refreshPages])
   const reloadCurrentRef = useRef(reloadCurrent)
   reloadCurrentRef.current = reloadCurrent
+  useEffect(() => {
+    let active = true
+    let revision: string | undefined
+    let timer: ReturnType<typeof setTimeout>
+    const poll = async () => {
+      try {
+        const response = await fetch(`/api/mcp-settings/changes?project_id=${encodeURIComponent(projectId)}`)
+        if (!response.ok) throw new Error('External edit discovery failed')
+        const incoming = (await response.json()).revision as string
+        if (!active) return
+        if (revision === undefined) revision = incoming
+        else if (revision !== incoming && !editorBusyRef.current && !pending.current.size && !editQueue.pending && !editQueue.failed && !historyBusy.current && !recoveringEditsRef.current) {
+          const before = regionStateRevision.current
+          const id = currentPageId.current
+          const sequence = editSequence.current
+          const [nextPage,nextRegions,nextPages] = await Promise.all([id ? api.images.get(id).catch(() => null) : null,id ? api.images.regions(id).catch(() => null) : [],api.projects.images(projectId)])
+          if (!active || before !== regionStateRevision.current || sequence !== editSequence.current || currentPageId.current !== id || editorBusyRef.current || pending.current.size || editQueue.pending) return
+          if (id && nextPages.some(item => item.id === id) && (!nextPage || !nextRegions)) throw new Error('Page refresh was interrupted')
+          cachedScenes.current.clear()
+          // A later manual command must start from the externally published
+          // page, not revive a clean background cached before the Agent edit.
+          persistedPages.current.clear()
+          pagesRef.current=nextPages
+          setPages(nextPages)
+          if (nextPage && nextRegions) {
+            persistedPages.current.set(nextPage.id,nextPage)
+            pageRef.current=nextPage
+            setPage(nextPage)
+            setRegionState(nextRegions)
+            const store=useEditorStore.getState()
+            const selected=store.selectedIds.filter(selectedId => nextRegions.some(region => region.id === selectedId))
+            if (selected.length !== store.selectedIds.length) store.selectMany(selected)
+          } else if (id && !nextPages.some(item => item.id === id)) {
+            currentPageId.current=null
+            pageRef.current=null
+            setPage(null)
+            setRegionState([])
+            if (nextPages.length) navigateRef.current(`/projects/${projectId}/editor/${nextPages[0].id}`,{replace:true})
+          }
+          revision=incoming
+          void historyRefreshRef.current()
+        }
+      } catch { /* Retry without interrupting manual editing. */ }
+      finally {if (active) timer=setTimeout(() => void poll(),2000)}
+    }
+    void poll()
+    return () => {active=false;clearTimeout(timer)}
+  },[projectId,editQueue,setRegionState])
   useEffect(() => {
     if (!page?.id || !pendingRecoveredRefresh.current.delete(page.id)) return
     void reloadCurrentRef.current().catch(reason => setError(reason instanceof Error ? reason.message : String(reason)))
@@ -1096,7 +1157,7 @@ export function EditorPage() {
   recoveredTaskUpdate.current = async task => {
     if (isTerminalTask(task)) {
       await synchronizeTaskPage(task)
-      if (task.status === 'FAILED') setError(task.error_message || t("后台任务失败"))
+      if (task.status === 'FAILED' && !isMcpTask(task)) setError(task.error_message || t("后台任务失败"))
     } else await syncTaskProgress(task)
   }
   recoveredTasksSettled.current = () => Promise.all([refreshPages(), historyRefreshRef.current()])
@@ -1530,8 +1591,15 @@ export function EditorPage() {
   }, [pages, editorBusy])
 
   const upload = async (files: FileList | null) => {
-    const selectedFiles = files ? [...files] : []
+    let selectedFiles = files ? [...files] : []
     if (projectBusyRef.current || uploadBusy.current || !selectedFiles.length) return
+    const containers = selectedFiles.filter(file => /\.(zip|cbz|rar|cbr|pdf)$/i.test(file.name))
+    if (containers.length) {
+      uploadContainers(projectId, containers)
+      selectedFiles = selectedFiles.filter(file => !containers.includes(file))
+      if (fileRef.current) fileRef.current.value = ''
+      if (!selectedFiles.length) return
+    }
     const unsupported = selectedFiles.filter(file => !/\.(jpe?g|png|webp)$/i.test(file.name))
     if (unsupported.length) {
       setError(t("不支持以下文件：{{v0}}。请选择 JPG、PNG 或 WebP 图片。", {v0: unsupported.map(file => file.name).join('、')}))
@@ -1746,20 +1814,17 @@ export function EditorPage() {
     if (!option) return
     setExportMenuOpen(false)
     setExporting(true)
-    setExportKind(kind)
     setError('')
     setNotice('')
     try {
       // Flush debounced text/style edits first so an immediate export cannot
       // race the 320 ms autosave window and package the previous rendering.
       await flushPendingRegions()
-      await api.projects.export(projectId, option.formats, `${project?.name || 'mangaflow'}-${kind}.zip`)
-      setNotice(t("{{v0}}已生成并开始下载。", {v0: option.label}))
+      await queueExport(projectId, kind)
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason))
     } finally {
       setExporting(false)
-      setExportKind(null)
     }
   }
 
@@ -1784,7 +1849,7 @@ export function EditorPage() {
 
   const selectedScope = visibleRegionProcessing ? visibleRegionProcessing.keys.length > 1 ? t("{{v0}} 个区域", {v0: visibleRegionProcessing.keys.length}) : t("区域 {{v0}}", {v0: visibleRegionProcessing.keys[0]}) : t("当前区域")
   const busyLabel = historyDirection ? (historyDirection === 'undo' ? t("正在撤销上一步…") : t("正在重做上一步…")) : exporting
-    ? ({project:t("正在打包可编辑源项目…"), translated:t("正在生成并导出翻译后图片…"), clean:t("正在导出净图…")} as Record<ExportKind, string>)[exportKind || 'project']
+    ? t('正在创建导出任务')
     : deletingPageId
     ? t("正在删除图片…")
     : updatingPageRecognitionId
@@ -1803,7 +1868,7 @@ export function EditorPage() {
         ? (latestRegionJob?.task || runningPageTask)!.message
         : ({ocr: t("正在重新 OCR {{v0}}…", {v0: selectedScope}), translate: t("正在重新翻译{{v0}}…", {v0: selectedScope}), inpaint: t("正在重新修复{{v0}}…", {v0: selectedScope}), maskRepair: t("正在修复修改后的蒙版…"), merge: t("正在合并所选区域…"), delete: t("正在删除所选区域…"), create: t("正在创建文字区域…")} as Record<string, string>)[runningRegionAction || latestRegionJob?.action || ''] || (editQueue.pending ? t("正在保存文字区域…") : t("正在处理…"))
   const activePageTask = observedPageTask
-  const foregroundProgress = uploadingPages && uploadProgress
+  const localProgress = uploadingPages && uploadProgress
     ? uploadProgress.totalBytes > 0 ? uploadProgress.completedBytes / uploadProgress.totalBytes : uploadProgress.completedFiles / uploadProgress.totalFiles
     : reorderingPages
       ? reorderProgress
@@ -1935,7 +2000,9 @@ export function EditorPage() {
       error={selectedPageId !== page.id && !switchingPage ? error : undefined} onClose={closeImmersiveReader}
       onPreviousPage={!pageNavigationBusy && previousPage ? () => navigatePage(previousPage.id) : undefined}
       onNextPage={!pageNavigationBusy && nextPage ? () => navigatePage(nextPage.id) : undefined}/>}
-    <div hidden={immersiveReading && !!page} className="editor-content-enter grid h-full grid-rows-[auto_minmax(0,1fr)] bg-canvas">
+    <div hidden={immersiveReading && !!page} className="editor-content-enter grid h-full grid-rows-[auto_minmax(0,1fr)] bg-canvas"
+      onDragOver={event => {if (event.dataTransfer.types.includes('Files')) event.preventDefault()}}
+      onDrop={event => {if (event.dataTransfer.files.length) {event.preventDefault(); void upload(event.dataTransfer.files)}}}>
     <EditorToolbar
       onUndo={() => maskSession ? maskEditorRef.current?.undo() : applyHistory('undo')}
       onRedo={() => maskSession ? maskEditorRef.current?.redo() : applyHistory('redo')}
@@ -1975,8 +2042,10 @@ export function EditorPage() {
         }}</VirtualPageList>
       </aside>} canvas={
       <main className="editor-task-canvas relative min-h-0 min-w-0 workspace-background">
-        <CanvasTaskList activity={taskActivity} pages={pages} onCancelTask={cancelTask} scope={processingScope} pendingLabel={syncingTaskResult ? t("正在同步任务结果…") : schedulingProcess || backgroundRegionAction || regionJobs.length ? busyLabel : undefined}
-          batch={schedulingBatch ? {label:schedulingBatch === 'repairTranslate' ? t("批量修复并翻译") : t("批量检测并识别"), progress:batchProgress} : null}/>
+        <EditorActivitySource activity={taskActivity} pages={pages} onCancelTask={cancelTask} scope={processingScope} pendingLabel={syncingTaskResult ? t("正在同步任务结果…") : schedulingProcess || backgroundRegionAction || regionJobs.length ? busyLabel : undefined}
+          batch={uploadingPages || reorderingPages || exporting ? {label:busyLabel, progress:localProgress,
+            onCancel:uploadingPages ? () => uploadAbort.current?.abort() : undefined}
+            : schedulingBatch ? {label:schedulingBatch === 'repairTranslate' ? t("批量修复并翻译") : t("批量检测并识别"), progress:batchProgress} : null}/>
         {page && !maskSession && <ClassificationStatus summary={page.text_classification} busy={editorBusy} onRetry={() => void retryClassification()}/>}
         {maskSession ? maskSession.region ? <MaskEditor ref={maskEditorRef} prepared={maskSession.prepared} preferences={maskPreferences} controlsTarget={maskControlsTarget} key={`${maskSession.page.id}:${maskSession.region.id}:${maskSession.version || 0}`} page={maskSession.page} region={maskSession.region} regions={maskSession.regions} tool={tool} operation={maskOperation} disabled={blockingBusy || switchingPage || openingMask} onToolChange={setTool} onSave={saveMask} onStateChange={setMaskState} onHistoryStep={syncMaskHistory} onHistoryBoundary={direction => void applyHistory(direction)} onSelectRegion={id => void selectMaskRegion(id)}/>
           : <div className="grid h-full place-items-center p-6 text-sm text-muted">{t("当前页暂无文字区域，请切回原图识别或创建区域后编辑蒙版。")}</div>
@@ -2005,12 +2074,9 @@ export function EditorPage() {
       </div>
     </div>, document.body)}
     {showContext && <TranslationContextDialog text={contextText} mode={contextMode} error={contextError} saving={savingContext} onTextChange={setContextText} onModeChange={setContextMode} onError={setContextError} onClose={closeContextDialog} onSave={() => void saveTranslationContext()}/>}
-    {(foregroundBusy || openingMask || switchingPage || maskState.busy) && <BlockingLoader label={recoveringEdits?t("正在重新同步编辑状态…"):waitingForEdits?t("正在保存编辑并离开…"):openingMask?t("正在准备蒙版…"):switchingPage?t("正在切换页面…"):maskState.busy?t("正在保存蒙版并切换…"):busyLabel} progress={foregroundBusy?foregroundProgress:undefined} scope={foregroundBusy?processingScope:undefined}
-      detail={uploadingPages && uploadProgress ? uploadProgress.batchFiles
-        ? t("{{v0}}当前批次 {{v1}} 张，{{v2}} MiB。将自动继续下一批，请勿关闭页面。", {v0: uploadProgress.resizing ? t("请求过大，已自动缩小批次。") : '', v1: uploadProgress.batchFiles, v2: (uploadProgress.batchBytes / 1024 / 1024).toFixed(1)})
-        : t("图片已导入，正在更新页面列表…") : undefined}/>}
+    {(foregroundBusy && !uploadingPages && !reorderingPages && !exporting || openingMask || switchingPage || maskState.busy) && <BlockingLoader label={recoveringEdits?t("正在重新同步编辑状态…"):waitingForEdits?t("正在保存编辑并离开…"):openingMask?t("正在准备蒙版…"):switchingPage?t("正在切换页面…"):maskState.busy?t("正在保存蒙版并切换…"):busyLabel} scope={foregroundBusy?processingScope:undefined}/>}
     {editQueue.failed && !recoveringEdits && <div className="motion-backdrop fixed inset-0 z-[120] grid place-items-center bg-overlay backdrop-blur-sm"><div ref={editFailureDialogRef} id="editor-sync-failure-dialog" tabIndex={-1} role="dialog" aria-modal="true" aria-label={t("编辑同步失败")} className="motion-dialog max-h-[calc(100dvh-24px)] w-[min(420px,calc(100vw-24px))] overflow-auto overscroll-contain rounded-2xl border border-line-strong bg-panel p-6 shadow-dialog"><h2 className="mt-0 text-base">{t("编辑同步失败")}</h2><p className="break-words text-sm leading-relaxed text-muted">{error}</p><button type="button" className={primaryButtonClass} onClick={()=>{void recoverEditingQueue(new Error(t("编辑状态已重新同步，请核对后继续。")))}}>{t("重试同步")}</button></div></div>}
-    <input ref={fileRef} disabled={projectBusy} hidden type="file" accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp" multiple onChange={event => void upload(event.currentTarget.files)}/>
+    <input ref={fileRef} disabled={projectBusy} hidden type="file" accept=".jpg,.jpeg,.png,.webp,.zip,.cbz,.rar,.cbr,.pdf,image/jpeg,image/png,image/webp,application/pdf" multiple onChange={event => void upload(event.currentTarget.files)}/>
   </div>
   </>
 }

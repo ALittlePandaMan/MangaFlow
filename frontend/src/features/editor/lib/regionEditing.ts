@@ -40,7 +40,7 @@ export function draftRegion(imageId: string, polygon: number[][], bbox: number[]
   while (keys.has(`R${String(keyNumber).padStart(3,'0')}`)) keyNumber++
   const {orientation, ...style} = useTextStyleStore.getState().defaults
   return {id,image_id:imageId,region_key:`R${String(keyNumber).padStart(3,'0')}`,polygon,bbox,
-    translated_polygon:polygon.map(point => [...point]),translated_bbox:[...bbox],mask_url:null,source_text:'',translated_text:'',confidence:0,
+    translated_polygon:polygon.map(point => [...point]),translated_bbox:[...bbox],mask_url:null,source_text:'',translated_text:'',confidence:0,auto_orientation:orientation === 'auto',
     orientation:orientation === 'auto' ? (bbox[3] > bbox[2]*1.2 ? 'vertical' : 'horizontal') : orientation,reading_order:readingOrder,panel_id:null,bubble_id:null,
     region_type:'background_complex',...style,rotation:0,perspective_warp:false,opacity:1,locked:false,visible:true,
     needs_review:false,review_reasons:[],layout_warning:false,layout_data:{manual:true},updated_at:new Date().toISOString()}

@@ -402,10 +402,11 @@ def test_parallel_failure_preserves_page_and_retries_only_failed_branch(client, 
     assert calls.count("inpainting") == 2
 
 
-def test_translated_geometry_remains_serial_and_initializes_angle_before_masks(client, providers, monkeypatch):
+def test_translated_geometry_remains_serial_without_reinitializing_typography(client, providers, monkeypatch):
     from app.pipeline.processor import PipelineProcessor
 
-    page, _ = setup(client, ["已有原文"])
+    page, regions = setup(client, ["已有原文"])
+    client.patch(f"/api/regions/{regions[0]['id']}", json={"rotation": 12})
     stages, angles = [], []
     original, initialize = workflow.run_stage, PipelineProcessor._initialize_text_rotation
 
@@ -416,7 +417,7 @@ def test_translated_geometry_remains_serial_and_initializes_angle_before_masks(c
     def ordered(stage, *args, **kwargs):
         stages.append(stage)
         if stage == "mask":
-            assert "translation" in angles
+            assert not angles  # Detection/OCR already published the chosen angle.
         return original(stage, *args, **kwargs)
 
     monkeypatch.setattr(PipelineProcessor, "_initialize_text_rotation", record_angle)
@@ -425,6 +426,8 @@ def test_translated_geometry_remains_serial_and_initializes_angle_before_masks(c
     done = wait_for_task(client, task["id"])
     assert done["status"] == "COMPLETED", done
     assert stages == ["ocr", "translation", "mask", "inpainting", "rendering"]
+    assert not angles
+    assert client.get(f"/api/images/{page['id']}/regions").json()[0]["rotation"] == 12
 
 
 def test_real_branches_overlap_and_published_page_is_unchanged_until_join(client, providers, monkeypatch):

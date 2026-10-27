@@ -217,6 +217,7 @@ def test_final_integrity_warning_is_visible_and_clears_after_regeneration(monkey
     region = SimpleNamespace(id="r", region_key="R001", confidence=.99, locked=False,
         source_text="正常文字", translated_text="正常译文", font_size=24, layout_warning=False,
         bbox=[10, 10, 40, 70], pixel_mask_path="mask.png", orientation="vertical", bubble_id=None,
+        visible=True, translated_bbox=[], translated_polygon=[], rotation=0, perspective_warp=False,
         layout_data={"ocr": {"confidence_available": False}, "repair_quality": {"status": "passed"},
             "mask_generation": {"mask_integrity": {"status": "partial"}}})
     page = SimpleNamespace(id="p", project_id="project", width=200, height=200, regions=[region], clean_path="clean.png")

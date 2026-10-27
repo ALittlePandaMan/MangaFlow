@@ -36,6 +36,9 @@ include = ["app", "app.*"]
 [tool.setuptools.package-data]
 app = ["assets/font-licenses/*.txt"]
 
+[tool.setuptools.data-files]
+"share/mangaflow/mcp-connector" = ["connectors/mangaflow-mcp/index.mjs", "connectors/mangaflow-mcp/directory-import.mjs", "connectors/mangaflow-mcp/package.json", "connectors/mangaflow-mcp/package-lock.json", "connectors/mangaflow-mcp/README.md", "connectors/mangaflow-mcp/install.mjs"]
+
 [tool.setuptools.dynamic]
 version = {attr = "app.version.APP_VERSION"}
 dependencies = {file = ["backend/requirements/base.txt"]}

@@ -188,6 +188,9 @@ button, a, summary, input, textarea { scroll-margin: 12px; }
 .editor-canvas { overflow: hidden; }
 .editor-task-canvas { container-type: inline-size; }
 .canvas-task-list { position: absolute; top: 14px; right: 14px; z-index: 30; display: flex; flex-direction: column; width: min(288px, calc(100% - 28px)); max-height: calc(100% - 28px); overflow: hidden; overscroll-behavior: contain; }
+.global-activity-panel { position: fixed; top: calc(64px + env(safe-area-inset-top)); right: 0; bottom: 0; left: 0; z-index: 95; pointer-events: none; }
+.global-activity-panel .canvas-task-list { pointer-events: auto; }
+@media (max-width: 767px) { .global-activity-panel { top: calc(56px + env(safe-area-inset-top)); } }
 .canvas-task-list > header, .canvas-task-list > p { flex-shrink: 0; }
 .canvas-task-items { min-height: 0; max-height: 500px; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
 .canvas-task-items:focus-visible { outline: 2px solid var(--color-accent); outline-offset: -2px; }

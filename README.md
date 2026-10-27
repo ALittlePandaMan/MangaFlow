@@ -14,7 +14,7 @@ Docker 默认只绑定 `127.0.0.1`。确需可信局域网访问时，可显式�
 
 编辑历史最多保留 100 步。单框属性、批量属性和蒙版修改只记录受影响区域；检测、导入、删除等结构性操作保留完整快照。后台每十分钟检查空闲项目，仅清理不再被当前页面、撤销/重做或区域修订引用的历史资产；新文件有十分钟保护期，每次最多清理 128 个文件，不删除原图。
 
-[架构](docs/architecture.md) · [配置与迁移](docs/configuration.md) · [开发指南](docs/development.md) · [常见问题](docs/troubleshooting.md)
+[架构](docs/architecture.md) · [配置与迁移](docs/configuration.md) · [开发指南](docs/development.md) · [MCP 接入](docs/mcp.md) · [常见问题](docs/troubleshooting.md)
 
 ## 架构
 
@@ -38,6 +38,7 @@ flowchart LR
 
 ## 已实现功能
 
+- 漫画翻译 MCP：设置页默认开启，支持 Agent 自动导入、翻译去字、逐页看图纠错和导出；提供 HTTP 与本地 stdio 连接，管理配置继续在网页操作。
 - Project、批量图片上传、页序、缩略图导航和非破坏式文件存储。
 - 稳定 `TextRegion` ID，`R001` 等显示名称在删除或合并后连续编号；polygon、bbox、OCR、翻译、样式、Mask、锁定、复核原因和版面结果贯穿所有阶段。
 - 页级和区域级 Detection / OCR / Translation / Inpainting / Rendering API；Pipeline 可从任意阶段继续。

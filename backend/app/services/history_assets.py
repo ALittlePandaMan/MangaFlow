@@ -8,6 +8,7 @@ from app.core.config import get_settings
 from app.core.transactions import has_pending_writes
 from app.models import (
     EditorHistoryEntry,
+    FileJob,
     ImagePage,
     ProcessingTask,
     Project,
@@ -61,6 +62,9 @@ def _history_references(db: Session, project_id: str, prefix: str) -> set[str]:
     )):
         mark(result)
     project = db.get(Project, project_id)
+    for snapshot in db.scalars(select(FileJob.snapshot).where(FileJob.project_id == project_id,
+                                                             FileJob.status.in_(["RUNNING", "CANCELLING"]))):
+        mark(snapshot)
     if project:
         mark(project.settings)
     return references

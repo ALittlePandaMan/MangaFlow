@@ -149,7 +149,7 @@ def test_typography_cache_reuses_only_identical_foreground_and_fallback_directio
     mask[10:20, 5:65] = 1
     first = text_angle.measure_text_mask(mask, False)
     measured = len(calls)
-    assert measured >= 362
+    assert 0 < measured < 362  # Coarse-to-fine search beats the old exhaustive search.
     assert text_angle.measure_text_mask(mask.copy(), False) == first and len(calls) == measured
     changed = mask.copy()
     changed[21, 22] = 1
@@ -171,5 +171,5 @@ def test_typography_cache_is_bounded_and_does_not_retain_image_arrays(monkeypatc
         text_angle.measure_text_mask(mask, False)
     assert len(text_angle._measurement_cache) == 4
     assert all(isinstance(key[1], bytes) and len(key[1]) == 32 for key in text_angle._measurement_cache)
-    assert all(len(value) == 2 for value in text_angle._measurement_cache.values())
+    assert all(not isinstance(item, np.ndarray) for value in text_angle._measurement_cache.values() for item in value.values())
     text_angle._measurement_cache.clear()

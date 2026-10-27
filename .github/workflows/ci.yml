@@ -41,7 +41,15 @@ jobs:
           cache: pip
           cache-dependency-path: backend/requirements/*.txt
       - name: Install dependencies
-        run: python -m pip install -r backend/requirements/dev.txt
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends unrar
+          python -m pip install -r backend/requirements/dev.txt
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 20
+      - name: Install MCP connector dependencies
+        run: npm ci --prefix connectors/mangaflow-mcp && npm test --prefix connectors/mangaflow-mcp
       - name: Lint
         run: ruff check backend/app backend/tests scripts
       - name: Test

@@ -12,6 +12,8 @@ export default defineConfig({
       '/api/ws': { target: 'ws://127.0.0.1:8000', ws: true },
       '/api': 'http://127.0.0.1:8000',
       '/media': 'http://127.0.0.1:8000',
+      '/mcp': 'http://127.0.0.1:8000',
+      '/mangaflow': 'http://127.0.0.1:8000',
     },
   },
 })

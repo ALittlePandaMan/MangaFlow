@@ -468,7 +468,7 @@ def test_pipeline_persists_independent_texts_and_shared_exact_balloon_without_ru
 @pytest.mark.parametrize("in_balloon", [False, True])
 @pytest.mark.parametrize("angle", [-12, 12])
 @pytest.mark.parametrize("orientation", ["horizontal", "vertical"])
-def test_slanted_detection_initializes_only_free_text_angle(client, monkeypatch, in_balloon, angle, orientation):
+def test_slanted_detection_initializes_reliable_angle_inside_and_outside_balloons(client, monkeypatch, in_balloon, angle, orientation):
     from io import BytesIO
 
     import cv2
@@ -506,7 +506,7 @@ def test_slanted_detection_initializes_only_free_text_angle(client, monkeypatch,
         assert region.orientation == orientation
         assert (region.polygon[1][1] - region.polygon[0][1]) * angle > 0
         assert region.translated_polygon == region.polygon
-        assert region.rotation == (0. if in_balloon else region.layout_data["detection"]["text_angle"])
+        assert region.rotation == region.layout_data["detection"]["text_angle"]
         assert bool(region.bubble_id) is in_balloon
         assert not region.perspective_warp
         # Explicit redetection rebuilds locked and manually adjusted typography.
@@ -519,5 +519,5 @@ def test_slanted_detection_initializes_only_free_text_angle(client, monkeypatch,
         assert len(stored.regions) == 1
         rebuilt = stored.regions[0]
         assert rebuilt.id != region_id and not rebuilt.locked
-        assert rebuilt.rotation == (0. if in_balloon else rebuilt.layout_data['detection']['text_angle'])
+        assert rebuilt.rotation == rebuilt.layout_data['detection']['text_angle']
     detector.unload()

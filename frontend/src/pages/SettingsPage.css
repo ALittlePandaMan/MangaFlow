@@ -37,6 +37,23 @@
 .settings-field { display: grid; grid-template-columns: 180px minmax(0,1fr); align-items: start; gap: 24px; min-width: 0; }
 .settings-field-label { padding-top: 10px; color: var(--color-secondary); font-size: var(--settings-font-body); line-height: 24px; }
 .settings-field-control { min-width: 0; }
+.settings-inline-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; min-width: 0; }
+.settings-inline-control { flex: 1 1 200px; min-width: 0; }
+.settings-code { margin: 0; padding: 14px; border: 1px solid var(--color-line); border-radius: var(--control-radius); background: var(--color-panel); color: var(--color-secondary); font-size: var(--settings-font-help); line-height: 1.7; white-space: pre-wrap; overflow-wrap: anywhere; }
+.settings-code:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 3px; }
+.settings-mcp-config { min-width: 0; overflow: hidden; border: 1px solid var(--color-line); border-radius: var(--control-radius); background: var(--color-surface); }
+.settings-mcp-config-toolbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px 16px; padding: 10px 12px; border-bottom: 1px solid var(--color-line-subtle); background: var(--color-panel); }
+.settings-mcp-tabs { display: inline-flex; align-items: center; gap: 2px; min-width: 0; padding: 3px; border: 1px solid var(--color-line-subtle); border-radius: 8px; background: var(--color-surface); }
+.settings-mcp-tabs > button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-width: 0; min-height: 34px; padding: 6px 10px; border: 0; border-radius: 5px; background: transparent; color: var(--color-muted); font-size: 14px; font-weight: 500; line-height: 1.4; white-space: nowrap; cursor: pointer; }
+.settings-mcp-tabs > button:hover { background: var(--color-hover); color: var(--color-ink); }
+.settings-mcp-tabs > button[aria-selected='true'] { background: var(--color-accent-soft); color: var(--color-accent-soft-ink); }
+.settings-mcp-tabs svg, .settings-mcp-config-actions svg { flex-shrink: 0; }
+.settings-mcp-config-actions { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+.settings-mcp-config-actions > :is(button,a) { min-height: 36px; padding-inline: 10px; border-radius: 7px; font-size: 13px; line-height: 1.4; }
+.settings-mcp-config .settings-code { padding: 18px 20px; border: 0; border-radius: 0; background: transparent; color: var(--color-muted); font-family: var(--font-mono); font-size: 13px; line-height: 1.7; }
+.settings-mcp-config .settings-code:focus-visible { outline-offset: -3px; }
+.settings-mcp-code-key { color: var(--color-ink); }
+.settings-mcp-code-string { color: var(--color-accent-soft-ink); }
 .settings-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); align-items: end; gap: 24px 16px; min-width: 0; }
 .settings-grid-three { grid-template-columns: repeat(auto-fit,minmax(min(100%,220px),1fr)); }
 .settings-grid > label, .settings-padding-grid > label, .settings-font-preview-input, .settings-prompt { display: flex; min-width: 0; flex-direction: column; gap: 8px; color: var(--color-secondary); font-size: var(--settings-font-body); line-height: 1.5; }
@@ -63,7 +80,7 @@
 .settings-notice { color: var(--color-accent-soft-ink); background: var(--color-accent-soft); }
 .settings-workspace :is(input:not([type='checkbox']):not([type='file']):not([type='color']), button[aria-haspopup='listbox'], textarea) { border-radius: var(--control-radius); padding-inline: var(--control-padding-x); font-size: var(--settings-font-body); background-color: var(--color-panel); }
 .settings-workspace :is(input:not([type='checkbox']):not([type='file']), button[aria-haspopup='listbox']) { min-height: var(--settings-control-height); height: var(--settings-control-height); }
-.settings-workspace :is(.settings-actions button, .settings-font-toolbar button, .settings-model-fetch > button, .settings-runtime-header button, .settings-install, .settings-error-state button, .recommendation-hardware > button, .recommendation-actions > button) { min-height: var(--settings-control-height); padding-inline: var(--control-padding-x); border-radius: var(--control-radius); font-size: var(--settings-font-body); line-height: 1.5; }
+.settings-workspace :is(.settings-actions button, .settings-inline-actions > button, .settings-inline-actions > a, .settings-font-toolbar button, .settings-model-fetch > button, .settings-runtime-header button, .settings-install, .settings-error-state button, .recommendation-hardware > button, .recommendation-actions > button) { min-height: var(--settings-control-height); padding-inline: var(--control-padding-x); border-radius: var(--control-radius); font-size: var(--settings-font-body); line-height: 1.5; }
 /* Full-height steppers share the same hit target on desktop and touch screens. */
 .settings-workspace .number-control { height: var(--settings-control-height); grid-template-columns: minmax(0,1fr) 88px; border: 0; border-radius: var(--control-radius); outline: 1px solid var(--color-line); outline-offset: -1px; background: var(--color-panel); }
 .settings-workspace .number-control:hover { outline-color: var(--color-line-strong); }
@@ -264,6 +281,13 @@
   .settings-field > .settings-placeholder-label { margin-top: 0; }
 }
 @container settings (width < 440px) {
+  .settings-mcp-config-toolbar { gap: 8px; padding: 8px; }
+  .settings-mcp-tabs { flex: 0 1 auto; max-width: 100%; }
+  .settings-mcp-tabs > button { flex-shrink: 0; }
+  .settings-mcp-config-actions { flex-shrink: 0; }
+  .settings-mcp-config-actions > :is(button,a) { width: 36px; padding-inline: 0; }
+  .settings-mcp-config-actions span { display: none; }
+  .settings-mcp-config .settings-code { padding: 14px; font-size: 12px; }
   .settings-grid, .settings-grid-three, .settings-padding-grid { grid-template-columns: minmax(0,1fr); gap: 16px; }
   .settings-model-fetch { grid-template-columns: minmax(0,1fr); }
 }

@@ -18,6 +18,7 @@ frontend/visual-tests
 **/.mypy_cache
 **/.coverage*
 frontend/node_modules
+**/node_modules
 frontend/dist
 frontend/*.tsbuildinfo
 build
@@ -28,3 +29,4 @@ models
 tmp
 *.log
 *.md
+!connectors/mangaflow-mcp/README.md

@@ -1,0 +1,29 @@
+{
+  "source": "balloon-grouping/handwritten-neighbors.png crop (48,24,109,154), CTD >= 0.5",
+  "records": [
+    {
+      "rotation": 0,
+      "shape": [
+        260,
+        220
+      ],
+      "packed": "eJztlz1Ow0AQRme1CCJhQUoXCPsIKelIxzU4QkoKCnMLjrOcJHuEdKGIYmLjct5EQmGVSPOKLfz87Yx2/SviOI7jOGWJ4xiS5tpxrDV1PQzNV6e55TBh36tu5OVbORj4fJlPBRXiVFDnoRLJugp9OqSh6HrDzQw5gJocWLJqjVjT4co8vmMqais88ZZQBaORs4KWpBa4Xn+3GmKhPyzXTI81xnYv0Ey3FcSeONZkjnEjZjVWsWJX71GFLnPM6KQsmVVldKk/0o7FwgfPWM9RPW+xWtzz3S1GtYqrSWLlXCa3htuxusmGM6ZcsbozYokVPHadUljb/UdaVtabyuBiPkzOnitWs8zu8+SN/AP3hjM+iKU7cR+leWVl/ZE4juM4jlOMH7W3K9M="
+    },
+    {
+      "rotation": -18,
+      "shape": [
+        260,
+        220
+      ],
+      "packed": "eJztlbFuwjAURW2MCENEGTu0aj4Btg4M+ZSMbHRFHeqpv1VL7Wcw5BMY2SDtnHOR3CZSxTtRlpzcPCt+tp0zDMMwboeZcK2INezOrD4Sqj1X273zONwLVytOqAIP0p8juvKBq7mGVUjsFn0Pl/x+cWUIbb9SE924LalZd9XgUndX/ars7omIASUrVW3OxXzElLvnYio259iviKy4kf2BUxtWhejWVW9H/hD4i9f+JsYCy88jKtUptXCCVV4sE70ex4xVb6jC1zMpf+SGfeU1MhFtolbAAPM9BImVmgLRerSxfVPpwYxHzUodV7lbBiu1QVXCCZ6Ea/M+OS6R1V1ix6eA3GkyF6poE8+nn3uMqIJokzXHPJ858pf8C6Z5MbWqmj+vZhiGYRiGYQzABSBgJtQ="
+    },
+    {
+      "rotation": 18,
+      "shape": [
+        260,
+        220
+      ],
+      "packed": "eJztl7ENwjAQRW2MAkUkKCkQZARKCgShYY6MwAAUHs0VFUN4hFSIggIWeB/JEhIR99qnyxnn3wHOGYZhGMabmpVP7LasJqJb9+E0g8ZHdssxu77lR05FP9FOsREus6rKujEhsut34hyibgDUid2TVejZHfiRYRbRNUtU6mV3rKo9u5ZzJ2bDtazGIsnHzE4tqLlwRaj9GtktRNmI3aZjp95py4pD4o6J3ZqVF1FWd/KFXTgERMqDKBNJ5kuuRPAu3M3nBp2aNpXyyK7wx0cuOoiKlhhud2alvvlUyIeAuEn1sRtWam9lVldWtRipE6sguv0MDatZQuVvXLbgdR1WXHbI3O3OZb/zF+HBahLZqZ2QWIm5KdxphmEYhmH8JS+YiiVJ"
+    }
+  ]
+}

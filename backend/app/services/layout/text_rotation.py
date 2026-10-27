@@ -19,7 +19,9 @@ def effective_text_rotation(region, *, perspective: bool | None = None) -> float
     provenance = (region.layout_data or {}).get(TEXT_ROTATION_KEY)
     if perspective and isinstance(provenance, dict):
         angle = provenance.get("angle")
-        if (provenance.get("source") == "detector" and provenance.get("role") == "free_text"
+        automatic = (provenance.get("source") == "detector" and provenance.get("role") == "free_text"
+                     or provenance.get("version") == 2 and provenance.get("source") in {"detector", "segmentation"})
+        if (automatic
                 and not isinstance(angle, bool) and isinstance(angle, (float, int))
                 and math.isfinite(angle) and abs(angle-region.rotation) <= .01):
             return 0.

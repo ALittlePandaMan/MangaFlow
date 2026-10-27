@@ -145,7 +145,8 @@ def snapshot_request(task_id: str):
                 scope = {request["region_id"]}
             explicit_force = bool(scope and request.get("force"))
             needs_ocr = any((not scope or row["id"] in scope) and not has_text(row["source_text"])
-                and (not row["locked"] or explicit_force) and (request.get("force") or not has_text(row["translated_text"]))
+                and (not row["locked"] or explicit_force) and (request.get("force")
+                    or row["id"] in request.get("options", {}).get("retranslate_region_ids", []) or not has_text(row["translated_text"]))
                 for row in source_state["regions"].values())
             for kind in requested_stages(request):
                 if kind == "mask" or (kind == "ocr" and request.get("start_stage")=="translation" and not needs_ocr):
@@ -328,6 +329,21 @@ class PageWorkflow:
         if not combined:
             result = self.initial
             for stage in self.stages:
+                if stage == "translation" and request.get("end_stage") == "translation" and self.policy.get("batch", {}).get("dependency_task_id"):
+                    with SessionLocal() as db:
+                        def wait_for_text():
+                            task = db.scalar(select(ProcessingTask).where(ProcessingTask.id == self.task_id).with_for_update())
+                            if task is None or task.execution_generation != self.lease.generation or task.status != "RUNNING":
+                                raise StaleExecution("Task changed while saving prepared OCR")
+                            if task.dependency_context is not None:
+                                return False
+                            task.status, task.current_stage, task.active_stages = "QUEUED", None, []
+                            task.waiting_reason = "previous_page_translation"
+                            task.message = "识别结果已保存，等待前页翻译（未占用处理名额）"
+                            return True
+                        waiting = task_write(db, self.task_id, wait_for_text)
+                    if waiting:
+                        return "QUEUED"
                 result = self.stage(stage, result)
             return self.publish(result)
         # Full-page requests share the same join as translation-to-rendering:

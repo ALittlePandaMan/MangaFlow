@@ -37,8 +37,10 @@ export function useEditorTasks(projectId: string, onRecoveredUpdate: TaskUpdateH
 
   useEffect(() => {
     let disposed = false
+    let initialRecovery = true
     const recover = async () => {
-      if (!disposed) activity.setRecovering(true)
+      if (!disposed && initialRecovery) activity.setRecovering(true)
+      initialRecovery = false
       try {
         // Recover the whole live list, not just the five visible rows. Requests
         // and the shared status monitor remain bounded for very large books.
@@ -65,7 +67,7 @@ export function useEditorTasks(projectId: string, onRecoveredUpdate: TaskUpdateH
             if (tasks.length<RECOVERY_PAGE_SIZE || tasks.some(task => !isActiveTask(task))) break
           }
           const active=[...discovered.values()].filter(task => !owned.has(task.id))
-          if (!active.length) {activity.setRecovering(false); return}
+          if (!active.length) {activity.setRecovering(false); timer = window.setTimeout(() => void recover(), 2000); return}
           const ids = active.map(task => task.id)
           ids.forEach(id => owned.add(id))
           let result

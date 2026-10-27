@@ -16,6 +16,20 @@ def available_font() -> Path:
     return resolver.paths[0]
 
 
+def test_narrow_horizontal_auto_fit_keeps_ordinary_english_words_intact() -> None:
+    font = available_font()
+    engine = MangaLayoutEngine(FontResolver([font.parent]), min_font_size=10)
+    options = dict(orientation="horizontal", font_family=font.stem, preferred_size=28,
+                   line_spacing=1.1, character_spacing=0, alignment="center", custom_font_path=str(font))
+    fitted = engine.layout("However... What is it?", [0, 0, 80, 190], **options)
+    assert not fitted.overflow
+    for word in ("However", "What", "is", "it"):
+        assert any(word in line for line in fitted.lines)
+    assert not any(line and line[0] in '.,!?;' for line in fitted.lines)
+    manual = engine.layout("However... What is it?", [0, 0, 80, 190], auto_fit=False, **options)
+    assert manual.font_size == 28
+
+
 def test_horizontal_font_fit_and_overflow() -> None:
     font = available_font()
     engine = MangaLayoutEngine(FontResolver([font.parent]), min_font_size=10)
@@ -110,6 +124,42 @@ def test_vertical_layout_uses_upright_presentation_forms_for_punctuation() -> No
 
     assert [glyph.text for glyph in layout.placements] == ["︖", "︕", "︖", "︕", "︑", "︒"]
     assert all(glyph.rotate == 0 for glyph in layout.placements)
+
+
+def test_vertical_layout_stacks_mixed_latin_and_digits_upright(monkeypatch) -> None:
+    font = available_font()
+    engine = MangaLayoutEngine(FontResolver([font.parent]))
+    monkeypatch.setattr(engine, "_ink_bounds", lambda _path, _size, char: (0, -18, 18 if char in "甲乙" else 8, 0))
+    layout = engine.layout(
+        "甲play12乙", [0, 0, 100, 78], orientation="vertical", font_family=font.stem,
+        preferred_size=20, line_spacing=1.15, character_spacing=0, alignment="center",
+        custom_font_path=str(font), auto_fit=False,
+    )
+    assert layout.lines == ["甲pla", "y12乙"]
+    assert all(glyph.rotate == 0 for glyph in layout.placements)
+    centers = [glyph.x + (glyph.ink_box[2] - glyph.ink_box[0]) / 2 for glyph in layout.placements]
+    assert len(set(centers[:4])) == len(set(centers[4:])) == 1
+    assert centers[0] > centers[4]
+    assert [glyph.y for glyph in layout.placements] == [0, 20, 40, 60, 0, 20, 40, 60]
+    assert not layout.overflow
+
+
+def test_vertical_latin_fit_uses_upright_ink_dimensions(monkeypatch) -> None:
+    font = available_font()
+    engine = MangaLayoutEngine(FontResolver([font.parent]))
+    monkeypatch.setattr(engine, "_ink_bounds", lambda *_args: (0, -18, 8, 0))
+    layout = engine.layout(
+        "I", [0, 0, 10, 20], orientation="vertical", font_family=font.stem,
+        preferred_size=20, line_spacing=1.15, character_spacing=0, alignment="center",
+        custom_font_path=str(font), auto_fit=False,
+    )
+    assert (layout.width, layout.height) == (8, 18)
+    assert not layout.overflow
+
+
+@pytest.mark.parametrize("character", list("AaZz019!?-"))
+def test_vertical_rotation_preserves_only_existing_punctuation_rules(character) -> None:
+    assert MangaLayoutEngine._rotate_in_vertical(character) == (character == "-")
 
 
 def test_font_resolver_discovers_font_collections(tmp_path: Path) -> None:
@@ -383,6 +433,7 @@ def test_text_layer_and_export_use_identical_pixels(tmp_path):
     region = simple_render_region()
     region.orientation="vertical"
     region.translated_text="ABC!?"
-    PillowRenderer().render(bg,[region],out,layer)
+    result = PillowRenderer().render(bg,[region],out,layer)
+    assert all(glyph["rotate"] == 0 for glyph in result["layouts"][region.id]["placements"])
     preview = Image.alpha_composite(Image.open(bg).convert("RGBA"), Image.open(layer)).convert("RGB")
     assert np.array_equal(np.asarray(preview),np.asarray(Image.open(out)))

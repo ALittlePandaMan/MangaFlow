@@ -26,5 +26,6 @@ describe('group editing geometry',() => {
     expect(draft.translated_polygon).not.toBe(draft.polygon)
     expect(draft.translated_polygon[0]).not.toBe(draft.polygon[0])
     expect(draft.orientation).toBe('vertical')
+    expect(draft.auto_orientation).toBe(true)
   })
 })

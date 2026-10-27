@@ -14,3 +14,7 @@ cryptography>=43,<47
 fonttools>=4.54,<5
 PyYAML>=6.0,<7
 psutil>=6,<8
+pypdfium2>=5.0,<6
+rarfile>=4.2,<5
+regex>=2024.11
+mcp>=1.30,<2

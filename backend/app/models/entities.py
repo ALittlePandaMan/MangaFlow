@@ -160,6 +160,20 @@ class ProcessingBatch(TimestampMixin, Base):
     contexts: Mapped[dict[str, Any]] = mapped_column(JSON)
 
 
+class FileJob(TimestampMixin, Base):
+    __tablename__ = "file_jobs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid4_str)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    kind: Mapped[str] = mapped_column(String(24))
+    status: Mapped[str] = mapped_column(String(24), default="QUEUED", index=True)
+    progress: Mapped[float] = mapped_column(Float, default=0)
+    filename: Mapped[str] = mapped_column(Text, default="")
+    message: Mapped[str] = mapped_column(Text, default="")
+    snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    result: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+
+
 class ProcessingTask(TimestampMixin, Base):
     __tablename__ = "processing_tasks"
 

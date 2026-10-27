@@ -4,6 +4,7 @@ export const MAX_VISIBLE_TASKS = 5
 export const COMPLETION_NOTICE_MS = 15_000
 export const isActiveTask = (task: ProcessingTask) => ['QUEUED', 'RUNNING', 'CANCELLING'].includes(task.status)
 export const isTerminalTask = (task: ProcessingTask) => ['COMPLETED', 'FAILED', 'CANCELLED'].includes(task.status)
+export const isMcpTask = (task: ProcessingTask) => (task.payload.options as Record<string,unknown> | undefined)?.submitted_via === 'mcp'
 export const taskProgress = (task: ProcessingTask) => task.status === 'COMPLETED' ? 1
   : Math.max(0, Math.min(1, Number.isFinite(task.progress) ? task.progress : 0))
 const priority = (task: ProcessingTask) => ({RUNNING:0, CANCELLING:0, QUEUED:1, PAUSED:2} as Record<string, number>)[task.status] ?? 3
@@ -40,7 +41,7 @@ export class TaskActivity {
   private dismissed = false
   private snapshot: ActivitySnapshot = {operationId:0, tasks:[], active:0, total:0,
     recovering:false, completion:null, connectionIssue:false}
-  constructor(private projectId: string) {}
+  constructor(private projectId: string, private allProjects = false) {}
 
   subscribe = (listener: () => void) => {this.listeners.add(listener); return () => {this.listeners.delete(listener)}}
   getSnapshot = () => this.snapshot
@@ -67,7 +68,7 @@ export class TaskActivity {
     if (tasks.length && !accepted.length) return
     this.operation++
     this.dismissed = false
-    this.currentIds = new Set(accepted.map(task => task.id))
+    this.currentIds = new Set(accepted.filter(task => !isMcpTask(task)).map(task => task.id))
     for (const task of accepted) {
       this.knownIds.add(task.id)
       if (this.isFresh(task)) this.tasks.set(task.id, task)
@@ -76,6 +77,7 @@ export class TaskActivity {
   }
   record = (task: ProcessingTask) => {
     if (!this.belongs(task)) return
+    if (isMcpTask(task)) {this.update([task]);return}
     if (!this.knownIds.has(task.id)) {
       if (!this.currentIds.size || ![...this.currentIds].some(id => {
         const current = this.tasks.get(id)
@@ -92,7 +94,7 @@ export class TaskActivity {
 
   update = (updates: ProcessingTask[]) => {
     const fresh = updates.filter(task => this.belongs(task) && this.isFresh(task))
-    const live = fresh.filter(task => !isTerminalTask(task))
+    const live = fresh.filter(task => !isTerminalTask(task) && !isMcpTask(task))
     const hasCurrentWork = [...this.currentIds].some(id => {
       const task = this.tasks.get(id)
       return task && !isTerminalTask(task)
@@ -110,7 +112,7 @@ export class TaskActivity {
       if (!this.knownIds.has(task.id) && isTerminalTask(task)) continue
       const previous = this.tasks.get(task.id)
       if (previous && JSON.stringify(previous) === JSON.stringify(task)) continue
-      if (!this.knownIds.has(task.id)) this.currentIds.add(task.id)
+      if (!this.knownIds.has(task.id) && !isMcpTask(task)) this.currentIds.add(task.id)
       this.knownIds.add(task.id)
       this.tasks.set(task.id, task)
       changed = true
@@ -124,7 +126,7 @@ export class TaskActivity {
     this.publish()
   }
 
-  private belongs = (task: ProcessingTask) => !task.project_id || task.project_id === this.projectId
+  private belongs = (task: ProcessingTask) => this.allProjects || !task.project_id || task.project_id === this.projectId
   private isFresh = (task: ProcessingTask) => {
     const previous = this.tasks.get(task.id)
     if (!previous) {
@@ -142,7 +144,7 @@ export class TaskActivity {
       this.tasks.delete(id)
     }
     const all = [...this.tasks.values()]
-    const current = all.filter(task => this.currentIds.has(task.id))
+    const current = all.filter(task => this.currentIds.has(task.id) && !isMcpTask(task))
     const pending = current.filter(task => !isTerminalTask(task))
     const completed = current.filter(task => task.status === 'COMPLETED').length
     const failed = current.filter(task => task.status === 'FAILED')

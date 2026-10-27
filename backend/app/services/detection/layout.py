@@ -27,7 +27,7 @@ TEXT_BOX_PADDING = 3.0  # Original-image pixels on each edge, not display/zoom p
 MAX_TEXT_BOX_PADDING = 50.0
 LAYOUT_DEFAULTS = {"text_threshold": .25, "bubble_threshold": .5, "panel_threshold": .5,
                    "containment_threshold": .9, "text_box_padding": TEXT_BOX_PADDING}
-LAYOUT_VERSION = 18
+LAYOUT_VERSION = 19
 NATIVE_TEXT_POLICY = {"enabled": True, "filter_sfx": True, "min_sfx_confidence": .2}
 PADDING_SIDES = ("top", "bottom", "left", "right")
 
@@ -157,6 +157,12 @@ def text_geometry(item: LayoutPrediction, width: int, height: int, *, padding: f
     Bounded samples prevent dense lettering from monopolizing the request CPU.
     Direction is independent of the text-block aspect ratio except on ties.
     """
+    window, _ = _typography_window(item, width, height)
+    vertical, angle = measure_text_mask(window, item.bbox[3] > item.bbox[2])
+    return _text_polygon(item.bbox, width, height, padding, angle), "vertical" if vertical else "horizontal", angle
+
+
+def _typography_window(item, width, height):
     # RF-DETR masks may contain disconnected foreground outside the detected
     # text. Match Koharu's typography window instead of letting another word
     # elsewhere on the page determine this region's writing direction.
@@ -169,8 +175,7 @@ def text_geometry(item: LayoutPrediction, width: int, height: int, *, padding: f
     right = min(mx+mask_width, width, math.ceil(bx+bw+margin))
     bottom = min(my+mask_height, height, math.ceil(by+bh+margin))
     window = item.mask[top-my:bottom-my, left-mx:right-mx] if right > left and bottom > top else np.empty((0, 0))
-    vertical, angle = measure_text_mask(window, item.bbox[3] > item.bbox[2])
-    return _text_polygon(item.bbox, width, height, padding, angle), "vertical" if vertical else "horizontal", angle
+    return window, (left, top)
 
 
 def _text_polygon(box: list[float], width: int, height: int, padding: float | dict[str, float], angle: float) -> list[list[float]]:
@@ -334,6 +339,11 @@ def build_layout_regions(predictions: list[LayoutPrediction], width: int, height
                     "text_angle": angle, "independent_text_instance": True,
                     "text_role": {"version": 1, "label": role, "method": "rfdetr_balloon_relation"},
                     "raw_bbox": list(text.bbox), "text_box_padding": dict(padding) if not excluded else dict.fromkeys(PADDING_SIDES, 0.)}
+        if not excluded:
+            from app.services.layout.typography import text_evidence
+            window, origin = _typography_window(text, width, height)
+            metadata["typography_analysis"] = text_evidence(window, origin, width, height,
+                vertical=text.bbox[3] > text.bbox[2], source="detector", padding=padding)
         panel_index = text_panels.get(index)
         if panel_index is not None:
             panel = predictions[panel_index]

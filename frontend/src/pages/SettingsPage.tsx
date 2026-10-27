@@ -17,6 +17,7 @@ import {TypographySettings} from '../components/TypographySettings'
 import {useContentReveal} from '../hooks/useContentReveal'
 import {LanguageSwitcher} from '../components/LanguageSwitcher'
 import {FontManager} from '../components/FontManager'
+import {MCPSettings} from '../components/MCPSettings'
 import { DEFAULT_FONT_FAMILIES } from '../constants/fonts'
 import { DEFAULT_OCR_PROMPT } from '../constants/ocr'
 import { api } from '../services/api'
@@ -108,7 +109,7 @@ export function SettingsPage() {
   return <SettingsLayout active={active} onNavigate={navigate} onInstall={() => {void showRecommendedDialog()}} installing={installing}>
         {visited.map(id => {const page = SETTINGS_PAGES.find(item => item.id === id)!;return <div key={id} hidden={active !== id}>
           <SettingsHeading id={id}/>
-          {SETTINGS_PAGES.slice(0,5).some(item => item.id === id) ? <ModelForm active={active === id} available={available} configured={configured} fixedKind={id} initial={configurationForStage(configured,id)} translation={configurationForStage(configured,'translation')} onSave={async payload => {
+          {id === 'mcp' ? <MCPSettings/> : SETTINGS_PAGES.slice(0,5).some(item => item.id === id) ? <ModelForm active={active === id} available={available} configured={configured} fixedKind={id} initial={configurationForStage(configured,id)} translation={configurationForStage(configured,'translation')} onSave={async payload => {
             const target = configured.find(item => item.kind === id && item.provider === payload.provider)
             if (target) await api.models.update(target.id,payload)
             else await api.models.create(payload)

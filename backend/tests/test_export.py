@@ -497,6 +497,8 @@ def test_source_project_archive_can_be_imported_for_further_editing(client) -> N
         "locked", "visible",
     ):
         assert restored[field] == created_region[field]
+    assert restored["layout_data"]["typography_state"] == created_region["layout_data"]["typography_state"]
+    assert restored["layout_data"]["text_rotation"] == created_region["layout_data"]["text_rotation"]
 
 
 def test_project_archive_round_trips_exact_balloon_constraint_assets(client) -> None:

@@ -80,9 +80,13 @@ async def lifespan(_: FastAPI):
     from app.services.execution import configure_native_threads
     configure_native_threads()
     initialize_database()
+    from app.services.mcp_server import recover_operations
+    recover_operations()
     provision_models_from_manifest()
     task_manager.start()
     task_manager.recover_interrupted()
+    from app.services.file_jobs import file_worker
+    file_worker.start()
     stop_maintenance = asyncio.Event()
     async def maintain_history():
         from app.services.history_assets import collect_idle_history_assets
@@ -93,13 +97,23 @@ async def lifespan(_: FastAPI):
             except TimeoutError:
                 await asyncio.to_thread(collect_idle_history_assets)
                 await asyncio.to_thread(collect_idle_workflow_assets)
+                from app.services.mcp_files import collect_assets
+                await asyncio.to_thread(collect_assets)
     maintenance = asyncio.create_task(maintain_history())
     try:
-        yield
+        from app.services.mcp_server import manager
+        app.state.mcp_manager = manager(app)
+        async with app.state.mcp_manager.run():
+            yield
     finally:
+        if getattr(app.state, "mcp_pending_writes", None):
+            _, unfinished = await asyncio.wait(app.state.mcp_pending_writes, timeout=25)
+            for future in unfinished:
+                future.cancel()
         stop_maintenance.set()
         await maintenance
         await task_manager.shutdown()
+        await asyncio.to_thread(file_worker.shutdown)
 
 
 app = FastAPI(
@@ -118,6 +132,9 @@ app.add_middleware(
 app.mount("/media", VersionedMediaFiles(directory=get_storage().root), name="media")
 
 app.include_router(api_router, prefix=settings.api_prefix)
+from app.services.mcp_server import install as install_mcp  # noqa: E402
+
+install_mcp(app)
 
 
 @app.middleware("http")

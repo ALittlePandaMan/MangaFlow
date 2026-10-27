@@ -524,6 +524,7 @@ def restore_project_state(db: Session, project_id: str, state: dict, prepared: d
 
 
 def _prepare_history_restore(db,project_id,direction,expected_entry_id,operation_id):
+    from app.services.mcp_context import check_page_version
     from app.services.workflow_state import current_page_version, fingerprint, record
 
     if has_pending_writes(db):
@@ -543,7 +544,11 @@ def _prepare_history_restore(db,project_id,direction,expected_entry_id,operation
     snapshot = deepcopy(entry.before if direction=="undo" else entry.after)
     pages = snapshot["pages"] if entry.scope=="project" else [snapshot]
     order = list(db.execute(select(ImagePage.id,ImagePage.order_index).where(ImagePage.project_id==project_id)))
-    versions,current = {},{}
+    affected = snapshot["tracked_page_ids"] if entry.scope == "project" else [entry.image_id]
+    versions, current = {}, {}
+    for identifier in sorted(set(affected)):
+        check_page_version(db, identifier)
+        versions[identifier] = current_page_version(db, identifier) if db.get(ImagePage, identifier) else None
     for value in pages:
         identifier = value["page"]["id"]
         page = db.get(ImagePage,identifier)
@@ -567,6 +572,7 @@ def apply_project_history(
 
 
 def _apply_project_history(db,project_id,direction,expected_entry_id,operation_id,prepared):
+    from app.services.mcp_context import check_page_version
     from app.services.workflow_state import current_page_version, fingerprint, record
 
     db.execute(update(Project).where(Project.id == project_id).values(updated_at=Project.updated_at))
@@ -600,6 +606,7 @@ def _apply_project_history(db,project_id,direction,expected_entry_id,operation_i
     # Lock targeted pages in stable order, after taking the project lock.
     for identifier,version in sorted(prepared["versions"].items()):
         page = db.scalar(select(ImagePage).where(ImagePage.id==identifier).with_for_update())
+        check_page_version(db, identifier)
         if (current_page_version(db,identifier) if page else None)!=version:
             raise HTTPException(409,"页面在文件预检期间发生变化，请重试撤销或重做")
     snapshot = entry.before if direction == "undo" else entry.after

@@ -131,6 +131,7 @@ class RegionBase(BaseModel):
 class RegionCreate(RegionBase):
     id: UUID | None = None
     region_key: str | None = None
+    auto_orientation: bool | None = None
 
 
 class RegionUpdate(BaseModel):
@@ -211,6 +212,15 @@ class ProcessRequest(BaseModel):
     provider: str | None = None
     force: bool = False
     options: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("options")
+    @classmethod
+    def validate_retranslate_regions(cls, value):
+        ids = value.get("retranslate_region_ids", [])
+        if (not isinstance(ids, list) or len(ids) > 2000
+                or any(not isinstance(item, str) or not item for item in ids) or len(set(ids)) != len(ids)):
+            raise ValueError("retranslate_region_ids must be a list of unique region IDs")
+        return value
 
 
 class MaskOperation(BaseModel):

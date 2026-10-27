@@ -7,8 +7,9 @@ from uuid import uuid4
 from app.models import ImagePage, RegionRevision, TextRegion
 from app.schemas.domain import RegionCreate, RegionUpdate
 from app.services.layout.text_rotation import record_user_rotation
+from app.services.layout.typography import STATE_KEY, automatic_target_is_current
 from app.services.ocr.crops import OCR_FRAME_KEY, carry_source_frame
-from app.utils.geometry import bbox_to_polygon, polygon_to_bbox
+from app.utils.geometry import bbox_to_polygon, normalize_region_frames, polygon_to_bbox, validate_region_frame
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -93,7 +94,12 @@ def synchronize_translation_geometry_after_repair(db: Session, region: TextRegio
     pending = state.get("pending") is True if state else _legacy_geometry_sync_pending(db, region)
     revision = state.get("revision", 0)
     revision = revision if isinstance(revision, int) and revision >= 0 else 0
-    if pending:
+    preserve_automatic = automatic_target_is_current(region)
+    preserve_manual = (layout.get(STATE_KEY, {}).get("target") == "manual"
+        or layout.get("text_rotation", {}).get("source") == "user"
+        or region.perspective_warp or region.locked)
+    synchronize = pending and not (preserve_automatic or preserve_manual)
+    if synchronize:
         save_revision(db, region, "translation_geometry_synced")
         region.translated_bbox = deepcopy(region.bbox)
         region.translated_polygon = deepcopy(region.polygon)
@@ -105,7 +111,8 @@ def synchronize_translation_geometry_after_repair(db: Session, region: TextRegio
     layout[TRANSLATION_GEOMETRY_SYNC_KEY] = {
         **state,
         "version": 1, "pending": False, "revision": revision,
-        "direction": "source_to_translated" if pending else state.get("direction", "source_to_translated"),
+        "direction": ("source_to_translated" if synchronize else "manual_translation" if pending and preserve_manual
+                      else state.get("direction", "source_to_translated")),
         "source_bbox": deepcopy(region.bbox), "source_polygon": deepcopy(region.polygon),
     }
     region.layout_data = layout
@@ -166,20 +173,11 @@ def renumber_region_keys(db: Session, regions: list[TextRegion]) -> dict[str, st
 def create_region(db: Session, page: ImagePage, data: RegionCreate) -> TextRegion:
     from app.services.layout.text_paint import PAINT_FIELDS
 
-    values = data.model_dump(exclude={"region_key", "id", "auto_font_size"}, mode="json")
+    values = data.model_dump(exclude={"region_key", "id", "auto_font_size", "auto_orientation"}, mode="json")
     auto_size = data.auto_font_size if "auto_font_size" in data.model_fields_set else "font_size" not in data.model_fields_set
     if data.id is not None:
         values["id"] = str(data.id)
-    if not values["bbox"] and values["polygon"]:
-        values["bbox"] = polygon_to_bbox(values["polygon"])
-    if not values["polygon"] and values["bbox"]:
-        values["polygon"] = bbox_to_polygon(values["bbox"])
-    if not values["bbox"]:
-        raise ValueError("A region needs a bbox or polygon")
-    if not values["translated_bbox"]:
-        values["translated_bbox"] = deepcopy(values["bbox"])
-    if not values["translated_polygon"]:
-        values["translated_polygon"] = deepcopy(values["polygon"])
+    values.update(normalize_region_frames(values))
     region = TextRegion(
         image_id=page.id,
         region_key=data.region_key or next_region_key(db, page.id),
@@ -187,6 +185,13 @@ def create_region(db: Session, page: ImagePage, data: RegionCreate) -> TextRegio
                      "text_paint": {"version": 1, "mode": "manual" if PAINT_FIELDS & data.model_fields_set else "auto"}},
         **values,
     )
+    auto_orientation = data.auto_orientation if data.auto_orientation is not None else "orientation" not in data.model_fields_set
+    target_manual = bool({"translated_polygon", "translated_bbox", "rotation", "perspective_warp"} & data.model_fields_set)
+    region.layout_data = {**region.layout_data, STATE_KEY: {
+        "version": 2, "orientation": "auto" if auto_orientation else "manual", "target": "manual" if target_manual else "auto",
+        "target_polygon": deepcopy(region.translated_polygon), "target_bbox": deepcopy(region.translated_bbox), "angle": region.rotation,
+        "target_orientation": region.orientation,
+    }}
     if "rotation" in data.model_fields_set:
         record_user_rotation(region)
     db.add(region)
@@ -208,6 +213,8 @@ def update_region(db: Session, region: TextRegion, data: RegionUpdate, action: s
     }
     source_text_before = region.source_text
     changes = data.model_dump(exclude_unset=True, mode="json")
+    if "perspective_warp" in changes and changes["perspective_warp"] is None:
+        raise ValueError("perspective_warp must be true or false")
     source_frame = None
     if "polygon" in changes and changes["polygon"] != region.polygon:
         source_frame = carry_source_frame(region, changes["polygon"])
@@ -224,6 +231,9 @@ def update_region(db: Session, region: TextRegion, data: RegionUpdate, action: s
         setattr(region, field, value)
     if "rotation" in changes:
         record_user_rotation(region)
+    if "orientation" in changes:
+        state = (region.layout_data or {}).get(STATE_KEY, {})
+        region.layout_data = {**(region.layout_data or {}), STATE_KEY: {**state, "orientation": "manual"}}
     if "region_type" in changes:
         # Mask analysis may suggest a repair strategy, but an explicit choice
         # made in the editor must remain authoritative on later reruns.
@@ -254,14 +264,41 @@ def update_region(db: Session, region: TextRegion, data: RegionUpdate, action: s
                 **(sync if isinstance(sync, dict) else {}),
                 "version": 1, "pending": True, "direction": "source_to_translated",
             },
-            "ocr_geometry_stale": bool(region.source_text.strip()),
+            "ocr_geometry_stale": True,
         }
-    if "source_text" in changes and changes["source_text"] != source_text_before:
-        region.layout_data = {**(region.layout_data or {}), "ocr_geometry_stale": False}
+    if "source_text" in changes:
+        # Explicit text confirms the current source frame, including unchanged
+        # manual text. Clearing it requests one new OCR attempt on that frame.
+        region.layout_data = {**(region.layout_data or {}), "ocr_geometry_stale": not bool(region.source_text.strip())}
+        if changes["source_text"] != source_text_before:
+            region.layout_data = {**region.layout_data, "translation_source_stale": bool(region.translated_text.strip())}
+    if "translated_text" in changes:
+        # An explicit replacement (including confirmation of the same text)
+        # acknowledges the current OCR. Preserve it on subsequent processing.
+        region.layout_data = {**(region.layout_data or {}), "translation_source_stale": False}
     if "translated_polygon" in changes and "translated_bbox" not in changes and region.translated_polygon:
         region.translated_bbox = polygon_to_bbox(region.translated_polygon)
     elif "translated_bbox" in changes and "translated_polygon" not in changes and region.translated_bbox:
         region.translated_polygon = bbox_to_polygon(region.translated_bbox)
+    if {"bbox", "polygon"} & changes.keys():
+        validate_region_frame(region.bbox, region.polygon)
+    if {"translated_bbox", "translated_polygon", "perspective_warp"} & changes.keys():
+        validate_region_frame(region.translated_bbox or region.bbox,
+            region.translated_polygon or bbox_to_polygon(region.translated_bbox or region.bbox),
+            perspective=region.perspective_warp)
+        if any(key in changes and not changes[key] for key in ("translated_bbox", "translated_polygon")):
+            raise ValueError("Translation geometry must not be empty")
+    if {"translated_bbox", "translated_polygon", "rotation", "perspective_warp"} & changes.keys():
+        state = (region.layout_data or {}).get(STATE_KEY, {})
+        region.layout_data = {**(region.layout_data or {}), STATE_KEY: {**state, "target": "manual"}}
+        # An explicit target edit (even confirmation of the same values) wins
+        # over a pending source-to-target sync, including in the same patch.
+        sync = (region.layout_data or {}).get(TRANSLATION_GEOMETRY_SYNC_KEY, {})
+        region.layout_data = {**(region.layout_data or {}), TRANSLATION_GEOMETRY_SYNC_KEY: {
+            **(sync if isinstance(sync, dict) else {}), "version": 1, "pending": False,
+            "direction": "manual_translation", "source_bbox": deepcopy(region.bbox),
+            "source_polygon": deepcopy(region.polygon),
+        }}
     db.flush()
     return region
 

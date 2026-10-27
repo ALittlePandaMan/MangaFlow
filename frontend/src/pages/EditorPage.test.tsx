@@ -10,6 +10,9 @@ import type {EditorHistoryResult, EditorHistoryState, ImagePage, ProcessingTask,
 import {EditorPage} from './EditorPage'
 import {prepareMaskScene} from '../features/editor/lib/prepareMaskScene'
 import {GlobalAlertProvider} from '../components/GlobalAlert'
+import {GlobalActivityPanel} from '../components/GlobalActivityPanel'
+import {useFileJobs} from '../services/fileJobs'
+import {useActivityPanelSource} from '../features/editor/lib/activityPanelStore'
 
 const {confirmDialogMock, openDialogMock, preloadImageMock, requestMaskLeaveMock, flushMaskMock, canvasPropsMock, propertiesPropsMock} = vi.hoisted(() => ({
   confirmDialogMock: vi.fn(),
@@ -144,6 +147,7 @@ function renderEditor(route = '/projects/project-1/editor/page-a', withHeader = 
       <Route path="/projects/:projectId/editor/:imageId?" element={<EditorPage/>}/>
       {withHeader && <Route path="/projects" element={<output>Project index</output>}/>}
     </Routes>
+    <GlobalActivityPanel/>
   </MemoryRouter></GlobalAlertProvider>)
 }
 
@@ -185,6 +189,8 @@ function mockDocumentHistory(snapshot: ImagePage, initial: TextRegion[], empty =
 describe('EditorPage page snapshot revalidation', () => {
   afterEach(() => {headerSlots.editorTarget?.remove(); headerSlots.editorTarget = null})
   beforeEach(() => {
+    useFileJobs.setState({jobs:[], visibleJobIds:[], uploads:{}, errors:[]})
+    useActivityPanelSource.setState({source:null})
     useEditorStore.setState({
       view: 'translated',
       tool: 'select',
@@ -217,6 +223,46 @@ describe('EditorPage page snapshot revalidation', () => {
     headerSlots.editorTarget = document.createElement('div')
     document.body.append(headerSlots.editorTarget)
   }
+
+  it('keeps an externally refreshed clean background when the next manual edit is saved', async () => {
+    const initial=page('page-a',{clean_url:'/old-clean.png'}), item=region({})
+    let current=initial, revision='0'
+    vi.stubGlobal('fetch',vi.fn(async()=>new Response(JSON.stringify({revision}))))
+    vi.spyOn(api.projects,'images').mockImplementation(async()=>[current])
+    vi.spyOn(api.images,'get').mockImplementation(async()=>current)
+    vi.mocked(api.images.regions).mockResolvedValue([item])
+    const update=vi.spyOn(api.regions,'update').mockImplementation(async(_id,patch)=>({...item,...patch,confidence:.77}))
+    const view=renderEditor()
+    try {
+      await screen.findByTestId('current-page')
+      current={...initial,clean_url:'/agent-clean.png'};revision='1'
+      await waitFor(()=>expect(screen.getByTestId('current-page')).toHaveAttribute('data-clean-url','/agent-clean.png'),{timeout:5000})
+      act(()=>{void canvasPropsMock.mock.lastCall![0].onUpdate(item.id,{alignment:'left'})})
+      await waitFor(()=>expect(update).toHaveBeenCalledOnce())
+      await waitFor(()=>expect(canvasPropsMock.mock.lastCall![0].regions[0]).toMatchObject({alignment:'left',confidence:.77}))
+      expect(screen.getByTestId('current-page')).toHaveAttribute('data-clean-url','/agent-clean.png')
+    } finally {view.unmount();vi.unstubAllGlobals()}
+  })
+
+  it('does not replace a pending manual edit with an external polling response', async () => {
+    const initial=page('page-a',{clean_url:'/old-clean.png'}), item=region({}), save=deferred<TextRegion>()
+    let revision='0'
+    vi.stubGlobal('fetch',vi.fn(async()=>new Response(JSON.stringify({revision}))))
+    vi.spyOn(api.projects,'images').mockResolvedValue([initial])
+    vi.spyOn(api.images,'get').mockResolvedValue(initial)
+    vi.mocked(api.images.regions).mockResolvedValue([item])
+    vi.spyOn(api.regions,'update').mockReturnValue(save.promise)
+    const view=renderEditor()
+    try {
+      await screen.findByTestId('current-page')
+      act(()=>{void canvasPropsMock.mock.lastCall![0].onUpdate(item.id,{translated_text:'Local pending text'})})
+      await waitFor(()=>expect(api.regions.update).toHaveBeenCalledOnce())
+      revision='1'
+      await act(async()=>{await new Promise(resolve=>setTimeout(resolve,2200))})
+      expect(canvasPropsMock.mock.lastCall![0].regions[0].translated_text).toBe('Local pending text')
+      await act(async()=>save.resolve({...item,translated_text:'Local pending text'}))
+    } finally {view.unmount();vi.unstubAllGlobals()}
+  })
 
   it('does not show floating zoom controls while loading or viewing the original canvas',async()=>{
     const current=page('page-a')
@@ -288,8 +334,9 @@ describe('EditorPage page snapshot revalidation', () => {
     const file = new File(['image'], 'new.png', {type: 'image/png'})
     fireEvent.change(view.container.querySelector('input[type="file"]')!, {target: {files: [file]}})
     await waitFor(() => expect(upload).toHaveBeenCalledWith(project.id, [file], expect.any(Function), expect.any(AbortSignal)))
-    expect(screen.getByRole('status', {name: '正在导入图片 · 32/320 张'})).toHaveTextContent('当前批次 32 张，16.0 MiB')
-    expect(screen.getByRole('progressbar', {name: '整体进度'})).toHaveAttribute('aria-valuenow', '10')
+    expect(screen.getByRole('complementary', {name:'任务进度'})).toHaveTextContent('正在导入图片 · 32/320 张')
+    expect(screen.getByRole('progressbar', {name: '正在导入图片 · 32/320 张任务进度'})).toHaveAttribute('aria-valuenow', '10')
+    expect(screen.queryByRole('status', {name:'正在导入图片 · 32/320 张'})).not.toBeInTheDocument()
     const closing = new Event('beforeunload', {cancelable: true})
     window.dispatchEvent(closing)
     expect(closing.defaultPrevented).toBe(true)

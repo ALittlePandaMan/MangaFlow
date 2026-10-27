@@ -1,6 +1,6 @@
 type PerspectivePoint = [number, number]
 // Keep in sync with backend fitting, paint and perspective render changes.
-export const PERSPECTIVE_RENDER_OUTPUT_VERSION = 11
+export const PERSPECTIVE_RENDER_OUTPUT_VERSION = 16
 
 /** Bound both the source tile and the warped output, including manual overflow. */
 export function perspectiveRasterRatio(width: number, height: number, requested: number, pixelBudget = 8_000_000): number {

@@ -8,6 +8,7 @@ from contextlib import closing
 from copy import deepcopy
 from functools import partial
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from uuid import uuid4
 
@@ -50,6 +51,7 @@ from app.services.inpainting.repair import repair_masks
 from app.services.inpainting.text_segmentation import text_probability
 from app.services.inpainting.verification import verify_and_retry
 from app.services.layout.text_rotation import can_initialize_rotation, free_text_angle, initialize_free_text_rotation
+from app.services.layout.typography import ANALYSIS_KEY, STATE_KEY, analyze_manual_regions, typography_patch
 from app.services.ocr.checkpoint import recognize_local
 from app.services.ocr.cloud import CloudMultimodalOCRProvider
 from app.services.ocr.concurrency import OCRJob, recognize_regions
@@ -59,6 +61,7 @@ from app.services.ocr.providers import MangaOCRProvider
 from app.services.quality import evaluate_page
 from app.services.regions import (
     STALE_CLEAN_PATH_KEY,
+    region_snapshot,
     save_revision,
     synchronize_source_geometry_before_repair,
     synchronize_translation_geometry_after_repair,
@@ -234,6 +237,12 @@ class PipelineProcessor:
                 metadata.pop("ocr_exempt", None)
                 page.metadata_json = metadata
             self.db.commit()
+            text_scope = region_ids
+            empty_text_scope = False
+            if options.get("_workflow_text_only") and stage in {"ocr", "translation"}:
+                text_scope = {row.id for row in self._regions(page, region_id, region_ids)
+                    if not row.locked and row.region_type != "sfx"}
+                empty_text_scope = not text_scope
             if repair_geometry == "translated" and "inpainting" in stages and (
                 stage == "mask" or (stage == "inpainting" and "mask" not in stages)
             ):
@@ -252,13 +261,15 @@ class PipelineProcessor:
                     self.db.commit()
             if stage == "detection":
                 self.detect(page, stage_provider, force=force)
+            elif empty_text_scope:
+                pass
             elif stage == "ocr":
                 self.ocr(
                     page,
                     stage_provider,
                     force=force,
                     region_id=region_id,
-                    region_ids=region_ids,
+                    region_ids=text_scope,
                     options=options,
                     overwrite_edits=force and start == "detection" and not (region_id or region_ids),
                     progress=lambda completed, total, message, stage_index=index, stage_count=len(stages): self._commit_stage_progress(
@@ -272,7 +283,7 @@ class PipelineProcessor:
                 )
             elif stage == "translation":
                 await self.translate(
-                    page, stage_provider, force=force, region_id=region_id, region_ids=region_ids, options=options,
+                    page, stage_provider, force=force, region_id=region_id, region_ids=text_scope, options=options,
                     progress=lambda completed, total, message, stage_index=index, stage_count=len(stages): self._commit_stage_progress(
                         task, stage_index=stage_index, stage_count=stage_count,
                         completed=completed, total=total, message=message,
@@ -412,7 +423,11 @@ class PipelineProcessor:
                 layout_data={"source_orientation": result.orientation, "detection": detection_metadata, "text_paint": paint},
             )
             if unified_layout:
-                initialize_free_text_rotation(region)
+                if evidence := detection_metadata.get(ANALYSIS_KEY):
+                    for field, value in typography_patch(region, evidence, fresh=True).items():
+                        setattr(region, field, value)
+                else:
+                    initialize_free_text_rotation(region)
             self.db.add(region)
             added_regions.append(region)
         page_metadata = dict(page.metadata_json or {})
@@ -473,9 +488,10 @@ class PipelineProcessor:
         provider, _ = self._provider("ocr", provider_name)
         source = self.storage.absolute(page.original_path)
         pending_regions = []
+        reocr = set(options.get("reocr_region_ids", []))
         for region in self._regions(page, region_id, region_ids):
             explicitly_forced = bool((region_id or region_ids) and force)
-            if (region.locked and not explicitly_forced) or (has_text(region.source_text) and not force):
+            if (region.locked and not explicitly_forced) or (has_text(region.source_text) and not force and region.id not in reocr):
                 continue
             pending_regions.append(region)
         total = len(pending_regions)
@@ -487,14 +503,21 @@ class PipelineProcessor:
         if progress:
             progress(0, total, f"Loading OCR model · 0/{total}")
         # No write transaction may span model loading or an HTTP/GPU call.
+        pending_regions = [SimpleNamespace(id=row.id, updated_at=row.updated_at, **region_snapshot(row)) for row in pending_regions]
         self.db.commit()
+
+        def check_preparation():
+            self._check_interruption()
+            self.db.commit()  # No pooled connection spans segmentation inference.
+
+        analyses = analyze_manual_regions(source, pending_regions, self.settings, check_preparation)
         provider.ensure_loaded()
         if progress:
             progress(0, total, f"OCR 0/{total}")
         if isinstance(provider, (CloudMultimodalOCRProvider, GenericCloudOCRProvider)):
             self.db.commit()
             versions = {region.id: region.updated_at for region in pending_regions}
-            jobs = [OCRJob(region.id, tuple(region.bbox), str(options.get("orientation") or region.orientation),
+            jobs = [OCRJob(region.id, tuple(region.bbox), self._ocr_orientation(region, options, analyses),
                           tuple(tuple(point) for point in region.polygon) if region.polygon else None, source_crop_angle(region))
                     for region in pending_regions]
             completed = skipped = 0
@@ -508,7 +531,8 @@ class PipelineProcessor:
             with closing(recognize_regions(provider, source, jobs, int(options.get("crop_padding", 4)), self._check_interruption, report)) as results:
                 for identifier, result in results:
                     if not self._save_ocr_result(page, identifier, result,
-                                                 expected_version=None if overwrite_edits else versions[identifier]):
+                                                 expected_version=versions[identifier] if identifier in analyses or not overwrite_edits else None,
+                                                 typography=analyses.get(identifier)):
                         skipped += 1
                     completed += 1
                     report("已保存" if completed == total else request_budget(provider.config).status())
@@ -522,7 +546,7 @@ class PipelineProcessor:
             jobs, expected = [], {}
             padding = int(options.get("crop_padding",4))
             for region in pending_regions:
-                orientation = str(options.get("orientation") or region.orientation)
+                orientation = self._ocr_orientation(region, options, analyses)
                 boxes = native_boxes(region, orientation, padding)
                 expected[region.id] = len(boxes)
                 jobs.extend((region.id, box, orientation, region.updated_at, 0 if len(boxes)>1 else padding,
@@ -554,7 +578,8 @@ class PipelineProcessor:
                             {**result.metadata, "native_prose_chunks": len(received),
                              "empty_chunks": [i for i,r in enumerate(received) if not r.text.strip()]})
                     if not self._save_ocr_result(page, identifier, result,
-                                                 expected_version=None if overwrite_edits else version):
+                                                 expected_version=version if identifier in analyses or not overwrite_edits else None,
+                                                 typography=analyses.get(identifier)):
                         skipped += 1
                     completed += 1
                     if progress:
@@ -565,29 +590,37 @@ class PipelineProcessor:
             return
         for completed, region in enumerate(pending_regions, start=1):
             self._check_interruption()
-            orientation = str(options.get("orientation") or region.orientation)
+            orientation = self._ocr_orientation(region, options, analyses)
+            expected_version = region.updated_at
             result, = recognize_local(provider,source,[(region.bbox,orientation)],int(options.get("crop_padding",4)),
                                       polygons=[region.polygon or None],crop_angles=[source_crop_angle(region)])
             # Retain the computed result while retrying only its short save.
             # Every successful region is durable before the next inference.
-            self._save_ocr_result(page, region.id, result)
+            self._save_ocr_result(page, region.id, result, expected_version=expected_version,
+                                  typography=analyses.get(region.id))
             if progress:
                 progress(completed, total, f"OCR {completed}/{total}")
 
-    def _save_ocr_result(self, page: ImagePage, identifier: str, result: OCRResult, *, expected_version=None) -> bool:
+    @staticmethod
+    def _ocr_orientation(region, options, analyses):
+        analysis = analyses.get(region.id, {})
+        adapted = typography_patch(region, analysis)
+        return str(options.get("orientation") or adapted.get("orientation") or region.orientation)
+
+    def _save_ocr_result(self, page: ImagePage, identifier: str, result: OCRResult, *, expected_version=None, typography=None) -> bool:
         def save() -> bool:
             region = self.db.get(TextRegion, identifier)
             if region is None:
                 return False
             # Compare the stored version atomically to reject concurrent edits.
-            applied = self._apply_ocr_result(region, result, expected_version=expected_version)
+            applied = self._apply_ocr_result(region, result, expected_version=expected_version, typography=typography)
             if applied:
                 self._invalidate_outputs(page, clean=False)
             return applied
 
         return retry_write(self.db, save)
 
-    def _apply_ocr_result(self, region: TextRegion, result: OCRResult, *, expected_version=None) -> bool:
+    def _apply_ocr_result(self, region: TextRegion, result: OCRResult, *, expected_version=None, typography=None) -> bool:
         reasons = [reason for reason in (region.review_reasons or []) if reason not in {"low_ocr_confidence", "empty_source_text", "incomplete_ocr_chunks", "ocr_generation_truncated"}]
         if not has_text(result.text):
             reasons.append("empty_source_text")
@@ -602,6 +635,19 @@ class PipelineProcessor:
             "layout_data": {**(region.layout_data or {}), "source_orientation": result.orientation, "ocr": result.metadata, "ocr_geometry_stale": False},
             "review_reasons": sorted(set(reasons)), "needs_review": bool(reasons),
         }
+        state = (region.layout_data or {}).get(STATE_KEY, {})
+        if not state or state.get("orientation") == "manual":
+            values["orientation"] = getattr(region, "orientation", result.orientation)
+        elif typography and not typography.get("orientation_confident"):
+            values["orientation"] = region.orientation
+        adaptation = typography_patch(region, typography)
+        if adaptation:
+            values["orientation"] = adaptation.get("orientation", region.orientation)
+            values["layout_data"] = {**adaptation.pop("layout_data"), "source_orientation": result.orientation,
+                                     "ocr": result.metadata, "ocr_geometry_stale": False}
+            values.update(adaptation)
+        if result.text != region.source_text and has_text(region.translated_text):
+            values["layout_data"]["translation_source_stale"] = True
         if expected_version is not None:
             # Compare-and-swap prevents a late HTTP result overwriting a manual edit,
             # lock, deletion or geometry change, including a race after the refresh.
@@ -692,11 +738,19 @@ class PipelineProcessor:
         region_ids: set[str] | None = None,
         progress: Callable[[int, int, str], None] | None = None,
     ) -> None:
+        retranslate = set(options.get("retranslate_region_ids", []))
+        scope = self._regions(page, region_id, region_ids)
+        if options.get("_workflow_text_only"):
+            # A refreshed OCR result can invalidate translation during this
+            # same task. Recompute only those texts; unchanged manual text stays.
+            retranslate.update(region.id for region in scope if (region.layout_data or {}).get("translation_source_stale"))
+        if not retranslate <= {region.id for region in scope}:
+            raise ValueError("Retranslation IDs must belong to the selected page/region scope")
         selected = [
             region
-            for region in self._regions(page, region_id, region_ids)
+            for region in scope
             if (not region.locked or bool((region_id or region_ids) and force))
-            and (force or not has_text(region.translated_text))
+            and (force or region.id in retranslate or not has_text(region.translated_text))
         ]
         selected_ids = {region.id for region in selected}
         missing_ids = {
@@ -722,7 +776,7 @@ class PipelineProcessor:
             selected = [
                 region for region in page.regions if region.id in selected_ids
                 and (not region.locked or bool((region_id or region_ids) and force))
-                and (force or not has_text(region.translated_text))
+                and (force or region.id in retranslate or not has_text(region.translated_text))
             ]
         selected = [region for region in selected if has_text(region.source_text)]
         if not selected:
@@ -812,12 +866,12 @@ class PipelineProcessor:
                 if not applied.rowcount:
                     raise ValueError("翻译期间文本框已变化，未覆盖修改，请重新执行翻译")
                 region = self.db.get(TextRegion, identifier)
-                self._initialize_text_rotation(region)
                 save_revision(self.db, region, "translation")
                 for previous in region.translations:
                     previous.is_current = False
                 region.translated_text = translations[key]
-                region.layout_data = {**(region.layout_data or {}), "translation_fallback": provider == "passthrough"}
+                region.layout_data = {**(region.layout_data or {}), "translation_fallback": provider == "passthrough",
+                    "translation_source_stale": False}
                 self.db.add(Translation(
                     region_id=identifier, source_text=region.source_text, translated_text=translations[key],
                     source_language=source_language, target_language=target_language,
@@ -1181,7 +1235,7 @@ class PipelineProcessor:
         save_png_with_metadata(source, source_path, metadata, compress_level=1)
 
         current = source_path
-        if selected_mask is not None:
+        if selected_mask is not None and np.any(selected_mask):
             if not cv2.imwrite(str(mask_path), selected_mask):
                 raise ValueError("Cannot write selected inpainting mask")
             self._repair_masks(provider, source_path, mask_path, intermediate, selected_regions)
@@ -1281,8 +1335,6 @@ class PipelineProcessor:
         page_directory = self.storage.page_dir(page.project_id, page.id)
         output = page_directory / "rendered" / (f"export-{output_tag}.png" if output_tag else "translated.png")
         text_layer = page_directory / "layers" / (f"export-{output_tag}.png" if output_tag else "translated-text.png")
-        for region in page.regions:
-            self._initialize_text_rotation(region)
         # Typography fits the visible target geometry. Segmentation is used by
         # detection/repair, not a second hidden inset during each text render.
         result = provider.render(background, page.regions, output, text_layer)

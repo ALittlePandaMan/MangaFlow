@@ -25,26 +25,28 @@ POLICY_SETTINGS = ("text_segmentation_enabled", "repair_auto_retry", "ocr_review
 PROJECT_POLICY = ("source_language", "target_language", "translation_context", "settings")
 
 
-def prepare_batch(db, project, pages, payload) -> ProcessingBatch | None:
+def prepare_batch(db, project, pages, payload, *, persist=True, provision=True, page_order=None) -> ProcessingBatch | None:
     if not get_settings().checkpoint_pipeline_enabled or not pages:
         return None
     if (payload.get("start_stage") not in {"full", "detection", "ocr", "translation"}
-            or payload.get("end_stage") not in {"full", "rendering"} or payload.get("options", {}).get("region_ids")):
+            or payload.get("end_stage") not in {"full", "rendering", "translation"} or payload.get("options", {}).get("region_ids")):
         return None
     from app.pipeline.processor import PipelineProcessor
 
     # Provision before adding any batch/tasks; this may persist model settings.
     processor = PipelineProcessor(db)
-    kinds = ("detection", "ocr", "translation", "inpainting", "rendering") if payload.get("start_stage") in {"full", "detection"} else ("ocr", "translation", "inpainting", "rendering")
-    for kind in kinds:
-        processor._provider(kind, None)
+    from app.services.workflow_state import requested_stages
+    if provision:
+        for kind in requested_stages(payload):
+            if kind != "mask":
+                processor._provider(kind, None)
     mode = (project.settings or {}).get("translation_context_mode", "snapshot")
     if mode not in {"snapshot", "previous_page"}:
         raise ValueError("Unsupported project translation context mode")
-    ordered = list(db.execute(select(ImagePage.id, ImagePage.order_index).where(
+    ordered = list(page_order) if page_order is not None else list(db.scalars(select(ImagePage.id).where(
         ImagePage.project_id == project.id,
     ).order_by(ImagePage.order_index, ImagePage.id)))
-    predecessors = {row.id: ordered[index - 1].id if index else None for index, row in enumerate(ordered)}
+    predecessors = {identifier: ordered[index - 1] if index else None for index, identifier in enumerate(ordered)}
     prior_ids = {predecessors[page.id] for page in pages} - {None}
     groups = {identifier: [] for identifier in prior_ids}
     # No masks, history, layout blobs or images are needed for scene context.
@@ -59,8 +61,9 @@ def prepare_batch(db, project, pages, payload) -> ProcessingBatch | None:
                 "models": [record(row) for row in db.scalars(select(ModelConfig).where(ModelConfig.enabled.is_(True)).order_by(ModelConfig.id))]},
         contexts={page.id: ({"page_id": previous, "regions": page_context(groups[previous], character_budget=4000)}
                             if (previous := predecessors[page.id]) else None) for page in pages})
-    db.add(batch)
-    db.flush()
+    if persist:
+        db.add(batch)
+        db.flush()
     return batch
 
 
@@ -76,7 +79,9 @@ def dependency_admission(task_id: str) -> str:
                     task.waiting_reason = None
                 return "ready"
             previous = db.get(ProcessingTask, task.dependency_task_id)
-            if previous is None or previous.project_id != task.project_id or previous.batch_id != task.batch_id:
+            same_workflow = previous and task.payload.get("options", {}).get("workflow_run_id") and (
+                previous.payload.get("options", {}).get("workflow_run_id") == task.payload["options"]["workflow_run_id"])
+            if previous is None or previous.project_id != task.project_id or (previous.batch_id != task.batch_id and not same_workflow):
                 return _failed(task, "前页翻译任务不存在；请重新创建批次", "dependency_missing")
             # Depend on the translation checkpoint, never the previous page's
             # repair/render completion. A failed repair can still supply text.
@@ -96,6 +101,11 @@ def dependency_admission(task_id: str) -> str:
                 task.waiting_reason = reason
                 task.message = "等待前页翻译（未占用处理名额）"
             source_repair = (task.payload or {}).get("options",{}).get("repair_geometry","source") == "source"
+            if task.payload.get("end_stage") == "translation":
+                prepared = db.scalar(select(StageCheckpoint.id).join(TaskWorkflow).where(
+                    TaskWorkflow.task_id == task.id, TaskWorkflow.generation == task.execution_generation,
+                    TaskWorkflow.status == "RUNNING", StageCheckpoint.stage == "ocr", StageCheckpoint.status == "SUCCEEDED").limit(1))
+                return "waiting" if prepared else "repair"  # Native preparation runs detection/OCR only.
             if source_repair and get_settings().parallel_repair_translation:
                 prepared = db.scalar(select(StageCheckpoint.id).join(TaskWorkflow).where(
                     TaskWorkflow.task_id == task.id,TaskWorkflow.generation == task.execution_generation,

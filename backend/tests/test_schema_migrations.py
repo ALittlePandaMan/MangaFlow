@@ -49,3 +49,53 @@ def test_batch_migration_preserves_existing_task_checkpoints(target):
         assert db.get(StageCheckpoint, "old-checkpoint").result == {"translated_text":"paid result must survive"}
     with target.connect() as connection:
         assert compare_metadata(MigrationContext.configure(connection), Base.metadata) == []
+
+
+def test_mcp_workflow_upgrade_keeps_existing_uploads_and_operation_receipts(target):
+    from app.models import MCPAsset, MCPOperation
+    with target.begin() as connection:
+        config = migration_config()
+        config.attributes["connection"] = connection
+        command.upgrade(config, "20261023_08")
+        previous = MetaData()
+        previous.reflect(connection)
+        now = datetime.now(timezone.utc)
+        connection.execute(previous.tables["mcp_assets"].insert().values(id="existing-upload", filename="漫画.cbz",
+            size=123, status="AVAILABLE", expected_size=123, created_at=now, updated_at=now))
+        connection.execute(previous.tables["mcp_operations"].insert().values(id="existing-operation", fingerprint="a"*64,
+            status="COMPLETED", result={"structuredContent": {"id": "already-imported"}}, created_at=now))
+    upgrade_database(target)
+    with Session(target) as db:
+        assert db.get(MCPAsset, "existing-upload").evidence == {}
+        receipt = db.get(MCPOperation, "existing-operation")
+        assert receipt.workflow_run_id is None and receipt.result["structuredContent"]["id"] == "already-imported"
+    with target.begin() as connection:
+        config = migration_config()
+        config.attributes["connection"] = connection
+        command.downgrade(config, "20261023_08")
+    upgrade_database(target)
+    with target.connect() as connection:
+        assert compare_metadata(MigrationContext.configure(connection), Base.metadata) == []
+
+
+def test_coordination_upgrade_preserves_existing_reviews_and_rounds(target):
+    from app.models import MCPWorkflowPage, Project
+    with target.begin() as connection:
+        config = migration_config()
+        config.attributes["connection"] = connection
+        command.upgrade(config, "20261024_09")
+        previous = MetaData()
+        previous.reflect(connection)
+        now = datetime.now(timezone.utc)
+        connection.execute(Project.__table__.insert().values(id="parallel-old-project", name="Existing", created_at=now, updated_at=now))
+        connection.execute(previous.tables["mcp_workflow_runs"].insert().values(id="parallel-old-run", project_id="parallel-old-project",
+            workflow_id="translate_and_review", workflow_version="2.1.1", page_ids=["old-page"], options={}, created_at=now, updated_at=now))
+        connection.execute(previous.tables["mcp_workflow_pages"].insert().values(id="parallel-old-receipt", run_id="parallel-old-run",
+            image_id="old-page", preflight={"region_ids":["old-region"]}, final_review={"outcome":"issues","version":"old-version"},
+            correction_rounds=2, correction_open=True, created_at=now, updated_at=now))
+    upgrade_database(target)
+    with Session(target) as db:
+        receipt = db.get(MCPWorkflowPage, "parallel-old-receipt")
+        assert receipt.assignment == {} and receipt.correction_rounds == 2 and receipt.correction_open
+        assert receipt.preflight == {"region_ids":["old-region"]}
+        assert receipt.final_review == {"outcome":"issues","version":"old-version"}

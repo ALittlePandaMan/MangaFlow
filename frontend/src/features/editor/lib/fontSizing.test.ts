@@ -13,6 +13,15 @@ const fixture = (patch: Partial<TextRegion> = {}) => ({bbox:[0,0,200,200],polygo
 const measure = (_character: string,size: number) => size
 
 describe('initial font sizing and subsequent user adjustments',()=>{
+  it('keeps ordinary English words intact when fitting a narrow horizontal frame',()=>{
+    const region=fixture({orientation:'horizontal',translated_text:'However... What is it?',translated_bbox:[0,0,100,190],translated_polygon:[],auto_font_size:true})
+    const fitted=sizeText(region,undefined,measure)
+    expect(fitted.overflow).toBe(false)
+    for (const word of ['However','What','is','it']) expect(fitted.lines.some(line=>line.includes(word))).toBe(true)
+    expect(sizeText({...region,auto_font_size:false,font_size:24},undefined,measure).fontSize).toBe(24)
+    const punctuation=sizeText({...region,translated_bbox:[0,0,120,190]},undefined,measure)
+    expect(punctuation.lines.some(line=>/^[.,!?;]/.test(line))).toBe(false)
+  })
   it.each(['horizontal','vertical'] as const)('fills a %s frame without a preferred-size cap',orientation=>{
     const region=fixture({orientation})
     const sized=sizeText(region,undefined,measure)
@@ -71,7 +80,7 @@ describe('initial font sizing and subsequent user adjustments',()=>{
     expect(layout.glyphs.map(glyph=>glyph.text)).toEqual(['甲','乙','丙','︕','︖','A'])
     expect(layout.glyphs[0].x).toBeGreaterThan(layout.glyphs[2].x)
     expect(layout.glyphs[0].y).toBeLessThan(layout.glyphs[1].y)
-    expect(layout.glyphs.map(glyph=>glyph.rotate)).toEqual([false,false,false,false,false,true])
+    expect(layout.glyphs.map(glyph=>glyph.rotate)).toEqual([false,false,false,false,false,false])
   })
   it('measures repeated glyphs once per candidate without retaining stale font metrics', () => {
     const calls: string[] = []

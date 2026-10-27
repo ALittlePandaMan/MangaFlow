@@ -3,7 +3,10 @@ FROM pytorch/pytorch:2.6.0-cuda12.6-cudnn9-runtime
 
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 WORKDIR /app
-RUN apt-get update && apt-get install -y --no-install-recommends libgl1 libglib2.0-0 fonts-noto-cjk && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends software-properties-common \
+    && add-apt-repository -y multiverse && apt-get update \
+    && apt-get install -y --no-install-recommends libgl1 libglib2.0-0 fonts-noto-cjk unrar \
+    && rm -rf /var/lib/apt/lists/*
 COPY backend/requirements/base.txt /tmp/requirements-base.txt
 COPY backend/requirements/models.txt /tmp/requirements-models.txt
 RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
@@ -39,6 +42,7 @@ COPY backend/requirements/local-ocr.txt /tmp/requirements-local-ocr.txt
 RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
     python -m venv --system-site-packages /opt/local-ocr \
     && /opt/local-ocr/bin/python -m pip install --timeout 300 --retries 10 -r /tmp/requirements-local-ocr.txt
+COPY connectors/mangaflow-mcp /app/connectors/mangaflow-mcp
 COPY backend /app/backend
 WORKDIR /app/backend
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

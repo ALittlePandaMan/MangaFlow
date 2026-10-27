@@ -62,6 +62,7 @@ def quality_codes(monkeypatch, constraint, *, damage=None, bubble_id=None):
     region = SimpleNamespace(id="region-1", region_key="R001", confidence=.99, locked=False,
         source_text="正常文字", translated_text="正常译文", font_size=24, layout_warning=False,
         bbox=[10, 10, 40, 70], pixel_mask_path="mask.png", orientation="vertical", bubble_id=bubble_id,
+        visible=True, translated_bbox=[], translated_polygon=[], rotation=0, perspective_warp=False,
         layout_data={"ocr": {"confidence_available": False}, "detection": data,
                      "mask_generation": {"method": "conservative_glyph", "constraint": constraint},
                      "repair_quality": {"status": "passed"}})

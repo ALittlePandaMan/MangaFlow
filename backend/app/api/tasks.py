@@ -13,6 +13,7 @@ from app.core.database import SessionLocal, get_db
 from app.models import ImagePage, ProcessingBatch, ProcessingTask, TaskExecutionRun, TextRegion
 from app.models.enums import PageStatus, TaskStatus
 from app.schemas.domain import BatchProcessRequest, TaskRead
+from app.services.mcp_context import check_page_version, commit_page_tasks
 from app.tasks import task_manager
 
 router = APIRouter(tags=["tasks"])
@@ -137,17 +138,25 @@ def pause_task(task_id: str, db: Session = Depends(get_db)) -> ProcessingTask:
 
 @router.post("/tasks/{task_id}/resume", response_model=TaskRead, status_code=202)
 def resume_task(task_id: str, allow_unknown_cloud_retry: bool = Query(default=False), db: Session = Depends(get_db)) -> ProcessingTask:
-    task = require_task(db, task_id, for_update=True)
-    if task.status != TaskStatus.PAUSED.value:
-        raise HTTPException(409, "Only paused tasks can be resumed")
-    if task_manager.is_active(task_id):
-        raise HTTPException(409, "Wait for the paused worker to stop before resuming")
-    _confirm_unknown_requests(db, task_id, allow_unknown_cloud_retry)
-    task.pause_requested = False
-    task.status = TaskStatus.QUEUED.value
-    task.error_kind, task.waiting_reason, task.active_stages = None, None, []
-    task.message = "Queued to resume"
-    db.commit()
+    task = require_task(db, task_id)
+    project_id, page_id = task.project_id, task.image_id
+
+    def resume(versions):
+        task = require_task(db, task_id, for_update=True)
+        if task.status != TaskStatus.PAUSED.value:
+            raise HTTPException(409, "Only paused tasks can be resumed")
+        if task_manager.is_active(task_id):
+            raise HTTPException(409, "Wait for the paused worker to stop before resuming")
+        _confirm_unknown_requests(db, task_id, allow_unknown_cloud_retry)
+        task.pause_requested = False
+        task.status = TaskStatus.QUEUED.value
+        task.error_kind, task.waiting_reason, task.active_stages = None, None, []
+        task.message = "Queued to resume"
+        if versions:
+            task.payload = {**task.payload, "_mcp_admission_version": versions[page_id]}
+        return task
+
+    task = commit_page_tasks(db, project_id, [page_id] if page_id else [], resume)
     db.refresh(task)
     task_manager.dispatch(task.id)
     task_manager.promote(task.id)
@@ -156,22 +165,33 @@ def resume_task(task_id: str, allow_unknown_cloud_retry: bool = Query(default=Fa
 
 @router.post("/tasks/{task_id}/retry", response_model=TaskRead, status_code=202)
 def retry_task(task_id: str, allow_unknown_cloud_retry: bool = Query(default=False), db: Session = Depends(get_db)) -> ProcessingTask:
-    task = require_task(db, task_id, for_update=True)
-    if task.status not in {TaskStatus.FAILED.value, TaskStatus.CANCELLED.value}:
-        raise HTTPException(409, "Only failed or cancelled tasks can be retried")
-    if task_manager.is_active(task_id):
-        raise HTTPException(409, "Wait for the previous worker to stop before retrying")
-    _confirm_unknown_requests(db, task_id, allow_unknown_cloud_retry)
-    task.status = TaskStatus.QUEUED.value
-    task.progress = 0.0
-    task.pause_requested = False
-    task.error_message = None
-    task.error_kind, task.waiting_reason, task.active_stages = None, None, []
-    task.current_stage = None
-    task.started_at = None
-    task.finished_at = None
-    task.message = "Queued for retry"
-    db.commit()
+    task = require_task(db, task_id)
+    project_id, page_id = task.project_id, task.image_id
+
+    def retry(versions):
+        task = require_task(db, task_id, for_update=True)
+        if task.status not in {TaskStatus.FAILED.value, TaskStatus.CANCELLED.value}:
+            raise HTTPException(409, "Only failed or cancelled tasks can be retried")
+        if task_manager.is_active(task_id):
+            raise HTTPException(409, "Wait for the previous worker to stop before retrying")
+        _confirm_unknown_requests(db, task_id, allow_unknown_cloud_retry)
+        from app.services.mcp_context import workflow_run_id
+        if workflow_run_id.get():
+            task.payload = {**task.payload, "options": {**task.payload.get("options", {}), "_workflow_previous_status": task.status}}
+        task.status = TaskStatus.QUEUED.value
+        task.progress = 0.0
+        task.pause_requested = False
+        task.error_message = None
+        task.error_kind, task.waiting_reason, task.active_stages = None, None, []
+        task.current_stage = None
+        task.started_at = None
+        task.finished_at = None
+        task.message = "Queued for retry"
+        if versions:
+            task.payload = {**task.payload, "_mcp_admission_version": versions[page_id]}
+        return task
+
+    task = commit_page_tasks(db, project_id, [page_id] if page_id else [], retry)
     db.refresh(task)
     task_manager.dispatch(task.id)
     task_manager.promote(task.id)
@@ -241,28 +261,32 @@ def batch_process(project_id: str, payload: BatchProcessRequest, db: Session = D
             .where(ImagePage.project_id == project_id).distinct()
         ).all())
         pages = [page for page in pages if page.id in with_regions]
-    tasks: list[ProcessingTask] = []
     task_payload = payload.model_dump(mode="json", exclude={"image_ids", "only_unrecognized", "only_with_regions"})
     task_payload["batch_submission"] = True
     from app.services.batch_context import prepare_batch
-    batch = prepare_batch(db, project, pages, task_payload)
-    identifiers = {page.id: str(uuid4()) for page in pages}
     for page in pages:
-        previous = (batch.contexts.get(page.id) or {}).get("page_id") if batch else None
-        task = ProcessingTask(
-            id=identifiers[page.id],
-            project_id=project_id,
-            image_id=page.id,
-            task_type="full",
-            status=TaskStatus.QUEUED.value,
-            payload=task_payload,
-            message="Queued by batch process",
-            batch_id=batch.id if batch else None,
-            dependency_task_id=identifiers.get(previous) if batch and batch.context_mode == "previous_page" else None,
-        )
-        db.add(task)
-        tasks.append(task)
-    db.commit()
+        check_page_version(db, page.id)
+    batch = prepare_batch(db, project, pages, task_payload, persist=False)
+    identifiers = {page.id: str(uuid4()) for page in pages}
+    page_ids = list(identifiers)
+
+    def create(versions):
+        if batch:
+            db.add(batch)
+            db.flush()
+        tasks = []
+        for page_id in page_ids:
+            previous = (batch.contexts.get(page_id) or {}).get("page_id") if batch else None
+            task = ProcessingTask(id=identifiers[page_id], project_id=project_id, image_id=page_id,
+                task_type="full", status=TaskStatus.QUEUED.value,
+                payload={**task_payload, **({"_mcp_admission_version": versions[page_id]} if versions else {})},
+                message="Queued by batch process", batch_id=batch.id if batch else None,
+                dependency_task_id=identifiers.get(previous) if batch and batch.context_mode == "previous_page" else None)
+            db.add(task)
+            tasks.append(task)
+        return tasks
+
+    tasks = commit_page_tasks(db, project_id, page_ids, create)
     for task in tasks:
         db.refresh(task)
         task_manager.dispatch(task.id)

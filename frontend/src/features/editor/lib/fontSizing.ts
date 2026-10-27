@@ -3,6 +3,7 @@ import {PERSPECTIVE_RENDER_OUTPUT_VERSION} from './perspectiveText'
 import {translationTextFrame} from './textFrame'
 import {effectiveTextRotation} from './textRotation'
 import {fitInk, type GlyphMetrics, type InkGlyph} from './inkLayout'
+import {WORD_FIT_REFERENCE_SIZE, fittingChunkCount, wordCount} from './lineBreaking'
 
 export function usesAutomaticFontSize(region: TextRegion): boolean {
   if (typeof region.auto_font_size === 'boolean') return region.auto_font_size
@@ -96,13 +97,20 @@ export function sizeText(region: TextRegion, rect?: {width: number, height: numb
   }
   const maximum = 512
   let best = candidate(1)
+  const words = region.orientation === 'vertical' ? 0 : wordCount(region.translated_text)
+  const referenceLines = words ? candidate(WORD_FIT_REFERENCE_SIZE).lines.join('\n') : ''
+  const preserveWords = words > 0 && wordCount(referenceLines) <= words
+  const chunks = words ? fittingChunkCount(region.translated_text) : 0
+  const preserveChunks = words > 0 && fittingChunkCount(referenceLines) <= chunks
+  const fits = (result: TextSizing) => !result.overflow && (!preserveWords || wordCount(result.lines.join('\n')) <= words)
+    && (!preserveChunks || fittingChunkCount(result.lines.join('\n')) <= chunks)
   if (region.character_spacing < 0 || (rotation && !textFrame)) {
-    for (let size = maximum; size > 0; size -= 1) {const result = candidate(size); if (!result.overflow) return result}
+    for (let size = maximum; size > 0; size -= 1) {const result = candidate(size); if (fits(result)) return result}
   } else {
     let low = 1, high = maximum
     while (low <= high) {
       const size = Math.floor((low + high) / 2), result = candidate(size)
-      if (result.overflow) high = size - 1
+      if (!fits(result)) high = size - 1
       else {best = result; low = size + 1}
     }
   }

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from functools import wraps
 from math import cos, hypot, radians, sin
 from pathlib import Path
@@ -19,7 +20,7 @@ from app.utils.image_metadata import load_rgb_with_metadata, save_png_with_metad
 from app.utils.text import has_text
 from PIL import Image, ImageChops, ImageColor, ImageDraw
 
-RENDER_OUTPUT_VERSION = 11
+RENDER_OUTPUT_VERSION = 16
 
 
 def _serialize_renderer(method):
@@ -58,13 +59,25 @@ class PillowRenderer(Renderer):
         regions: list[Any],
         output_path: Path,
         text_layer_path: Path,
+        region_tiles: Path | None = None,
+        *,
+        progress: Callable[[float], None] | None = None,
+        check: Callable[[], None] | None = None,
     ) -> dict[str, Any]:
+        def report(value):
+            if check:
+                check()
+            if progress:
+                progress(value)
+        report(0)
         self.ensure_loaded()
         background_rgb, metadata = load_rgb_with_metadata(background_path)
         background = background_rgb.convert("RGBA")
         layer = Image.new("RGBA", background.size, (0, 0, 0, 0))
         region_layouts: dict[str, dict[str, Any]] = {}
-        for region in regions:
+        report(.05)
+        for index, region in enumerate(regions):
+            report(.05 + .8 * index / max(1, len(regions)))
             if not getattr(region, "visible", True) or not has_text(region.translated_text):
                 continue
             translated_bbox = getattr(region, "translated_bbox", None) or region.bbox
@@ -106,8 +119,9 @@ class PillowRenderer(Renderer):
                     "effective_text_bbox": None, "shape_layout_source": {"bbox": region.bbox, "polygon": region.polygon},
                 }
                 continue
+            region_layer = Image.new("RGBA", background.size) if region_tiles else layer
             render_style = self._draw_region(
-                layer,
+                region_layer,
                 background,
                 region,
                 layout,
@@ -117,6 +131,25 @@ class PillowRenderer(Renderer):
                 rotate_frame=text_frame is not None,
                 paint=paint,
             )
+            if region_tiles:
+                region_tiles.mkdir(parents=True, exist_ok=True)
+                bounds = region_layer.getbbox()
+                if bounds:
+                    region_layer.crop(bounds).save(region_tiles / f"{region.id}.png", compress_level=3)
+                    render_style["tile_bounds"] = list(bounds)
+                layer.alpha_composite(region_layer)
+                if render_style["stroke_width"]:
+                    # PSD applies its native stroke effect to this unoutlined
+                    # cache. Keeping the outline in both would draw it twice.
+                    region_layer.paste((0, 0, 0, 0), (0, 0, *region_layer.size))
+                    self._draw_region(region_layer, background, region, layout, text_frame or translated_bbox,
+                        translated_polygon=translated_polygon, tile_size=tile_size,
+                        rotate_frame=text_frame is not None, paint={**render_style, "stroke_width": 0})
+                    plain_bounds = region_layer.getbbox()
+                    if plain_bounds:
+                        region_layer.crop(plain_bounds).save(region_tiles / f"{region.id}-plain.png", compress_level=3)
+                        render_style["plain_tile_bounds"] = list(plain_bounds)
+                region_layer.close()
             region_layouts[region.id] = {
                 **layout.to_dict(),
                 "auto_font_size": auto_fit,
@@ -128,13 +161,16 @@ class PillowRenderer(Renderer):
                 "render_skipped": False,
                 "shape_layout_source": None,
             }
+        report(.85)
         composite = Image.alpha_composite(background, layer)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         text_layer_path.parent.mkdir(parents=True, exist_ok=True)
         # PNG compression changes file size/CPU time, never pixels. Level 3
         # avoids the slow default encoder on interactive re-layout/export.
         layer.save(text_layer_path, "PNG", compress_level=3)
+        report(.92)
         save_png_with_metadata(composite.convert("RGB"), output_path, metadata, compress_level=3)
+        report(1)
         inputs = {region.id: render_input(region, font_size=region_layouts.get(region.id, {}).get("font_size"))
                   for region in regions}
         for identifier, layout in region_layouts.items():

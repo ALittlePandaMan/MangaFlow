@@ -1,9 +1,69 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from copy import deepcopy
 from math import atan2, hypot, isfinite
 
 import numpy as np
+
+
+def validate_polygon(points):
+    """Validate an ordered simple polygon, including valid concave outlines."""
+    if not isinstance(points, list) or len(points) < 3 or len(points) > 2000 or any(
+        not isinstance(p, (list, tuple)) or len(p) != 2 or not all(isfinite(v) for v in p) for p in points
+    ):
+        raise ValueError("Polygon needs 3–2000 finite [x,y] vertices")
+    if len({tuple(p) for p in points}) != len(points):
+        raise ValueError("Polygon vertices must be distinct (do not repeat the closing vertex)")
+
+    def cross(a, b, c):
+        return (b[0]-a[0])*(c[1]-a[1])-(b[1]-a[1])*(c[0]-a[0])
+
+    edges = list(zip(points, points[1:] + points[:1], strict=True))
+    if abs(sum(a[0]*b[1]-b[0]*a[1] for a, b in edges))/2 < 1:
+        raise ValueError("Polygon is degenerate")
+    for i, (a, b) in enumerate(edges):
+        for j in range(i+1, len(edges)):
+            if j == i+1 or (i == 0 and j == len(edges)-1):
+                continue
+            c, d = edges[j]
+            if (max(min(a[0], b[0]), min(c[0], d[0])) <= min(max(a[0], b[0]), max(c[0], d[0]))
+                    and max(min(a[1], b[1]), min(c[1], d[1])) <= min(max(a[1], b[1]), max(c[1], d[1]))
+                    and cross(a, b, c)*cross(a, b, d) <= 0 and cross(c, d, a)*cross(c, d, b) <= 0):
+                raise ValueError("Polygon intersects itself")
+    return points
+
+
+def validate_region_frame(bbox, polygon, *, perspective=False):
+    if (not isinstance(bbox, list) or len(bbox) != 4
+            or not all(isfinite(v) for v in bbox) or min(bbox[2:]) <= 0):
+        raise ValueError("Bounding box needs finite [x,y,width,height] with positive width/height")
+    validate_polygon(polygon)
+    if perspective and order_quadrilateral(polygon) is None:
+        raise ValueError("Perspective requires a convex quadrilateral; set perspective_warp=false for other polygons")
+
+
+def normalize_region_frames(values):
+    """Canonical creation/import geometry; never accept an empty source frame.
+
+    A missing counterpart can be derived, but explicit edits use the stricter
+    frame validator so clearing a stored frame cannot silently recreate it.
+    """
+    bbox, polygon = deepcopy(values.get("bbox") or []), deepcopy(values.get("polygon") or [])
+    if not bbox and polygon:
+        bbox = polygon_to_bbox(polygon)
+    if not polygon and bbox:
+        polygon = bbox_to_polygon(bbox)
+    validate_region_frame(bbox, polygon)
+    translated_bbox = deepcopy(values.get("translated_bbox") or [])
+    translated_polygon = deepcopy(values.get("translated_polygon") or [])
+    if not translated_bbox:
+        translated_bbox = polygon_to_bbox(translated_polygon) if translated_polygon else deepcopy(bbox)
+    if not translated_polygon:
+        translated_polygon = bbox_to_polygon(translated_bbox) if values.get("translated_bbox") else deepcopy(polygon)
+    validate_region_frame(translated_bbox, translated_polygon, perspective=values.get("perspective_warp", False))
+    return {"bbox": bbox, "polygon": polygon,
+            "translated_bbox": translated_bbox, "translated_polygon": translated_polygon}
 
 
 def polygon_to_bbox(points: Iterable[Iterable[float]]) -> list[float]:

@@ -12,7 +12,7 @@ from app.utils.geometry import intersection_area
 from app.utils.text import has_text
 
 
-def evaluate_page(page: ImagePage, failed_tasks: list[ProcessingTask] | None = None) -> list[QualityIssue]:
+def evaluate_page(page: ImagePage, failed_tasks: list[ProcessingTask] | None = None, *, persist: bool = True) -> list[QualityIssue]:
     issues: list[QualityIssue] = []
     storage = get_storage()
     threshold = get_settings().ocr_review_threshold
@@ -126,16 +126,65 @@ def evaluate_page(page: ImagePage, failed_tasks: list[ProcessingTask] | None = N
         if original_orientation and original_orientation != region.orientation:
             reasons.append("orientation_changed")
             add("orientation_changed", "Text direction changed after OCR", region)
-        region.review_reasons = sorted(set(reasons))
-        region.needs_review = bool(reasons)
+        if persist:
+            region.review_reasons = sorted(set(reasons))
+            region.needs_review = bool(reasons)
 
     for index, first in enumerate(page.regions):
         for second in page.regions[index + 1 :]:
             area = intersection_area(first.bbox, second.bbox)
             if area > 0 and area / max(1.0, min(first.bbox[2] * first.bbox[3], second.bbox[2] * second.bbox[3])) > 0.12:
                 add("region_overlap", f"Text overlaps {second.region_key}", first)
-                if "region_overlap" not in first.review_reasons:
+                if persist and "region_overlap" not in first.review_reasons:
                     first.review_reasons = [*first.review_reasons, "region_overlap"]
+                    first.needs_review = True
+    # Rendered geometry is independent from source OCR geometry. Rasterizing a
+    # bounded diagnostic tile supports concave frames without another dependency.
+    import math
+
+    import cv2
+    import numpy as np
+    from app.services.layout.text_frame import aligned_text_frame
+    from app.utils.geometry import bbox_to_polygon
+    frames = []
+    for region in page.regions:
+        if not region.visible or not region.translated_text.strip():
+            continue
+        box = region.translated_bbox or region.bbox
+        points = region.translated_polygon or bbox_to_polygon(box)
+        if region.rotation and not region.perspective_warp and aligned_text_frame(points, region.rotation) is None:
+            cx, cy = box[0]+box[2]/2, box[1]+box[3]/2
+            angle = math.radians(region.rotation)
+            points = [[cx+(x-cx)*math.cos(angle)-(y-cy)*math.sin(angle),
+                cy+(x-cx)*math.sin(angle)+(y-cy)*math.cos(angle)] for x, y in bbox_to_polygon(box)]
+        polygon = np.asarray(points, dtype=float)
+        if np.any(polygon < 0) or np.any(polygon[:, 0] > page.width) or np.any(polygon[:, 1] > page.height):
+            add("translation_boundary_collision", "Translated frame extends outside the page", region)
+            if persist:
+                region.review_reasons = sorted(set(region.review_reasons or []) | {"translation_boundary_collision"})
+                region.needs_review = True
+        frames.append((region, polygon))
+    for index, (first, a) in enumerate(frames):
+        for second, b in frames[index+1:]:
+            if np.any(a.max(axis=0) <= b.min(axis=0)) or np.any(b.max(axis=0) <= a.min(axis=0)):
+                continue
+            contours = [polygon.astype(np.float32) for polygon in (a, b)]
+            if all(cv2.isContourConvex(contour) for contour in contours):
+                area, _ = cv2.intersectConvexConvex(*contours)
+                overlap = area / max(1., min(cv2.contourArea(contour) for contour in contours))
+            else:
+                origin = np.minimum(a.min(axis=0), b.min(axis=0))
+                scale = 252 / max(1., float(np.max(np.maximum(a.max(axis=0), b.max(axis=0))-origin)))
+                masks = []
+                for polygon in (a, b):
+                    mask = np.zeros((256, 256), dtype=np.uint8)
+                    cv2.fillPoly(mask, [np.rint((polygon-origin)*scale+1).astype(np.int32)], 1)
+                    masks.append(mask)
+                overlap = np.count_nonzero(masks[0] & masks[1]) / max(1, min(np.count_nonzero(mask) for mask in masks))
+            if overlap > .12:
+                add("translation_overlap", f"Translated frame overlaps {second.region_key}; inspect rendered glyphs", first)
+                if persist:
+                    first.review_reasons = sorted(set(first.review_reasons or []) | {"translation_overlap"})
                     first.needs_review = True
     for task in failed_tasks or []:
         if task.status == TaskStatus.FAILED.value:

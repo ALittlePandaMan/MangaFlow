@@ -8,6 +8,13 @@ from math import ceil, cos, radians, sin
 from pathlib import Path
 from typing import Any
 
+from app.services.layout.line_breaking import (
+    WORD_FIT_REFERENCE_SIZE,
+    fitting_chunk_count,
+    graphemes,
+    word_count,
+    wrap_paragraph,
+)
 from PIL import ImageFont
 
 VERTICAL_FORM_MAP = {
@@ -153,7 +160,7 @@ class FontResolver:
         @lru_cache(maxsize=2048)
         def resolve_character(character: str | None) -> Path:
             if character:
-                codepoint = ord(character)
+                codepoint = ord(character[0])
                 for path in candidates:
                     coverage = self._font_coverage(path)
                     if coverage is None or codepoint in coverage:
@@ -244,19 +251,31 @@ class MangaLayoutEngine:
         # one em. A cap based on frame height would leave that space unused.
         maximum = 512
         best = candidate(1)
+        # Do not inflate ordinary English until words fragment into letters.
+        # If words fit at a readable reference size, keep them intact while
+        # searching. Truly oversized words retain grapheme fallback.
+        words = word_count(text) if orientation != "vertical" else 0
+        reference_lines = "\n".join(candidate(WORD_FIT_REFERENCE_SIZE).lines) if words else ""
+        preserve_words = words > 0 and word_count(reference_lines) <= words
+        chunks = fitting_chunk_count(text) if words else 0
+        preserve_chunks = words > 0 and fitting_chunk_count(reference_lines) <= chunks
+        def fits(result):
+            lines = "\n".join(result.lines)
+            return (not result.overflow and (not preserve_words or word_count(lines) <= words)
+                    and (not preserve_chunks or fitting_chunk_count(lines) <= chunks))
         # Wrapping/height is monotonic for ordinary spacing. Negative spacing
         # can reverse glyph advances, so use exact descending search there.
         if character_spacing < 0 or abs(rotation) > .01:
             for size in range(maximum, 0, -1):
                 result = candidate(size)
-                if not result.overflow:
+                if fits(result):
                     return result
         else:
             low, high = 1, maximum
             while low <= high:
                 size = (low + high) // 2
                 result = candidate(size)
-                if result.overflow:
+                if not fits(result):
                     high = size - 1
                 else:
                     best = result
@@ -288,21 +307,22 @@ class MangaLayoutEngine:
                 w, h = h, w
             return character, path, ink, rotate, w, h, float(font.getlength(character))
 
-        lines = []
-        for paragraph in text.replace("\r", "").split("\n"):
-            current, cursor, left, right = "", 0., float("inf"), float("-inf")
-            for character in paragraph:
+        fit_count, cursor, left, right, extent = 0, 0., float("inf"), float("-inf"), 0.
+        def fits(items):
+            nonlocal fit_count, cursor, left, right, extent
+            if len(items) != fit_count + 1:
+                fit_count, cursor, left, right, extent = 0, 0., float("inf"), float("-inf"), 0.
+            for index in range(fit_count, len(items)):
+                character = items[index]
                 _, _, ink, _, _, h, advance = metrics(character)
-                new_left, new_right = min(left, cursor + ink[0]), max(right, cursor + ink[2])
-                extent = len(current) * step + h if vertical else new_right - new_left
-                if current and extent > (height if vertical else width):
-                    lines.append(current)
-                    current, cursor = "", 0.
-                    new_left, new_right = ink[0], ink[2]
-                current += character
+                left, right = min(left, cursor + ink[0]), max(right, cursor + ink[2])
+                extent = index * step + h if vertical else right - left
                 cursor += advance + character_spacing
-                left, right = new_left, new_right
-            lines.append(current)
+            fit_count = len(items)
+            return extent <= (height if vertical else width)
+
+        lines = [line for paragraph in text.replace("\r", "").split("\n")
+                 for line in wrap_paragraph(paragraph, fits, preserve_words=not vertical)]
 
         placements = []
         min_x = min_y = float("inf")
@@ -311,7 +331,7 @@ class MangaLayoutEngine:
             line_glyphs = []
             cursor = 0.
             line_left, line_right = float("inf"), float("-inf")
-            for row, original in enumerate(line):
+            for row, original in enumerate(graphemes(line)):
                 character, path, ink, rotate, w, h, advance = metrics(original)
                 x = -index * pitch + (size-w)/2 if vertical else cursor + ink[0]
                 y = row * step if vertical else index * pitch + ink[1]
@@ -350,8 +370,9 @@ class MangaLayoutEngine:
         # mark in exported vertical dialogue.
         if character in VERTICAL_FORM_MAP:
             return False
-        category = unicodedata.category(character)
-        return character.isascii() and (character.isalnum() or category.startswith("P"))
+        category = unicodedata.category(character[0])
+        # Match the canvas: letters/digits stack upright, punctuation keeps its rules.
+        return character.isascii() and category.startswith("P")
 
     @staticmethod
     @lru_cache(maxsize=8192)

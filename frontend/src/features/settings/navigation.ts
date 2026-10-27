@@ -12,5 +12,6 @@ export const SETTINGS_PAGES = [
   {id:'shortcuts', get label(){return t("快捷键")}, icon:Keyboard, get description(){return t("自定义工具、视图、区域与页面操作的键盘快捷键。")}},
   {id:'performance', get label(){return t("性能与并发")}, icon:Cpu, get description(){return t("配置页面调度与资源上限，查看模型实际运行设备。")}},
   {id:'language', get label(){return t("界面语言")}, icon:Languages, get description(){return t("选择应用界面使用的语言。")}},
+  {id:'mcp', label:'MCP', icon:Cpu, description:''},
 ] as const
 export type SettingsPageId = typeof SETTINGS_PAGES[number]['id']

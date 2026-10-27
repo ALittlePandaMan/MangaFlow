@@ -18,6 +18,9 @@ def prepare_project_edit(db, project_id, page_ids):
                             .order_by(ImagePage.order_index, ImagePage.id)
                             .execution_options(populate_existing=True)))
     selected = [page for page in pages if page.id in page_ids]
+    from app.services.mcp_context import check_page_version
+    for page in selected:
+        check_page_version(db, page.id)
     versions = {page.id: current_page_version(db, page.id) for page in selected}
     before = {"pages": [_page_state(db, page) for page in selected], "tracked_page_ids": list(page_ids),
               "order": [{"id": page.id, "order_index": page.order_index} for page in pages]}
