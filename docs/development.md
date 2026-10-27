@@ -76,6 +76,12 @@ PSD 使用原生文字层与像素预览；透视、混合字体或竖排拉丁�
 
 GitHub Actions 在 Python 3.11/3.12 上运行 Ruff 和 Pytest，在 Node 20 上运行 ESLint、Vitest 与生产构建，并校验公开配置模板、应用版本和 Docker Compose。依赖升级由维护者按需评估，不自动创建升级 Pull Request。
 
+## 提交署名
+
+使用编程助手时，提交仍沿用用户确认的 Git 作者姓名和邮箱。GitHub 根据提交邮箱关联账号；可使用账号提供的 `noreply` 隐私邮箱，提交前通过 `git var GIT_AUTHOR_IDENT` 检查当前仓库的有效身份。仓库内 `git config --local user.name`、`git config --local user.email` 的优先级高于全局配置；不要将作者自动替换为助手名称。
+
+修改 Git 配置只影响后续提交。已发布历史的作者更正会改变提交 ID，必须在获得明确授权后另行处理。
+
 ## 批量性能改进
 
 当前仅支持 PostgreSQL 18 与 psycopg 3，数据库使用独立 Docker 持久卷。阶段检查点、原文框修复与翻译并行、CTD CUDA 和工作文件回收继续按配置启用。下文模型性能数字是历史专项验收记录，不代表每次运行的耗时。
