@@ -1,226 +1,175 @@
-# MangaFlow
+<h1 align="center">MangaFlow</h1>
 
-[![CI](https://github.com/ALittlePandaMan/MangaFlow/actions/workflows/ci.yml/badge.svg)](https://github.com/ALittlePandaMan/MangaFlow/actions/workflows/ci.yml)
+<p align="center">本地优先的 AI 漫画翻译与嵌字工作台</p>
 
-当前版本：`v0.1.2`
+<p align="center">
+  <a href="https://github.com/ALittlePandaMan/MangaFlow/actions/workflows/ci.yml"><img src="https://github.com/ALittlePandaMan/MangaFlow/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="VERSION"><img src="https://img.shields.io/badge/version-v0.1.2-blue" alt="版本 v0.1.2"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="MIT License"></a>
+</p>
 
-MangaFlow 是一个面向日本漫画的非破坏式 AI 翻译与嵌字工作台。它把文字检测、OCR、上下文翻译、文字分割、背景修复、横/竖排版、人工精修和批量导出串成可恢复流水线。原图始终只读，Mask、净图、透明文字层和最终译图分别保存。
+<p align="center">
+  <a href="#快速开始">快速开始</a> ·
+  <a href="#模型与来源">模型与来源</a> ·
+  <a href="#mcp-自动翻译与复核">MCP 接入</a> ·
+  <a href="docs/development.md">开发指南</a> ·
+  <a href="https://github.com/ALittlePandaMan/MangaFlow/issues">问题反馈</a>
+</p>
 
-当前仓库提供完整可运行的本地工作流。Docker 镜像提供 RF-DETR 独立运行环境与 MangaOCR，默认用 RF-DETR 统一检测文字、气泡和分镜，用 MangaOCR 识别日文漫画。RF-DETR 权重需按[版面检测说明](docs/text-classification.md)显式安装；其他本地模型首次加载时下载所需权重。翻译在未配置 LLM 时只透传原文并标记复核，不会伪装成翻译结果。
+MangaFlow 将漫画导入、文字检测、OCR、翻译、去字修复、排版和导出整合在一个网页工作台中，主要面向日文漫画，也支持中英日混排及人工校对。你可以直接操作画布，也可以通过 MCP 让 Agent 执行批量翻译、看图复核和局部纠错。
 
-> 当前版本定位为可信本机或受控局域网工具，没有用户登录和公网级权限隔离，请勿直接暴露到互联网。
+原图保持只读，蒙版、净图、文字层和最终译图分别保存，支持撤销与继续编辑。检测、OCR 和修复可以在本机运行；选择云端 OCR 或翻译服务时，相应图片或文字会发送到配置的服务商。
 
-Docker 默认只绑定 `127.0.0.1`。确需可信局域网访问时，可显式设置 `MANGAFLOW_BIND_HOST`，并配置防火墙和反向代理鉴权。`/media` 只允许漫画图片、历史图片和字体资产，数据库、配置和工程元数据不会通过静态资源地址公开。
+**本项目使用 [Koharu](https://github.com/koharu-rs/koharu) 发布的 [Koharu Layout RF-DETR Seg 2XL](https://huggingface.co/mayocream/koharu-layout-rfdetr-seg-2xl-1152) 版面检测模型，并参考其漫画版面分析思路。** 其他模型的来源见下方说明。
 
-编辑历史最多保留 100 步。单框属性、批量属性和蒙版修改只记录受影响区域；检测、导入、删除等结构性操作保留完整快照。后台每十分钟检查空闲项目，仅清理不再被当前页面、撤销/重做或区域修订引用的历史资产；新文件有十分钟保护期，每次最多清理 128 个文件，不删除原图。
+## 核心功能
 
-[架构](docs/architecture.md) · [配置与迁移](docs/configuration.md) · [开发指南](docs/development.md) · [MCP 接入](docs/mcp.md) · [常见问题](docs/troubleshooting.md)
+- **多格式导入**：支持 JPG、PNG、WebP，以及 ZIP、CBZ、RAR、CBR 和 PDF；漫画包按相对路径自然排序，PDF 默认以 300 DPI 转为图片。
+- **批量识别与翻译**：检测文字、气泡和分镜，执行 OCR、上下文翻译及阅读顺序整理；可按项目、页面或区域处理，保留人工修改和锁定区域。
+- **文字蒙版与背景修复**：围绕文字像素生成蒙版，用 LaMa 修复背景；支持画笔补蒙版、橡皮擦及局部重新修复。
+- **画布精修**：原文框与译文框分别调整，支持移动、缩放、旋转、矩形、多边形、顶点编辑和透视，以及原图、净图、译图与对照视图。
+- **中英日排版**：英文优先按单词换行，中日文标点禁则、竖排西文正立、字体回退、自动字号和自适应旋转；手动换行、字号与角度优先保留。
+- **后台任务与历史**：任务查询、取消、失败重试及可恢复处理；已完成页面可以继续编辑，上传与导出进度统一显示在右上角“活动”列表。
+- **多格式交付**：导出译图、净图、透明文字层、CBZ、分层 PSD，以及可重新导入继续编辑的工程 ZIP。
+- **MCP 自动化**：官方工作流支持漫画导入、批量识别翻译、逐页视觉复核、局部纠错和导出；具备相应能力的客户端可使用子 Agent 并行复核。
 
-## 架构
+PSD 普通区域提供可编辑文字层；透视、混合字体等特殊排版使用精确像素层并附隐藏文字备份。接收者需要安装对应字体；已验证文件结构与合成预览，实际 Photoshop 编辑兼容性仍需人工实测，详见[导出说明](docs/development.md#常用检查)。
 
-```mermaid
-flowchart LR
-    UI[React / Konva 编辑器] --> API[FastAPI API]
-    API --> DB[(PostgreSQL)]
-    API --> FS[原图与派生资源]
-    API --> Q[后台任务管理器]
-    Q --> P[可恢复 Pipeline]
-    P --> D[TextDetector]
-    P --> O[OCRProvider]
-    P --> T[Translator]
-    P --> M[Mask Processor]
-    P --> I[Inpainter]
-    P --> L[Manga Layout Engine]
-    L --> R[Renderer]
+## 快速开始
+
+### 1. 准备运行环境
+
+当前默认 Docker 配置使用 **NVIDIA GPU / CUDA 12.6**，需要兼容的显卡驱动，以及支持 Compose `gpus` 配置的 Docker Compose 版本。
+
+- **Windows**：使用 WSL2 和 Docker Desktop，启用 WSL 集成；在 WSL 的 Bash 终端执行下方命令。
+- **Linux**：安装 Docker、Docker Compose 和 NVIDIA Container Toolkit。
+- **CPU / 其他环境**：按[本地模型依赖说明](docs/development.md#本地模型依赖)安装匹配硬件的依赖。当前默认 Compose 包含 `gpus: all`，需要 GPU 运行环境。
+
+### 2. 拉取镜像并启动
+
+**预构建镜像尚未就绪：首个正式镜像仍待发布并完成匿名拉取验证。** 发布后，从 [Releases](https://github.com/ALittlePandaMan/MangaFlow/releases) 下载对应版本的 `mangaflow-docker-版本号.zip`，解压后进入部署目录。该安装包只包含公开配置与启动脚本，无需克隆源码或本地构建。
+
+以 `0.1.2` 部署包为例，在 Bash 中执行：
+
+```bash
+cd mangaflow-docker-0.1.2
+bash scripts/docker.sh pull
+bash scripts/docker.sh up -d
 ```
 
-后端业务只依赖抽象接口，模型选择集中在 `ProviderRegistry`。开发队列使用 `asyncio` 后台任务，包含队列、暂停、继续、失败重试、取消、进度和 WebSocket 更新；`ProcessingTask` 与 Pipeline 边界可直接替换为 Celery、RQ 或 Dramatiq worker，业务阶段无需改写。
+打开 [http://localhost:8080](http://localhost:8080)。首次构建和模型准备可能较慢，可查看状态与日志：
 
-## 已实现功能
+```bash
+bash scripts/docker.sh ps
+bash scripts/docker.sh logs -f backend
+```
 
-- 漫画翻译 MCP：设置页默认开启，支持 Agent 自动导入、翻译去字、逐页看图纠错和导出；提供 HTTP 与本地 stdio 连接，管理配置继续在网页操作。
-- Project、批量图片上传、页序、缩略图导航和非破坏式文件存储。
-- 稳定 `TextRegion` ID，`R001` 等显示名称在删除或合并后连续编号；polygon、bbox、OCR、翻译、样式、Mask、锁定、复核原因和版面结果贯穿所有阶段。
-- 页级和区域级 Detection / OCR / Translation / Inpainting / Rendering API；Pipeline 可从任意阶段继续。
-- RF-DETR 统一输出文字、拟声词、气泡与分镜，按像素包含率关联文字和气泡，并按分镜 → 气泡 → 文字遍历阅读顺序；独立文字实例不强制合并。另有轻量 OpenCV 检测与 MangaOCR/PaddleOCR/Tesseract OCR 适配器。
-- OpenAI-compatible 严格 JSON 翻译，支持 Ollama、vLLM、LM Studio 等兼容端点；检查 ID 遗漏/新增，自动重试。
-- Polygon Mask、画笔/橡皮擦、硬度、撤销/重做、Clear/Dilate/Erode/Blur/Expand。
-- 文本分割 Mask 只修改文字像素附近；背景修复统一交给 LaMa，并始终从不可变原图重建，避免整图色偏和重复处理污染。
-- 漫画排版引擎：字形测量、逐字符换行、字号拟合、最小字号和 overflow；中文竖排按右到左列逐字布局，不旋转整段文字，并处理竖排标点和西文旋转。
-- TrueType/OpenType、项目字体上传、按字符字体 fallback、颜色、描边、行距、字距、对齐、旋转与透明度。
-- React/Konva 分层画布：缩放、平移、适屏、多选、拖动、四边形/多边形顶点、旋转、矩形/多边形/套索建区和区域合并。
-- Original / Clean / Translated / Comparison 视图，右侧文本图层与可选 Mask 叠加，原文框与译文框独立几何，当前编辑会话 Undo/Redo。
-- 最终译图、净图和可二次编辑的完整工程导出；未修复页面导出净图时自动回退原图。
-- 云端 API Key 只写入被忽略的 `.env`，列表和响应只返回 `has_api_key`，日志不输出密钥。
+启动脚本自动创建缺失的 `config.yaml`、`.env` 和私有数据库密码。在 WSL 中会调用 Windows Docker 客户端，以正确挂载项目目录。PostgreSQL 由 Compose 启动；项目记录保存在数据库卷，图片和模型分别保存在 `data/`、`models/`。备份与换机需同时保存数据库、图片和私有配置，见[配置与迁移](docs/configuration.md)。
 
-## 目录
+部署包固定前后端镜像版本。更新时先备份，再修改私有 `.env` 中的 `MANGAFLOW_IMAGE_TAG` 为已发布的新版本，重新执行 `pull` 和 `up -d`。源码构建见[开发指南](docs/development.md#快速开始)，镜像发布与升级见 [Docker 部署说明](docs/docker-release.md)。
+
+默认仅监听本机 `127.0.0.1`；当前网页没有用户登录与公网权限隔离，远程部署请先阅读[部署与访问](docs/configuration.md#部署与访问)。
+
+### 3. 安装模型并配置翻译
+
+1. 在网页点击 **“安装推荐配置”** 并确认，准备 RF-DETR、PaddleOCR-VL 1.6、LaMa 和 Pillow。已完整安装时会提示“配置已安装”。首次下载需能访问对应模型仓库。
+2. 在 **“设置 → 云端翻译”** 选择翻译服务。使用自定义接口时填写地址、模型和 API Key，再测试连接并保存；也可选择 Google 网页翻译，或配置本地兼容服务。
+3. 在项目中选择目标语言与字体。镜像包含 Noto Sans CJK，也可上传需要的字体。
+
+推荐安装负责本地检测、识字、修复和排版；**翻译服务需要单独配置**。模板中的 `example.com`、`example-model` 是占位值，`passthrough` 仅保留原文并标记待复核。
+
+### 4. 开始翻译
+
+1. 新建项目，通过“添加图片”选择或拖入图片、漫画包、PDF；MangaFlow 工程包使用独立的工程导入入口。
+2. 批量检测与 OCR，核对误检、漏检和原文；必要时补框、拆框或修正文字。
+3. 执行翻译、去字修复和排版，对照原图检查译文、残影、画面及文字溢出。
+4. 调整文字和蒙版，重新处理受影响区域，确认后导出 CBZ、图片包、PSD 或工程包。
+
+加密或分卷漫画包暂不支持。导入限制、PSD 字体和导出细节见[开发指南](docs/development.md#常用检查)，修复与排版的工作方式见[翻译质量说明](docs/translation-quality.md)。
+
+## 模型与来源
+
+检测、OCR、翻译和修复可以分别选择。以下为当前支持的主要本地模型及渲染组件：
+
+| 用途 | 模型或组件 | 上游来源与接入方式 |
+| --- | --- | --- |
+| 版面检测 | Koharu Layout RF-DETR Seg 2XL | [mayocream / Koharu 权重](https://huggingface.co/mayocream/koharu-layout-rfdetr-seg-2xl-1152)，检测文字、拟声词、气泡与分镜 |
+| OCR | PaddleOCR-VL 1.6 | [PaddlePaddle/PaddleOCR-VL-1.6](https://huggingface.co/PaddlePaddle/PaddleOCR-VL-1.6)，部署模板与推荐安装的默认项 |
+| OCR | MangaOCR | [kha-white/manga-ocr-base](https://huggingface.co/kha-white/manga-ocr-base)，可选日文漫画识字模型 |
+| OCR | Baberu OCR | [genshiai-daichi/baberu-ocr](https://huggingface.co/genshiai-daichi/baberu-ocr)，可选本地识字模型 |
+| OCR | Hayai OCR v2 | [JustANormalTinkerer/hayai-ocr-v2](https://huggingface.co/JustANormalTinkerer/hayai-ocr-v2)，可选本地识字模型 |
+| 字形分割 | Comic Text Detector | [comic-text-detector](https://github.com/dmMaze/comic-text-detector)，使用独立下载的 ONNX 权重提取文字像素 |
+| 背景修复 | LaMa | [advimman/lama](https://github.com/advimman/lama)，通过 [simple-lama-inpainting](https://github.com/enesmsahin/simple-lama-inpainting) 接入 |
+| 排版渲染 | Pillow | [python-pillow/Pillow](https://github.com/python-pillow/Pillow)，结合本项目的文字布局实现 |
+
+PaddleOCR-VL、Baberu 和 Hayai 使用与 Koharu 对齐的上游检查点，在 MangaFlow 的 Python/PyTorch 环境中推理。**这些 OCR 模型分别由其上游作者提供。** 新安装统一推荐 PaddleOCR-VL 1.6；已有 MangaOCR 等模型选择继续保留，升级不会自动切换 OCR 或重新识别页面。
+
+翻译支持自定义兼容接口，包括 Chat Completions、Responses 和 Anthropic Messages 协议，也可对接 Ollama、vLLM、LM Studio 等本地服务；Docker 访问宿主机服务时，地址需使用容器可达的主机名。另有 Google 网页翻译选项，需要可用网络，可能受到限流，且不使用项目上下文。OCR 还可选择普通 PaddleOCR、Tesseract 或云端识字服务。
+
+模型权重按需单独下载并缓存，不随本仓库分发。RF-DETR 及新增本地 OCR 使用固定版本；来源、校验和安装方式见[版面检测](docs/text-classification.md)、[本地 OCR](docs/local-ocr.md)及[字形分割](docs/translation-quality.md#可选像素模型的安装与来源)。
+
+## MCP 自动翻译与复核
+
+在 **“设置 → MCP”** 查看安装指令与连接配置，默认启用。官方工作流采用：
+
+**批量检测、OCR、翻译 → 同时复核已完成页 → 集中纠错 → 批量修复、排版 → 复核译图 → 局部修正与导出。**
+
+| 连接方式 | 适用场景 | 本机文件导入 |
+| --- | --- | --- |
+| 本地连接程序（stdio） | Agent 处理本机文件，连接本机或远程 MangaFlow | `local_import` 接受 Agent 能访问的明确目录、图片、漫画包或 PDF，自动上传并按名称创建项目 |
+| HTTP | 处理服务端已有项目或已上传资产 | 可提交导入资产；读取客户端磁盘需使用本地连接程序 |
+
+默认 HTTP 地址为 `http://localhost:8080/mangaflow`，兼容地址 `/mcp` 保留。可将下面的请求交给 Agent：
 
 ```text
-.github/                    CI 和协作模板
-backend/app/api/            FastAPI 路由
-backend/app/application/    跨路由应用命令
-backend/app/services/       Provider 与领域服务
-backend/tests/              核心算法与 API 测试
-frontend/src/components/    共享 UI
-frontend/src/features/      编辑器等业务模块
-frontend/src/pages/         路由页面
-config.example.yaml         可公开提交的脱敏配置模板
-config.yaml                 当前六项生效配置（不提交）
-data/                       原图及派生资源（不提交）
-models/                     本地模型缓存（不提交）
-docker/                     后端、前端与 Nginx 镜像
-docs/                       架构、配置与开发文档
-scripts/                    初始化、开发和检查脚本
+请读取 http://localhost:8080/mangaflow/setup，按官方说明安装 MangaFlow
+本地 MCP 连接程序并配置当前客户端。重新连接后确认 local_import 可用，
+将我指定的漫画目录按文件夹名导入新项目，读取 workflow_get，按官方工作流
+完成翻译、逐页看图复核和必要纠错，最后导出 CBZ 及复核报告到指定目录。
 ```
 
-## 许可证
+使用远程服务时替换地址，并按接入文档配置认证。本地连接程序需要 Node.js 20.11+；图片查看和子 Agent 能力取决于客户端及所选模型。官方接口面向标准 MCP 客户端，**WorkBuddy 等客户端的实际多模态复核与子 Agent 能力仍需分别实测**，当前协议测试不代表视觉质量已经通过。
 
-MangaFlow 使用 [MIT License](LICENSE)。
+服务端提供 20 个翻译工具，本地程序增加 4 个传输工具。Agent 可以修正 OCR、译文、原文框、译文框和局部蒙版；模型安装与系统管理在网页完成。网页与 MCP 共用项目、模型和队列，网页仅展示网页发起的任务进度；MCP 任务通过工具查询。完整流程、版本保护及验收记录见 [MCP 接入文档](docs/mcp.md)。
 
-## 环境要求
+可让 Agent 读取官方 [漫画翻译 Skill](.agents/skills/mangaflow-translate/SKILL.md)，按当前 MCP 工作流执行；Skill 的加载方式见 [Agent 资源说明](.agents/README.md)。
 
-- Python 3.11 或 3.12
-- Node.js 20+
-- PostgreSQL 18 与 psycopg 3（Docker 启动会自动创建数据库服务）
-- 推荐安装 Noto Sans CJK 字体；Docker 镜像已包含
-- OpenCV fallback 仅需 CPU。MangaOCR 或其他深度模型可使用 CUDA；具体 CUDA/PyTorch 版本应与显卡驱动匹配安装
-- Docker 24+ 与 NVIDIA Container Toolkit（Docker GPU 推理）
+## 开发与文档
 
-## 本地安装与启动
-
-本地开发需先准备可连接的 PostgreSQL，设置 `MANGAFLOW_DATABASE_URL` 和进程环境中的 `PGPASSWORD`，详见[数据库配置](docs/configuration.md#postgresql-数据库)。默认 Compose 数据库仅供容器内部连接，不发布宿主机端口；完整容器运行可直接使用下文的 Docker 启动方式。
+前端使用 React、TypeScript 和 Konva，后端使用 FastAPI、Python/PyTorch 与 PostgreSQL。开发环境需要 Python 3.11／3.12、Node.js 20.11+ 和可连接的 PostgreSQL。
 
 ```bash
 ./scripts/bootstrap.sh
+# 按配置文档设置 MANGAFLOW_DATABASE_URL 和 PGPASSWORD 后启动
 ./scripts/dev.sh
 ```
 
-打开 `http://localhost:5173`；API 文档位于 `http://localhost:8000/docs`。也可以分别运行：
+前端地址为 `http://localhost:5173`，API 文档为 `http://localhost:8000/docs`。完整依赖、隔离模型环境和检查命令见[开发指南](docs/development.md)。
 
-```bash
-cd backend && ../.venv/bin/uvicorn app.main:app --reload --port 8000
-cd frontend && npm run dev
-```
+使用编程 Agent 开发时，从 [AGENTS.md](AGENTS.md) 和 [开发 Skill](.agents/skills/mangaflow-development/SKILL.md) 了解仓库规则与验证入口。
 
-## Docker
-
-```bash
-./scripts/docker.sh up --build
-```
-
-该脚本在 WSL + Docker Desktop 环境中会自动调用 Windows Docker 客户端，确保 `data` 和 `models` 真正挂载到项目目录；在原生 Linux/macOS 中则直接调用 `docker compose`。后续的 Compose 命令也建议通过该脚本执行，例如 `./scripts/docker.sh ps`。
-
-打开 `http://localhost:8080`。`data/` 与 `models/` 以卷挂载，因此重建容器不会丢失工程或已下载的权重；`config.yaml` 与 `.env` 会挂载到容器并在设置保存时同步更新。首次启动缺少本地配置时，`scripts/docker.sh` 会从脱敏的 `config.example.yaml` 与 `.env.example` 自动创建。
-
-## 模型配置
-
-“设置 → 性能与并发”可选择自动调节、固定上限或串行。默认自动模式最多处理 4 个不同页面，CPU 蒙版计算最多使用 4 个工作线程；实际放行数量根据内存余量、CPU 负载和处理耗时调整。同一页的任务保持有序，本地共享模型推理暂时统一限制为 1 路，云端请求遵守 Provider 限流。减少上限不会中断正在执行的任务。设置保存在 `data/execution-policy.json`，重启后保留。
-
-页面任务池与 CPU 计算池互相独立，子线程只计算蒙版、返回普通数据；页面任务负责数据库与撤销记录。模型加载、推理和异常回退共用保护锁；图片写入采用临时文件原子替换。PostgreSQL 使用短事务与行锁，项目历史提交保持有序。自动调节属于保守试探，并发增加不保证每一种任务都更快。
-
-开发环境需安装 `backend/requirements/dev.txt`；生产环境的基础及性能监测依赖统一在 `base.txt`。使用 `bash scripts/test-backend.sh -q` 在独立 PostgreSQL 数据库运行回归；不会调用真实云端 Provider。
-
-当前可迁移配置位于 `config.yaml`，里面保存文字检测、图像修复、OCR、排版、云端翻译与字体六项活动配置，不包含数据库 ID、运行数据或任何 API Key。在设置页面安装、切换或编辑 Provider 后，后端会自动把当前生效配置原子写回该文件。Docker 后端每次启动都会幂等读取它：已有网页配置保持不变，只补齐缺失阶段；废弃的 Paddle 文字检测配置会迁移为 RF-DETR，现有页面不自动重检。配置中启用 `preload` 后会加载本地模型；MangaOCR、PaddleOCR 识字与 LaMa 可以自动下载，RF-DETR 权重需先显式安装。
-
-云端翻译的地址、协议、模型和 Prompt 会写入 `config.yaml`，密钥只写入被 Git 忽略的 `.env`，不会进入 YAML 或 API 响应。`config.example.yaml` 和 `.env.example` 只包含 `example.com`、`example-model` 与空密钥。迁移到另一台电脑时，安全复制源码、`config.yaml`、`.env` 与需要保留的 `data/`，然后执行：
-
-```bash
-./scripts/docker.sh up --build -d
-```
-
-`models/` 为空时需重新安装 RF-DETR 权重，其他模型按需自动下载；复制原有 `models/` 可直接复用缓存。Compose 健康检查会让前端等待后端完成首次模型准备，避免下载期间过早进入工作台。
-
-首次运行某阶段且没有默认配置时，后端仍会自动登记推荐配置。也可以在“设置”页面点击“安装推荐配置”，完成配置升级及加载验证（RF-DETR 权重需预先安装）；CLI 等价命令为：
-
-```bash
-./scripts/docker.sh exec backend python -m app.services.infra.model_provisioning --preload --upgrade-fallbacks
-```
-
-推荐组合与可替换 Provider：
-
-- Detection：推荐 `rfdetr`（Koharu RF-DETR），一套模型检测文字、拟声词、气泡和分镜；保留 `opencv-fallback` 作为低资源选项。旧 Paddle 检测与 YOLO 气泡链路已移除，PaddleOCR 识字适配器不受影响。
-- OCR：默认 `manga-ocr`；也可选择 `review-fallback`、`tesseract`、`paddleocr`、`cloud-ocr`（专用云端 OCR 通用接口）或 `cloud-multimodal`（多模态大模型识字）。首次加载 MangaOCR 会下载约 400 MB 权重。
-- Translation：`openai-compatible`。填写 Base URL、模型名和 API Key；Ollama 示例地址为 `http://localhost:11434/v1`。
-- Inpainting：Docker 镜像内置 `simple-lama-inpainting`，推荐配置统一使用 `lama` 处理文字区域；`opencv` 仅作为低资源备选。
-- Rendering：`pillow`，支持系统 `.ttf` / `.otf` / `.ttc` / `.otc` 字体集合和项目上传字体；低对比文字会自动补反色描边。
-
-版面检测权重来自 [`mayocream/koharu-layout-rfdetr-seg-2xl-1152`](https://huggingface.co/mayocream/koharu-layout-rfdetr-seg-2xl-1152)，固定 revision 并校验 SHA-256，不随仓库提交。模型涉及 Manga109 衍生训练数据，不应假设代码授权同时覆盖权重和训练数据；商业使用前请核对各自条款。详见[版面检测说明](docs/text-classification.md)。
-
-Docker 默认把 NVIDIA GPU 注入后端，并使用 CUDA 12.6 版 PyTorch/PaddlePaddle。可迁移清单的 `device: recommended` 只在缺失配置首次导入时检测硬件，并在数据库中落成明确的 `cuda:0` 或 `cpu`，Provider 运行期间不使用 `auto`。可用 `.env` 中的 `MANGAFLOW_GPU_DEVICE` 指定 GPU index/UUID，默认为 `all`。
-
-非 Docker 开发环境如只需 CPU，可先安装 PyTorch CPU 版，再安装模型依赖：
-
-```bash
-pip install --index-url https://download.pytorch.org/whl/cpu torch==2.6.0
-pip install --extra-index-url https://www.paddlepaddle.org.cn/packages/stable/cpu/ -r backend/requirements/models.txt
-```
-
-Paddle Provider 会自动将保存的 `cuda:0` 转换为 Paddle 使用的 `gpu:0`。
-
-## 环境变量
-
-### 可选：多模态大模型识字
-
-在“设置 → OCR 识别 → 编辑”中，将 Provider 切换为“多模态大模型识字”。可以选择“使用当前翻译模型”，保存时由后端复制默认翻译模型的地址、协议、模型名和密钥；不会把密钥返回浏览器，也不会复制翻译 Prompt。复制后 OCR 与翻译配置独立，后续改动不自动同步。也可以独立填写 API Base URL、API Key，获取并选择模型；服务商没有模型列表时，可以手动输入完整模型 ID。所选模型必须支持图片输入。
-
-支持 OpenAI Chat Completions、OpenAI Responses 和 Anthropic Messages 兼容协议；图片请求格式分别参考 [OpenAI 图片输入](https://developers.openai.com/api/docs/guides/images-vision)与 [Anthropic Vision](https://platform.claude.com/docs/en/build-with-claude/vision)。完整端点 URL 可以自动判断协议，也可以手动指定；Base URL 通常需要包含服务商要求的 `/v1` 前缀。
-
-识别 Prompt、超时、失败重试和最大输出 Token 数都可配置，Temperature 可以留空使用模型默认值。系统会自动附加 `{"text":"原文"}` 输出约定。拒绝、截断或格式错误不会作为原文写入；识别结果没有可用置信度时，不伪造分数。
-
-此模式仍使用本地文字检测和气泡关联结果，逐框上传裁剪图片（最长边最多 2048 px）并将识别结果写入原文，不直接翻译或重新划分气泡。**图片会发送给配置的服务商，并可能按区域请求产生费用。** 保存配置和启动检查不会上传图片；点击 OCR 后才会请求识别。OCR 与翻译的密钥独立，OCR 使用 `.env` 中的 `MANGAFLOW_OCR_API_KEY`，不会把密钥写入 `config.yaml`。安装此功能不会自动切换现有本地 OCR。
-
-### 可选：云端 OCR（通用接口）
-
-此入口用于专用 OCR 服务，和上面的通用多模态大模型分开配置，但都只上传裁剪区域。切换 Provider 时会保留各自已保存的配置和密钥；保存后所选 Provider 成为当前 OCR，原有本地 OCR 配置也保留。
-
-- **OCR 专用模型（Chat Completions）**：填完整识别地址（例如 `https://api.siliconflow.cn/v1/chat/completions`）、独立密钥和 OCR 模型名。通过标准 `image_url` 消息传入 PNG Data URL，使用 `max_tokens`，直接读取 `choices[0].message.content` 的纯文字，不要求模型输出 JSON。截断或拒绝不会写入原文。
-- **JSON + Base64**：自定义图片字段名、纯 Base64 / Data URL 编码、非敏感附加参数和返回文字路径。
-- **Multipart 文件上传**：自定义上传字段名和标量附加参数。图片文件名固定为 `region.png`。
-- **鉴权与返回值**：支持 Bearer Token、自定义 API Key 请求头或无鉴权；`data.words.*.text` 可提取多个文本字段并按返回顺序换行，`result.0.text` 支持数组下标。密钥不能放入 URL 或附加参数；不会跟随重定向。
-
-硅基流动的调用格式见[官方 Chat Completions 文档](https://api-docs.siliconflow.cn/docs/api/chat-completions-post)。`PaddlePaddle/PaddleOCR-VL-1.5` 的识别指令为 `OCR:`，见[官方模型卡](https://huggingface.co/PaddlePaddle/PaddleOCR-VL-1.5)。`deepseek-ai/DeepSeek-OCR` 的纯文本识别指令为 `<image>`、换行、`Free OCR.`，见[官方多模态输入文档](https://docs.siliconflow.cn/docs/userguide/capabilities/multimodal-vision)。具体模型可用性以服务端模型列表为准。
-
-“通用接口”并不意味着自动兼容所有厂商。需要签名算法、OAuth、查询参数鉴权、异步任务轮询或专有二进制协议的服务，需新增适配器或在前面提供兼容网关。专用 OCR 模型也可能采用视觉语言架构；这里按用途和输出协议区分，而不是按 HTTP 端点名称区分。
-
-### 云端 OCR 并发调度
-
-两种云端识别均可在配置窗口选择串行、固定或自适应并发。已有云端配置未设置这些字段时，默认使用自适应：从 2 路开始（不超过设定上限），默认上限 8，允许设置 1–16；每分钟最多发起 60 次请求，可按服务商配额调整为 1–6000。每个区域仍是独立请求，不额外上传图片探测上限。
-
-- 连续成功后逐步增加；增加并发未提高估算吞吐时回退。HTTP 429、超时或服务端错误会降低自适应并发并统一退避，优先遵守 `Retry-After`。固定模式保持设定数量，但仍遵守速率和退避。
-- 失败区域按“失败重试”次数重试，成功结果不重复请求；401/403 等不可重试错误停止后续派发。进度显示完成数、当前在途/允许并发数及退避倒计时。
-- 同一个后端进程内，相同接口域名/端口、密钥及模型的 OCR 和翻译共享速率、并发额度与退避。翻译仍将一页待翻译文本合成一次请求。不同密钥的账号总额度、TPM/图片额度不能由此推断，应按服务商限制设置；多进程部署需外部共享限流器。
-- 暂停或取消后不再派发新请求，等待已发请求结束后释放任务；已发送请求仍可能计费，取消后返回的文字不会写入。每个结果由主任务统一写库，并检查区域版本，手工修改、锁定或删除后不会被旧结果覆盖。
-- 本地 OCR 保持串行，页面队列并发配置不变。学习值只保留在进程内，空闲 10 分钟重新从低并发开始，重启后重新学习。
-
-### 通用配置
-
-所有变量以 `MANGAFLOW_` 开头。常用变量见 `.env.example`：数据目录、模型目录、模型清单路径、云端翻译 API Key、自动配置开关、数据库 URL、CORS、上传大小、OCR 复核阈值、队列并发数与 Fernet 密钥。不要把真实 `.env` 或密钥提交到版本库。
-
-## 完整操作流程
-
-1. 新建项目并批量导入漫画原图。
-2. 打开编辑器，使用“重新检测”完成整页检测和 OCR；也可用“批量识别”处理其他尚未识别的页面。检查文本框后再执行翻译或修复；已有框但原文为空时，翻译会先补 OCR。
-3. 检查检测框；可拖动/缩放/旋转，编辑 polygon 顶点，或用矩形、多边形、套索补建区域。
-4. 在右侧编辑 OCR 原文、方向和几何；右键单一区域可重新 OCR、修复或翻译。再次“重新检测”会替换该页现有框和识别结果，不跳过已编辑的框。
-5. 配置 OpenAI-compatible Provider 后按页翻译；锁定人工确认区域可避免批处理覆盖。
-6. 切换蒙版视图，用画笔添加、橡皮擦删除 Mask，形状笔刷也遵守当前添加/删除模式，然后执行修复。检测设置的四边扩边仅调整文本框，不膨胀修复 Mask。
-7. 编辑译文、字体、字号、行字距、颜色、描边、对齐和旋转，检查画布预览与 overflow warning。翻译、修复后会自动排版，导出时按当前文字与样式渲染。
-8. 导出译图、净图或完整工程 ZIP；工程包可再次导入继续编辑。
-
-## 测试
-
-文字像素分割、气泡保护、残留复核、分镜阅读顺序及可见文本框排版的原理、模型安装和限制见 [翻译质量说明](docs/translation-quality.md)。
-
-```bash
-./scripts/check.sh
-```
-
-测试覆盖日漫阅读顺序、Mask 后处理、结构化翻译 ID、横竖排 font fitting、overflow、项目/页面/区域 API、密钥脱敏，以及前端全局 Dialog 和加载状态的用户交互与无障碍语义。
+| 文档 | 内容 |
+| --- | --- |
+| [架构说明](docs/architecture.md) | 模块边界、流水线、数据与历史资产 |
+| [配置与迁移](docs/configuration.md) | 模型配置、密钥、云端 OCR、并发、备份与部署 |
+| [翻译质量](docs/translation-quality.md) | 蒙版、背景保护、上下文、排版及能力边界 |
+| [版面检测](docs/text-classification.md) | Koharu RF-DETR、阅读顺序及安装 |
+| [本地 OCR](docs/local-ocr.md) | 可选识字模型、固定检查点及验证 |
+| [MCP 接入](docs/mcp.md) | 安装、工具、自动翻译和多 Agent 协作 |
+| [常见问题](docs/troubleshooting.md) | 模型加载、GPU、翻译与数据库排查 |
 
 ## 常见问题
 
-- **找不到中文字形**：安装 Noto Sans CJK，或在项目字体接口/界面上传包含目标字符的 TTF/OTF。
-- **MangaOCR 首次很慢**：首次会下载和加载权重；确认缓存目录可写，GPU 环境确认 PyTorch 能识别 CUDA。
-- **OpenAI-compatible 返回解析错误**：确认服务支持 chat completions，并让模型只返回以 `R001` 等 ID 为键的 JSON 对象。
-- **修复破坏气泡边框**：在蒙版视图用橡皮擦缩小擦除范围。Inpainting 是依据上下文生成合理背景，不是恢复已不可见的真实像素。
-- **数据库连接或锁冲突**：默认使用 PostgreSQL，先检查数据库健康状态与连接配置，再排查长事务或额外写入进程。配置和备份见[数据库配置](docs/configuration.md)。任务调度仍只支持一个后端服务进程，不能因换库增加 workers。
+- **首次启动或模型加载较慢**：检查网络与模型缓存权限，通过 `./scripts/docker.sh logs -f backend` 查看准备进度；已下载权重会复用。
+- **译文仍是原文**：检查翻译服务是否已配置，避免使用示例地址或 `passthrough` 占位配置。
+- **缺少中文字形或文字溢出**：选择包含目标字符的字体，检查译文框、字号、间距和自动字号设置。
+- **原文有残影或画面误擦**：对照原图修改蒙版；遗漏笔画可补画蒙版，再局部修复。生成修复仍需人工或 Agent 复核。
+- **Agent 无法导入本机目录**：使用官方本地连接程序，确认 `mcp_status` 返回 `local_import` 能力；HTTP 连接可处理已有项目或资产。
+
+其他问题请查阅[排查文档](docs/troubleshooting.md)，或提交包含复现步骤及脱敏日志的 [Issue](https://github.com/ALittlePandaMan/MangaFlow/issues)。
+
+## 致谢与许可证
+
+感谢 [Koharu](https://github.com/koharu-rs/koharu) 团队公开漫画版面检测模型和实现思路，以及 RF-DETR、PaddleOCR、MangaOCR、Baberu、Hayai、Comic Text Detector、LaMa 和相关依赖的作者。
+
+MangaFlow 源码使用 [MIT License](LICENSE)。第三方代码、字体、模型权重及训练数据遵循各自条款；Koharu RF-DETR 模型涉及 Manga109 衍生训练数据，具体授权见[模型卡](https://huggingface.co/mayocream/koharu-layout-rfdetr-seg-2xl-1152#license-and-training-data-terms)。本项目的 MIT 许可证不替代这些上游条款。

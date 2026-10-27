@@ -1,0 +1,72 @@
+# Prebuilt NVIDIA CUDA deployment. Source builds use docker-compose.yml.
+services:
+  postgres:
+    image: postgres:18-bookworm
+    environment:
+      POSTGRES_DB: mangaflow
+      POSTGRES_USER: mangaflow
+      POSTGRES_PASSWORD: ${MANGAFLOW_POSTGRES_PASSWORD:?Set MANGAFLOW_POSTGRES_PASSWORD in the private .env file}
+    volumes:
+      - postgres-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mangaflow -d mangaflow"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    restart: unless-stopped
+
+  backend:
+    image: ghcr.io/alittlepandaman/mangaflow-backend:${MANGAFLOW_IMAGE_TAG:-0.1.2}
+    platform: linux/amd64
+    environment:
+      MANGAFLOW_DATABASE_URL: postgresql+psycopg://mangaflow@postgres:5432/mangaflow
+      PGPASSWORD: ${MANGAFLOW_POSTGRES_PASSWORD:?Set MANGAFLOW_POSTGRES_PASSWORD in the private .env file}
+      MANGAFLOW_DATA_DIR: /data
+      MANGAFLOW_MODEL_DIR: /models
+      MANGAFLOW_MODEL_MANIFEST_PATH: /config/config.yaml
+      MANGAFLOW_ENVIRONMENT_FILE_PATH: /config/.env
+      MANGAFLOW_AUTO_PROVISION_MODELS: ${MANGAFLOW_AUTO_PROVISION_MODELS:-true}
+      MANGAFLOW_CORS_ORIGINS: '["http://localhost:5173","http://localhost:8080"]'
+      MANGAFLOW_TASK_CONCURRENCY: ${MANGAFLOW_TASK_CONCURRENCY:-4}
+      MANGAFLOW_EXECUTION_MODE: ${MANGAFLOW_EXECUTION_MODE:-auto}
+      MANGAFLOW_CPU_WORKERS: ${MANGAFLOW_CPU_WORKERS:-4}
+      MANGAFLOW_NATIVE_THREADS: ${MANGAFLOW_NATIVE_THREADS:-2}
+      HF_HOME: /models/huggingface
+      PADDLE_PDX_CACHE_HOME: /models/paddlex
+      TORCH_HOME: /models/torch
+      NVIDIA_VISIBLE_DEVICES: ${MANGAFLOW_GPU_DEVICE:-all}
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      - ./data:/data
+      - ./models:/models
+      - ./config.yaml:/config/config.yaml
+      - ./.env:/config/.env
+    ports:
+      - "${MANGAFLOW_BIND_HOST:-127.0.0.1}:8000:8000"
+    gpus: all
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import json, urllib.request; assert json.load(urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2))['status'] == 'ok'"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 30m
+    restart: unless-stopped
+
+  frontend:
+    image: ghcr.io/alittlepandaman/mangaflow-frontend:${MANGAFLOW_IMAGE_TAG:-0.1.2}
+    platform: linux/amd64
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "${MANGAFLOW_BIND_HOST:-127.0.0.1}:8080:80"
+    restart: unless-stopped
+
+volumes:
+  postgres-data:

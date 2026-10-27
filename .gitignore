@@ -5,8 +5,17 @@
 config.yaml
 *.local
 
-# Project-local agent skills
-.agents/
+# Publish only MangaFlow's official agent resources; keep local skills private.
+/.agents/*
+!/.agents/README.md
+!/.agents/skills/
+/.agents/skills/*
+!/.agents/skills/mangaflow-translate/
+/.agents/skills/mangaflow-translate/*
+!/.agents/skills/mangaflow-translate/SKILL.md
+!/.agents/skills/mangaflow-development/
+/.agents/skills/mangaflow-development/*
+!/.agents/skills/mangaflow-development/SKILL.md
 
 # Python environments and caches
 .venv/

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from pathlib import Path
 
 import pytest
 import yaml
@@ -143,6 +144,26 @@ def test_apply_manifest_only_fills_missing_default_and_preserves_existing_choice
     assert detection.provider == "opencv-fallback"
     assert detection.config == {"device": "cpu", "threshold": 0.7}
     assert next(item for item in report if item["kind"] == "detection")["action"] == "kept"
+
+
+@pytest.mark.parametrize("existing_ocr", [False, True])
+def test_public_template_recommends_paddle_vl_without_changing_existing_mangaocr(db, existing_ocr):
+    path = Path(__file__).resolve().parents[2] / "config.example.yaml"
+    manifest = manifests.load_model_manifest(path)
+    assert manifest.stages["ocr"].provider == "paddleocr-vl-1.6"
+    assert "model" not in manifest.stages["ocr"].config
+    previous = None
+    if existing_ocr:
+        previous = ModelConfig(kind="ocr", name="User OCR", provider="manga-ocr", enabled=True,
+                               is_default=True, config={"device": "cpu", "model": "user/checkpoint"})
+        db.add(previous)
+        db.commit()
+    manifests.apply_model_manifest(db, manifest)
+    current = db.scalar(select(ModelConfig).where(ModelConfig.kind == "ocr", ModelConfig.is_default.is_(True)))
+    assert current.provider == ("manga-ocr" if existing_ocr else "paddleocr-vl-1.6")
+    if previous:
+        assert current.id == previous.id
+        assert current.config == {"device": "cpu", "model": "user/checkpoint"}
 
 
 def test_apply_manifest_does_not_clear_existing_secret_when_environment_is_missing(db: Session, monkeypatch) -> None:

@@ -3,6 +3,8 @@
 MCP 2.0 只开放漫画导入、检测与 OCR、翻译去字、排版、逐页看图纠错和导出。
 模型安装、字体、系统设置、项目删除及历史管理在网页使用。MCP 编辑仍写入网页的撤销历史。
 
+官方 [mangaflow-translate Skill](../.agents/skills/mangaflow-translate/SKILL.md) 提供 Agent 执行入口和关键约束，运行时以 `workflow_get`、`workflow_status.next_steps` 及实际工具 Schema 为准。不同客户端的加载方式见 [Agent 资源说明](../.agents/README.md)。
+
 ## 接入与升级
 
 设置 → MCP 复制安装指令，或让 Agent 读取 `http://localhost:8080/mangaflow/setup`。

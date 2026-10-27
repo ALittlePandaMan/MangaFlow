@@ -25,11 +25,10 @@ stages:
     config: {}
 
   ocr:
-    name: 推荐漫画识别（MangaOCR）
-    provider: manga-ocr
+    name: 推荐漫画识别（PaddleOCR-VL 1.6）
+    provider: paddleocr-vl-1.6
     device: auto
-    config:
-      model: kha-white/manga-ocr-base
+    config: {}
 
   rendering:
     name: 默认排版渲染（Pillow）

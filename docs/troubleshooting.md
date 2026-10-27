@@ -2,7 +2,7 @@
 
 ## 首次模型加载很慢
 
-RF-DETR 权重需要先按[版面检测说明](text-classification.md)显式安装。MangaOCR、可选 PaddleOCR 识字和 LaMa 第一次使用时需要下载或加载权重。检查 `models/` 是否可写，并通过 `./scripts/docker.sh logs -f backend` 查看真实进度。后续启动会复用缓存。
+网页“安装推荐配置”会准备 RF-DETR、PaddleOCR-VL 1.6、LaMa 和 Pillow；也可按[版面检测说明](text-classification.md)和[本地 OCR 说明](local-ocr.md)单独安装。首次下载或模型加载需要等待，检查模型仓库的网络连通性与 `models/` 写入权限，通过 `./scripts/docker.sh logs -f backend` 查看真实进度。后续启动会复用缓存。
 
 ## 云端翻译仍返回原文
 

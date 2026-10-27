@@ -1,6 +1,10 @@
 # 开发指南
 
+编程 Agent 从 [AGENTS.md](../AGENTS.md) 及官方 [mangaflow-development Skill](../.agents/skills/mangaflow-development/SKILL.md) 读取架构约束和验证入口。Skill 加载方式见 [Agent 资源说明](../.agents/README.md)。
+
 ## 快速开始
+
+使用 Python 3.11／3.12、Node.js 20.11+ 和 PostgreSQL。以下脚本在 Bash 中运行，Windows 开发可使用 WSL2。
 
 ```bash
 ./scripts/bootstrap.sh
@@ -15,6 +19,25 @@
 ./scripts/docker.sh up --build -d
 ./scripts/docker.sh logs -f
 ```
+
+上述命令从源码构建。用户免构建安装与维护者的正式镜像发布流程见 [Docker 部署与发布](docker-release.md)。公开配置模板默认使用 PaddleOCR-VL 1.6，已有 MangaOCR 等配置继续保留。
+
+## 本地模型依赖
+
+`bootstrap.sh` 安装后端开发依赖和前端依赖。运行本地检测、OCR 或 LaMa 还需准备相应模型环境；Docker 镜像已包含这些运行依赖，权重另行下载。
+
+CPU 开发环境可在项目根目录执行：
+
+```bash
+source .venv/bin/activate
+python -m pip install torch==2.6.0 torchvision==0.21.0 --index-url https://download.pytorch.org/whl/cpu
+python -m pip install --extra-index-url https://www.paddlepaddle.org.cn/packages/stable/cpu/ -r backend/requirements/models.txt
+python -m pip install simple-lama-inpainting==0.1.2
+```
+
+PyTorch 与 torchvision 的版本配对见 [PyTorch 官方安装说明](https://pytorch.org/get-started/previous-versions/#v260)。GPU 开发需选择匹配驱动的 CUDA 构建；默认 Docker 使用 PyTorch 2.6.0／CUDA 12.6。Linux 本机渲染建议安装 Noto Sans CJK 字体，或上传包含目标字符的字体。
+
+RF-DETR 和 PaddleOCR-VL／Baberu／Hayai 另用隔离的 Transformers 5 环境，主环境 MangaOCR 保留 Transformers 4；按[版面检测](text-classification.md#模型与运行环境)和[本地 OCR](local-ocr.md#隔离及安装)说明准备，不要将不同版本合并到同一环境。字形分割权重见[翻译质量说明](translation-quality.md#可选像素模型的安装与来源)。
 
 ## 常用检查
 

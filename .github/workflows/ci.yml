@@ -1,6 +1,7 @@
 name: CI
 
 on:
+  workflow_call:
   push:
     branches: [main]
   pull_request:
@@ -115,3 +116,9 @@ jobs:
         env:
           MANGAFLOW_POSTGRES_PASSWORD: ci-config-validation-only
         run: docker compose config --quiet
+      - name: Validate release deployment bundle
+        run: |
+          python scripts/package_release.py --output-dir /tmp/mangaflow-release
+          unzip -q /tmp/mangaflow-release/mangaflow-docker-*.zip -d /tmp/mangaflow-deploy
+          cd /tmp/mangaflow-deploy/mangaflow-docker-*
+          bash scripts/docker.sh config --quiet
