@@ -142,7 +142,12 @@ def test_tool_rate_limit_is_shared_and_retries_do_not_duplicate_writes(client, m
     from app.services.mcp_server import ToolRateLimiter
 
     now = [0.0]
-    monkeypatch.setattr(app.state, 'mcp_tool_limiter', ToolRateLimiter(rate=1, capacity=1, clock=lambda: now[0]))
+    # pytest 9.2 restores __dict__ entries, while State stores attributes in
+    # another mapping. Patching State directly deletes the shared limiter on
+    # teardown. Patch the ordinary limiter object's method instead.
+    original_limiter = app.state.mcp_tool_limiter
+    replacement = ToolRateLimiter(rate=1, capacity=1, clock=lambda: now[0])
+    monkeypatch.setattr(original_limiter, 'retry_after', replacement.retry_after)
     project, _ = page(client)
     arguments = mutation(project_id=project['id'])
     first = rpc(client, 'workflow_start', arguments)
@@ -161,6 +166,9 @@ def test_tool_rate_limit_is_shared_and_retries_do_not_duplicate_writes(client, m
     assert not retried.get('isError'), retried
     assert retried['structuredContent']['run_id'] == first['structuredContent']['run_id']
     now[0] = 2.0
+    assert not rpc(client, 'workflow_get').get('isError')
+    monkeypatch.undo()
+    assert app.state.mcp_tool_limiter is original_limiter
     assert not rpc(client, 'workflow_get').get('isError')
 
 

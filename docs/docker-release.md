@@ -2,7 +2,7 @@
 
 ## 用户安装
 
-预构建镜像尚未就绪，首次正式发布与匿名拉取仍待验证。发布后，从 [Releases](https://github.com/ALittlePandaMan/MangaFlow/releases) 下载 `mangaflow-docker-版本号.zip`，解压并在其目录的 Bash 中执行：
+预构建镜像与部署包已正式发布，并通过匿名拉取、启动及持久化验证。从 [Releases](https://github.com/ALittlePandaMan/MangaFlow/releases) 下载 `mangaflow-docker-版本号.zip`，解压并在其目录的 Bash 中执行：
 
 ```bash
 bash scripts/docker.sh pull
@@ -45,7 +45,7 @@ bash scripts/docker.sh up -d
 
 GHCR 首次创建的包默认私有。第一次构建完成后，维护者需在两个包的 Package settings 中将 Visibility 改为 Public。否则匿名拉取检查明确失败，稳定标签和正式 Release 不会发布。改为公开后重跑工作流即可，不需要向用户提供 GitHub 凭据。[GitHub Container Registry 说明](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry#pushing-container-images)
 
-已完整发布的相同版本再次运行会直接跳过，保留原镜像与附件。中断后存在的草稿可以重新完成；失败构建的暂存标签不作为用户安装入口。不要移动已发布版本的 Git 标签。首次正式发布成功后，更新 README 与本文的“尚未就绪”状态。
+已完整发布的相同版本再次运行会直接跳过，保留原镜像与附件。中断后存在的草稿可以重新完成；失败构建的暂存标签不作为用户安装入口。不要移动已发布版本的 Git 标签。正式发布成功后，同步 README 与本文的部署状态。
 
 若原版本的 CI 与两份镜像构建均成功，但后续验证脚本失败，可在修复验证脚本后运行 Actions 的 **Recover release**，填写原版本和原 Release 的运行 ID。恢复流程核对原运行、Git 标签和提交一致，复用其 digest 附件及已构建镜像；部署包仍从原标签生成，使用修正后的隔离验证脚本重新检查，通过后再发布。无需移动标签或重新构建模型镜像；原运行的 digest 附件必须尚未过期。
 
@@ -63,4 +63,8 @@ python scripts/package_release.py --output-dir dist/release
 
 2026-10-27：35 项发布、模板和初始化回归通过；Actionlint、Ruff、Bash 语法及 Compose 校验通过。使用本机已有应用镜像在独立临时目录和数据库卷启动，验证了网页、健康接口、20 个 MCP 工具，以及重建容器后的项目、配置、图片目录和模型目录持久化，原有服务保持运行。
 
-本轮未执行 GHCR 构建上传或真实模型推理。两个 `0.1.2` 镜像的匿名访问仍返回 HTTP 403，不能视为已公开可用；正式镜像构建、匿名完整拉取及发布后验收由上述工作流继续执行。
+上述本地验收时尚未执行 GHCR 构建上传或真实模型推理，当时两个 `0.1.2` 镜像匿名访问返回 HTTP 403。
+
+2026-10-28：原 `0.1.2` 标签的完整 CI 和两份镜像构建均通过。修复 Linux 隔离验证的目录所有权问题后，50 项针对性回归、Actionlint、Ruff 及本地隔离部署验证通过。[恢复发布任务](https://github.com/ALittlePandaMan/MangaFlow/actions/runs/40623695712)在 GitHub Linux runner 上完成两份镜像的匿名完整拉取、网页、健康接口、20 个 MCP 工具及重建后的持久化验证，并发布了 `0.1.2`、稳定版 `latest` 和部署 ZIP／SHA-256 附件。公开下载的部署包校验和与文件白名单已核对；本次未运行真实模型翻译。
+
+同日的新 CI 使用 pytest 9.2，暴露了限流测试回滚 Starlette 动态状态的问题，以及一项导出测试对数据库返回顺序的错误假设。两处测试已修正，并在 pytest 9.2 下通过对应回归；应用运行逻辑和已发布镜像保持不变。

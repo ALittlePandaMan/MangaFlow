@@ -47,7 +47,7 @@ PSD 普通区域提供可编辑文字层；透视、混合字体等特殊排版�
 
 ### 2. 拉取镜像并启动
 
-**预构建镜像尚未就绪：首个正式镜像仍待发布并完成匿名拉取验证。** 发布后，从 [Releases](https://github.com/ALittlePandaMan/MangaFlow/releases) 下载对应版本的 `mangaflow-docker-版本号.zip`，解压后进入部署目录。该安装包只包含公开配置与启动脚本，无需克隆源码或本地构建。
+**预构建镜像已发布，并通过匿名拉取及部署验证。** 从 [Releases](https://github.com/ALittlePandaMan/MangaFlow/releases) 下载对应版本的 `mangaflow-docker-版本号.zip`，解压后进入部署目录。该安装包只包含公开配置与启动脚本，无需克隆源码或本地构建。
 
 以 `0.1.2` 部署包为例，在 Bash 中执行：
 

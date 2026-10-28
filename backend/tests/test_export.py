@@ -69,8 +69,8 @@ def test_export_rejects_an_earlier_page_invalidated_while_later_pages_render(cli
     project = client.post("/api/projects", json={"name": "edit during export"}).json()
     pages = client.post(f"/api/projects/{project['id']}/images", files=[
         ("files", (f"{index}.png", _page_image(), "image/png")) for index in range(2)]).json()
-    region = client.post(f"/api/images/{pages[0]['id']}/regions", json={
-        "bbox": [10, 10, 100, 100], "translated_text": "before"}).json()
+    regions = {page["id"]: client.post(f"/api/images/{page['id']}/regions", json={
+        "bbox": [10, 10, 100, 100], "translated_text": "before"}).json() for page in pages}
     original, rendered = projects.refresh_export_page, []
 
     def invalidate_earlier(db, identifier):
@@ -80,14 +80,17 @@ def test_export_rejects_an_earlier_page_invalidated_while_later_pages_render(cli
             with SessionLocal() as other:
                 page = other.get(ImagePage, rendered[0])
                 page.rendered_path = page.text_layer_path = None
-                other.get(TextRegion, region["id"]).translated_text = "new user edit"
+                other.get(TextRegion, regions[rendered[0]]["id"]).translated_text = "new user edit"
                 other.commit()
 
     monkeypatch.setattr(projects, "refresh_export_page", invalidate_earlier)
     response = client.post(f"/api/projects/{project['id']}/export", json={"formats": ["translated"]})
     assert len(rendered) == 2
     assert response.status_code == 409, response.text
-    assert client.get(f"/api/images/{pages[0]['id']}").json()["rendered_url"] is None
+    # The relationship's SQL row order need not match upload response order.
+    assert client.get(f"/api/images/{rendered[0]}").json()["rendered_url"] is None
+    with SessionLocal() as db:
+        assert db.get(TextRegion, regions[rendered[0]]["id"]).translated_text == "new user edit"
 
 
 def test_export_reads_page_paths_and_regions_from_one_snapshot(client, monkeypatch):
