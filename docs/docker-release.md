@@ -24,12 +24,18 @@ bash scripts/docker.sh up -d
 
 初始化使用部署包内的 `.env.example`、`config.example.yaml` 和现有 Bash 脚本，生成本机配置及数据库密码。私有 `.env` 中的 `MANGAFLOW_IMAGE_TAG` 控制两个应用镜像的版本。PostgreSQL 数据库卷、`data/`、`models/` 和配置文件持续保留。
 
+在私有 `.env` 中配置 `MANGAFLOW_WEB_PORT`（默认 `8080`）和 `MANGAFLOW_API_PORT`（默认 `8000`）即可修改宿主机端口，然后执行 `up -d`。例如设置为 `18080`／`18000`，网页与 MCP 共用 `http://localhost:18080`，后端对外端口为 `18000`；内部通信和健康检查仍使用容器端口。源码 Compose 与发布部署包使用相同变量。MCP 客户端保存的旧地址需要更新并重连。
+
+`MANGAFLOW_CORS_ORIGINS` 采用用户显式配置，Compose 不再固定覆盖。正常网页通过同源代理访问，无需因修改端口添加跨域白名单；确需跨域调用时填写完整且明确的来源，不使用通配符。
+
 ## 更新与备份
 
 1. 按[数据库备份说明](configuration.md#postgresql-数据库)备份 PostgreSQL，同时保存 `data/`、`.env`、`config.yaml` 及密钥。
 2. 阅读目标版本 Release 说明。普通应用更新在原目录的 `.env` 中修改 `MANGAFLOW_IMAGE_TAG`，前后端始终使用同一个版本。
 3. 执行 `pull` 后再 `up -d`，检查 `bash scripts/docker.sh ps` 与日志。不支持通过降级旧镜像回退已经执行的数据库迁移。
 4. 若新版本要求修改 Compose，停止旧应用后在原目录合并新的部署文件，保留原数据库卷、挂载目录及私有配置；不要在另一目录重新初始化代替迁移。
+
+**0.1.2 → 0.1.3** 需要同步更新部署文件和镜像：备份后，在原目录合并 0.1.3 部署包的 `docker-compose.yml`、`scripts/`，将私有 `.env` 的 `MANGAFLOW_IMAGE_TAG` 改为 `0.1.3`，按需加入端口变量，然后执行 `pull` 和 `up -d`。保留原 `.env`、`config.yaml`、数据和卷。新增端口变量从 0.1.3 开始生效；旧 Compose 仍写死端口。更新后从设置页复制实际地址，更新旧 MCP 客户端或重新运行安装器并重连。
 
 `docker-compose.yml` 保留源码构建；`docker-compose.release.yml` 只引用镜像。打包脚本将正式 Compose 写入部署包的 `docker-compose.yml`，因此相同启动脚本无需识别运行模式。已有源码部署可继续使用原流程。
 

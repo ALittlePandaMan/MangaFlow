@@ -14,7 +14,11 @@ import {randomUUID} from 'node:crypto'
 import {DirectoryImports} from './directory-import.mjs'
 
 export function endpoint(value) {
+  if (!value?.trim()) throw new Error('Set MANGAFLOW_MCP_URL to the service address shown in MangaFlow Settings > MCP')
+  const authority = value.match(/^[^:]+:\/\/([^/?#]+)\/(?:mangaflow|mcp)\/?$/)?.[1]
+  if (!authority || /[\s\\\u0000-\u001f\u007f]/u.test(value) || /[@%]/.test(authority) || authority.endsWith(':')) throw new Error('Invalid MangaFlow service URL')
   const url = new URL(value)
+  if (url.port === '0') throw new Error('MangaFlow service port must be between 1 and 65535')
   if (url.username || url.password || url.search || url.hash || !['/mangaflow','/mcp'].includes(url.pathname.replace(/\/$/, ''))) throw new Error('MANGAFLOW_MCP_URL must end in /mangaflow or /mcp without credentials/query/fragment')
   if (url.protocol !== 'https:' && !(url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname))) throw new Error('Use HTTPS for remote MangaFlow')
   return url
@@ -103,9 +107,9 @@ export async function downloadFile(base, token, path, destination, signal) {
 export async function main() {
   const transfers=new Map()
   const transferAbort=new AbortController()
-  const url = endpoint(process.env.MANGAFLOW_MCP_URL || 'http://localhost:8080/mangaflow')
+  const url = endpoint(process.env.MANGAFLOW_MCP_URL)
   const token = process.env.MANGAFLOW_MCP_TOKEN
-  const remote = new Client({name: 'mangaflow-local-connector', version: '2.1.0'})
+  const remote = new Client({name: 'mangaflow-local-connector', version: '2.1.1'})
   const transport = new StreamableHTTPClientTransport(url, {requestInit: {headers: connectionHeaders(url, token)}})
   await remote.connect(transport)
   const directoryImports=new DirectoryImports({url,signal:transferAbort.signal,
@@ -120,7 +124,7 @@ export async function main() {
     }})
   const advertised=await remote.listTools();
   if (!['project_import','workflow_advance','page_edit'].every(name => advertised.tools.some(tool => tool.name === name))) {await remote.close();throw new Error('Update MangaFlow server and the official connector to version 2.0.0 or newer')}
-  const server = new Server({name: 'MangaFlow', version: '2.1.0'}, {capabilities: {tools: {}, prompts: {}},
+  const server = new Server({name: 'MangaFlow', version: '2.1.1'}, {capabilities: {tools: {}, prompts: {}},
     instructions: (remote.getInstructions() || '')+'\nOfficial local stdio connector: for a user-provided image directory call local_import directly. It names/creates the project and imports images automatically; do not ask the user to create/upload it. local_import/local_download/local_transfer_status/local_transfer_cancel are also available. No scripts or extra libraries are required.'})
   server.setRequestHandler(ListToolsRequestSchema, async request => {
     if (request.params?.cursor !== undefined) throw new McpError(ErrorCode.InvalidParams, 'Invalid cursor: this list has no further pages')

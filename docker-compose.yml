@@ -26,7 +26,7 @@ services:
       MANGAFLOW_MODEL_MANIFEST_PATH: /config/config.yaml
       MANGAFLOW_ENVIRONMENT_FILE_PATH: /config/.env
       MANGAFLOW_AUTO_PROVISION_MODELS: "true"
-      MANGAFLOW_CORS_ORIGINS: '["http://localhost:5173","http://localhost:8080"]'
+      MANGAFLOW_CORS_ORIGINS: ${MANGAFLOW_CORS_ORIGINS:-["http://localhost:5173"]}
       MANGAFLOW_TASK_CONCURRENCY: ${MANGAFLOW_TASK_CONCURRENCY:-4}
       MANGAFLOW_EXECUTION_MODE: ${MANGAFLOW_EXECUTION_MODE:-auto}
       MANGAFLOW_CPU_WORKERS: ${MANGAFLOW_CPU_WORKERS:-4}
@@ -45,7 +45,7 @@ services:
       - ./config.yaml:/config/config.yaml
       - ./.env:/config/.env
     ports:
-      - "${MANGAFLOW_BIND_HOST:-127.0.0.1}:8000:8000"
+      - "${MANGAFLOW_BIND_HOST:-127.0.0.1}:${MANGAFLOW_API_PORT:-8000}:8000"
     gpus: all
     depends_on:
       postgres:
@@ -66,7 +66,7 @@ services:
       backend:
         condition: service_healthy
     ports:
-      - "${MANGAFLOW_BIND_HOST:-127.0.0.1}:8080:80"
+      - "${MANGAFLOW_BIND_HOST:-127.0.0.1}:${MANGAFLOW_WEB_PORT:-8080}:80"
     restart: unless-stopped
 
 volumes:

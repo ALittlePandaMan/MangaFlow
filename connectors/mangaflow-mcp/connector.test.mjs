@@ -1,5 +1,7 @@
 import {test} from 'node:test'
 import assert from 'node:assert/strict'
+import {spawnSync} from 'node:child_process'
+import {fileURLToPath} from 'node:url'
 import {endpoint, transferUrl, startTransfer, connectionHeaders, withLocalCapabilities, localTools} from './index.mjs'
 
 test('only four local comic transfer tools are public',() => {
@@ -27,6 +29,28 @@ test('remote TLS and credential boundaries', () => {
   for (const value of ['http://manga.example/mcp', 'https://u:p@manga.example/mcp', 'https://manga.example/api', 'https://manga.example/mcp?key=secret']) {
     assert.throws(() => endpoint(value))
   }
+})
+
+test('connector requires an explicit address and preserves deployment ports', () => {
+  for (const value of [undefined,'','   ']) assert.throws(() => endpoint(value), /Set MANGAFLOW_MCP_URL/)
+  for (const host of ['localhost:18080','127.0.0.1:19090','[::1]:28080']) {
+    assert.equal(endpoint(`http://${host}/mangaflow`).host,host)
+  }
+  const env={...process.env}
+  delete env.MANGAFLOW_MCP_URL
+  const result=spawnSync(process.execPath,[fileURLToPath(new URL('./index.mjs',import.meta.url))],{env,encoding:'utf8',timeout:10000})
+  assert.equal(result.status,1)
+  assert.match(result.stderr,/Set MANGAFLOW_MCP_URL/)
+  assert.equal(result.stdout,'')
+})
+
+test('connector rejects malformed raw URLs instead of silently repairing them', () => {
+  for (const value of ['https://[::1/mangaflow','https://manga example/mangaflow',
+    'https://manga.example\\evil/mangaflow','\nhttps://manga.example/mangaflow',
+    'https://@manga.example/mangaflow','https://manga.example:0/mangaflow',
+    'https://manga.example:65536/mangaflow','https://manga.example:/mangaflow',
+    'https://manga.example/mangaflow?','https://manga.example/mangaflow#',
+    'https://manga.example/mangaflow//','https://%65xample.com/mangaflow']) assert.throws(() => endpoint(value))
 })
 test('the local canonical endpoint requires no key while remote and legacy access still do', () => {
   for (const host of ['localhost','127.0.0.1','[::1]']) {

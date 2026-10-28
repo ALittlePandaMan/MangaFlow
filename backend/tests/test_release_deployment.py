@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -54,8 +55,41 @@ def test_bundle_contains_only_public_files_and_can_be_rebuilt_identically(public
         for service in ("backend", "frontend"):
             assert compose["services"][service]["image"].endswith("${MANGAFLOW_IMAGE_TAG:-0.1.2}")
         assert b"MANGAFLOW_IMAGE_TAG=0.1.2" in source.read(prefix + ".env.example")
+        for variable in ("MANGAFLOW_WEB_PORT", "MANGAFLOW_API_PORT", "MANGAFLOW_DEV_PORT"):
+            assert variable.encode() in source.read(prefix + ".env.example")
+        assert "${MANGAFLOW_WEB_PORT:-8080}" in compose["services"]["frontend"]["ports"][0]
+        assert "${MANGAFLOW_API_PORT:-8000}" in compose["services"]["backend"]["ports"][0]
         assert source.getinfo(prefix + "scripts/docker.sh").external_attr >> 16 == 0o100755
     assert packager.package(public_tree, tmp_path / "release").read_bytes() == first
+
+
+@pytest.mark.skipif(shutil.which("docker") is None, reason="Docker Compose configuration validation")
+@pytest.mark.parametrize("filename", ["docker-compose.yml", "docker-compose.release.yml"])
+@pytest.mark.parametrize("source", ["defaults", "dotenv", "environment"])
+def test_compose_ports_and_cors_preserve_user_configuration(tmp_path, filename, source):
+    """Render real Compose from public copies; never read the user's .env."""
+    shutil.copyfile(ROOT / filename, tmp_path / "docker-compose.yml")
+    settings = "MANGAFLOW_POSTGRES_PASSWORD=test-configuration-only\n"
+    web, api, cors = 8080, 8000, '["http://localhost:5173"]'
+    if source != "defaults":
+        web, api, cors = 18080, 18000, '["https://configured.example:9443"]'
+        settings += f"MANGAFLOW_WEB_PORT={web}\nMANGAFLOW_API_PORT={api}\nMANGAFLOW_CORS_ORIGINS={cors}\n"
+    (tmp_path / ".env").write_text(settings)
+    environment = {key: value for key, value in os.environ.items()
+                   if not key.startswith(("MANGAFLOW_", "COMPOSE_")) and key != "PGPASSWORD"}
+    if source == "environment":
+        web, api, cors = 28080, 28000, '["https://override.example:8443"]'
+        environment.update(MANGAFLOW_WEB_PORT=str(web), MANGAFLOW_API_PORT=str(api), MANGAFLOW_CORS_ORIGINS=cors)
+    output = subprocess.run(["docker", "compose", "--project-directory", str(tmp_path), "--env-file", str(tmp_path / ".env"),
+                             "-f", str(tmp_path / "docker-compose.yml"), "config", "--format", "json"],
+                            env=environment, capture_output=True, text=True, check=True)
+    services = json.loads(output.stdout)["services"]
+    assert services["frontend"]["ports"][0]["published"] == str(web)
+    assert services["backend"]["ports"][0]["published"] == str(api)
+    assert services["frontend"]["ports"][0]["target"] == 80
+    assert services["backend"]["ports"][0]["target"] == 8000
+    assert services["backend"]["environment"]["MANGAFLOW_CORS_ORIGINS"] == cors
+    assert "127.0.0.1:8000/health" in services["backend"]["healthcheck"]["test"][-1]
 
 
 @pytest.mark.parametrize("version", ["v0.1.2", "0.1.3", "0.1.2-beta", "../0.1.2"])
@@ -166,6 +200,21 @@ def test_completed_release_is_idempotent(staged, monkeypatch):
     release.publish("0.1.2", digests, assets)
 
 
+def test_release_includes_versioned_upgrade_notes(staged, monkeypatch):
+    release, digests, assets, values = staged
+    notes = release.ROOT / "docs/releases/0.1.2.md"
+    notes.parent.mkdir(parents=True)
+    notes.write_text("Upgrade the deployment files and images together.\n")
+    calls = []
+    monkeypatch.setattr(release, "existing_release", lambda tag: None)
+    monkeypatch.setattr(release, "anonymous_manifest", lambda image, reference: values[image])
+    monkeypatch.setattr(release, "command", lambda *args: calls.append(args) or "")
+    release.publish("0.1.2", digests, assets)
+    for call in calls:
+        if call[:3] in {("gh", "release", "create"), ("gh", "release", "edit")}:
+            assert call[call.index("--notes-file") + 1] == str(notes)
+
+
 def test_release_lookup_auth_failure_is_not_treated_as_absent(modules, monkeypatch):
     _, release = modules
 
@@ -259,6 +308,7 @@ def test_smoke_handles_linux_bind_mount_ownership_and_always_tears_down(failure,
         action = args[args.index(str(deployment / "smoke.override.yml")) + 1:]
         calls.append(action)
         if action[0] == "up":
+            assert "ports:" not in (deployment / "smoke.override.yml").read_text()
             # The daemon must never create these host roots as root.
             for folder in ("data", "models"):
                 assert (deployment / folder).is_dir()
@@ -266,7 +316,9 @@ def test_smoke_handles_linux_bind_mount_ownership_and_always_tears_down(failure,
             if failure == "startup":
                 raise subprocess.CalledProcessError(1, args)
         if action[0] == "port":
-            return "127.0.0.1:18080\n" if action[1] == "frontend" else "127.0.0.1:18000\n"
+            environment = dict(line.split("=", 1) for line in (deployment / ".env").read_text().splitlines())
+            variable = "MANGAFLOW_WEB_PORT" if action[1] == "frontend" else "MANGAFLOW_API_PORT"
+            return f"127.0.0.1:{environment[variable]}\n"
         if action[0] == "exec":
             for folder in ("data", "models"):
                 assert (deployment / folder / "release-smoke.txt").read_text() == f"persistent-{folder}"
@@ -282,6 +334,11 @@ def test_smoke_handles_linux_bind_mount_ownership_and_always_tears_down(failure,
             return {"status": "ok", "version": "0.1.2"}, {}
         if url.endswith("/mangaflow"):
             return {"result": {"tools": list(range(20))}}, {"Mcp-Session-Id": "smoke-session"}
+        if url.endswith("/setup.json"):
+            base = url.removesuffix("/mangaflow/setup.json")
+            return {"endpoint": base + "/mangaflow", "guide_url": base + "/mangaflow/setup"}, {}
+        if url.endswith("/api/mcp-settings"):
+            return {"public_url": ""}, {}
         return {"id": "test-project"}, {}
 
     class Response:

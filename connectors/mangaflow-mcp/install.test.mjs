@@ -1,5 +1,7 @@
 import {test} from 'node:test'
 import assert from 'node:assert/strict'
+import {spawnSync} from 'node:child_process'
+import {fileURLToPath} from 'node:url'
 import {createHash} from 'node:crypto'
 import {gzipSync} from 'node:zlib'
 import {setupUrl, unpackPackage, fetchBytes, serverConfiguration} from './install.mjs'
@@ -12,6 +14,26 @@ test('bootstrap accepts only loopback HTTP or remote HTTPS service endpoints', (
     'https://manga.example/mangaflow?token=secret', 'file:///mangaflow', 'https://manga.example/api']) {
     assert.throws(() => setupUrl(value))
   }
+})
+
+test('installer requires an explicit address before starting installation', () => {
+  for (const value of [undefined,'','   ']) assert.throws(() => setupUrl(value), /Provide --url or MANGAFLOW_MCP_URL/)
+  const env={...process.env}
+  delete env.MANGAFLOW_MCP_URL
+  const result=spawnSync(process.execPath,[fileURLToPath(new URL('./install.mjs',import.meta.url))],{env,encoding:'utf8',timeout:10000})
+  assert.equal(result.status,1)
+  assert.match(result.stderr,/Provide --url or MANGAFLOW_MCP_URL/)
+  assert.equal(result.stdout,'')
+  assert.equal(setupUrl('http://127.0.0.1:18080/mangaflow').port,'18080')
+})
+
+test('installer rejects malformed raw URLs before downloading anything', () => {
+  for (const value of ['https://[::1/mangaflow','https://manga example/mangaflow',
+    'https://manga.example\\evil/mangaflow','\nhttps://manga.example/mangaflow',
+    'https://@manga.example/mangaflow','https://manga.example:0/mangaflow',
+    'https://manga.example:65536/mangaflow','https://manga.example:/mangaflow',
+    'https://manga.example/mangaflow?','https://manga.example/mangaflow#',
+    'https://manga.example/mangaflow//','https://%65xample.com/mangaflow']) assert.throws(() => setupUrl(value))
 })
 
 test('bootstrap refuses corrupt, unexpected and traversal tar entries before extraction', () => {

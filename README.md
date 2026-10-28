@@ -4,7 +4,7 @@
 
 <p align="center">
   <a href="https://github.com/ALittlePandaMan/MangaFlow/actions/workflows/ci.yml"><img src="https://github.com/ALittlePandaMan/MangaFlow/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="VERSION"><img src="https://img.shields.io/badge/version-v0.1.2-blue" alt="版本 v0.1.2"></a>
+  <a href="VERSION"><img src="https://img.shields.io/badge/version-v0.1.3-blue" alt="版本 v0.1.3"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="MIT License"></a>
 </p>
 
@@ -49,15 +49,17 @@ PSD 普通区域提供可编辑文字层；透视、混合字体等特殊排版�
 
 **预构建镜像已发布，并通过匿名拉取及部署验证。** 从 [Releases](https://github.com/ALittlePandaMan/MangaFlow/releases) 下载对应版本的 `mangaflow-docker-版本号.zip`，解压后进入部署目录。该安装包只包含公开配置与启动脚本，无需克隆源码或本地构建。
 
-以 `0.1.2` 部署包为例，在 Bash 中执行：
+以下以 `0.1.3` 部署包为例；可下载版本以 Releases 列表为准。在 Bash 中执行：
 
 ```bash
-cd mangaflow-docker-0.1.2
+cd mangaflow-docker-0.1.3
 bash scripts/docker.sh pull
 bash scripts/docker.sh up -d
 ```
 
-打开 [http://localhost:8080](http://localhost:8080)。首次构建和模型准备可能较慢，可查看状态与日志：
+默认打开 [http://localhost:8080](http://localhost:8080)。需要修改端口时，在私有 `.env` 中设置 `MANGAFLOW_WEB_PORT`（网页，默认 `8080`）和 `MANGAFLOW_API_PORT`（后端对外端口，默认 `8000`），再执行 `up -d`。例如网页端口为 `18080` 时，打开 `http://localhost:18080`，MCP 也使用该入口。首次模型准备较慢时可查看状态与日志：
+
+端口环境变量及 MCP 地址自动适配从 **0.1.3** 起提供。由 0.1.2 升级时，先备份，再将新部署包的 Compose 和启动脚本合并到原目录，并更新 `MANGAFLOW_IMAGE_TAG=0.1.3`；保留原 `.env`、`config.yaml`、数据目录和数据库卷。只修改旧部署包的环境变量或只更新镜像不能完成此次升级，具体步骤见[更新与备份](docs/docker-release.md#更新与备份)。
 
 ```bash
 bash scripts/docker.sh ps
@@ -119,10 +121,10 @@ PaddleOCR-VL、Baberu 和 Hayai 使用与 Koharu 对齐的上游检查点，在 
 | 本地连接程序（stdio） | Agent 处理本机文件，连接本机或远程 MangaFlow | `local_import` 接受 Agent 能访问的明确目录、图片、漫画包或 PDF，自动上传并按名称创建项目 |
 | HTTP | 处理服务端已有项目或已上传资产 | 可提交导入资产；读取客户端磁盘需使用本地连接程序 |
 
-默认 HTTP 地址为 `http://localhost:8080/mangaflow`，兼容地址 `/mcp` 保留。可将下面的请求交给 Agent：
+MCP 地址自动跟随当前网页的协议、主机和端口，明确配置的远程地址优先；兼容地址 `/mcp` 保留。先从设置页复制实际安装说明地址，再将下面的请求交给 Agent，并替换其中的占位内容：
 
 ```text
-请读取 http://localhost:8080/mangaflow/setup，按官方说明安装 MangaFlow
+请读取 <设置页复制的安装说明地址>，按官方说明安装 MangaFlow
 本地 MCP 连接程序并配置当前客户端。重新连接后确认 local_import 可用，
 将我指定的漫画目录按文件夹名导入新项目，读取 workflow_get，按官方工作流
 完成翻译、逐页看图复核和必要纠错，最后导出 CBZ 及复核报告到指定目录。
@@ -144,7 +146,7 @@ PaddleOCR-VL、Baberu 和 Hayai 使用与 Koharu 对齐的上游检查点，在 
 ./scripts/dev.sh
 ```
 
-前端地址为 `http://localhost:5173`，API 文档为 `http://localhost:8000/docs`。完整依赖、隔离模型环境和检查命令见[开发指南](docs/development.md)。
+开发前端默认地址为 `http://localhost:5173`，API 文档默认地址为 `http://localhost:8000/docs`；分别通过 `MANGAFLOW_DEV_PORT` 和 `MANGAFLOW_API_PORT` 配置。完整依赖、隔离模型环境和检查命令见[开发指南](docs/development.md)。
 
 使用编程 Agent 开发时，从 [AGENTS.md](AGENTS.md) 和 [开发 Skill](.agents/skills/mangaflow-development/SKILL.md) 了解仓库规则与验证入口。
 

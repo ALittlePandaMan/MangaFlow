@@ -1,12 +1,13 @@
 """Local keyless MCP and authenticated remote access; never expose /api."""
 import hmac
 import secrets
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
 
 from app.core.database import SessionLocal
 from app.core.secrets import get_secret_store
 from app.models import MCPSettings
 from fastapi import HTTPException
+from pydantic import AnyHttpUrl
 from sqlalchemy.dialects.postgresql import insert
 from starlette.responses import JSONResponse
 
@@ -29,17 +30,26 @@ def read_settings():
 def validate_endpoint(value):
     if not value:
         return ""
-    parts = urlsplit(value)
     try:
-        if parts.port == 0:
-            raise ValueError("Port must be positive")
+        # urlsplit strips some control characters; reject them before parsing.
+        if any(character.isspace() or ord(character) < 32 or ord(character) == 127
+               or character == "\\" for character in value):
+            raise ValueError("Invalid URL characters")
+        parts = urlsplit(value)
+        if normalized_origin(f"{parts.scheme}://{parts.netloc}") is None:
+            raise ValueError("Invalid authority")
     except ValueError as exc:
-        raise HTTPException(422, "Remote MCP URL has an invalid port") from exc
-    if parts.scheme != "https" or not parts.hostname or parts.username or parts.password or parts.query or parts.fragment:
+        raise HTTPException(422, "Remote MCP URL has an invalid host or port") from exc
+    if (parts.scheme != "https" or parts.username is not None or parts.password is not None
+            or "?" in value or "#" in value):
         raise HTTPException(422, "Remote MCP URL must be an HTTPS URL without credentials, query or fragment")
-    if parts.path.rstrip("/") not in {"/mangaflow", "/mcp"}:
+    if parts.path not in {"/mangaflow", "/mcp", "/mangaflow/", "/mcp/"}:
         raise HTTPException(422, "Remote MCP URL must end in /mangaflow or /mcp")
-    return value.rstrip("/")
+    hostname = normalized_origin(f"{parts.scheme}://{parts.netloc}")[1]
+    authority = f"[{hostname}]" if ":" in hostname else hostname
+    if parts.port:
+        authority += f":{parts.port}"
+    return urlunsplit(("https", authority, parts.path.rstrip("/"), "", ""))
 
 
 def write_settings(values, rotate=False):
@@ -57,6 +67,25 @@ def write_settings(values, rotate=False):
             row.encrypted_token = get_secret_store().encrypt(secrets.token_urlsafe(32))
         db.commit()
     return read_settings()
+
+
+def normalized_origin(value):
+    """Compare actual origins, including ports, without trusting proxy headers."""
+    if not value or any(character.isspace() or ord(character) < 32 or ord(character) == 127
+                        or character == "\\" for character in value):
+        return None
+    try:
+        parts = urlsplit(value)
+        if (parts.scheme not in {"http", "https"} or not parts.hostname
+                or parts.username is not None or parts.password is not None
+                or parts.path or parts.query or parts.fragment or parts.port == 0
+                or "%" in parts.netloc or parts.netloc.endswith(":")):
+            return None
+        # Pydantic and the Node connector use browser-compatible URL/IDNA rules.
+        parsed = AnyHttpUrl(value)
+        return parsed.scheme, parsed.host.strip("[]"), parsed.port
+    except ValueError:
+        return None
 
 
 class MCPAccessMiddleware:
@@ -77,16 +106,22 @@ class MCPAccessMiddleware:
         try:
             authority = urlsplit("//" + host)
             hostname = authority.hostname or ""
-            valid_host = not (authority.path or authority.query or authority.fragment or authority.username or authority.password)
+            valid_host = bool(hostname) and authority.port != 0 and not (
+                authority.path or authority.query or authority.fragment
+                or authority.username is not None or authority.password is not None
+                or any(character.isspace() or character == "\\" for character in host))
         except ValueError:
             hostname, valid_host = "", False
         allowed = [value.strip("[]").lower() for value in settings["allowed_hosts"]]
         origin = headers.get(b"origin", b"").decode("latin1")
-        local_origins = {"http://localhost:5173", "http://localhost:8080", "http://127.0.0.1:8080"}
+        origins = [f"{scope.get('scheme', 'http')}://{host}", "http://localhost:5173", *settings["allowed_origins"]]
         if settings["public_url"]:
             parts = urlsplit(settings["public_url"])
-            local_origins.add(f"{parts.scheme}://{parts.netloc}")
-        if not valid_host or hostname not in allowed or (origin and origin not in local_origins | set(settings["allowed_origins"])):
+            origins.append(f"{parts.scheme}://{parts.netloc}")
+        allowed_origins = {value for candidate in origins if (value := normalized_origin(candidate)) is not None}
+        request_origin = normalized_origin(origin)
+        if (not valid_host or hostname not in allowed
+                or (origin and request_origin not in allowed_origins)):
             return await JSONResponse({"error": "invalid_origin_or_host"}, 403)(scope, receive, send)
         if control:
             return await self.app(scope, receive, send)

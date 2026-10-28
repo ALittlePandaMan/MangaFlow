@@ -70,6 +70,7 @@ def test_setup_material_is_available_at_legacy_alias_and_in_manual_zip(client):
 def test_installer_downloads_installs_reuses_and_probes_real_stdio(tmp_path):
     """One-time install from a real HTTP server, with no pre-existing connector install."""
     import json
+    import os
     import shutil
     import socket
     import subprocess
@@ -102,8 +103,12 @@ def test_installer_downloads_installs_reuses_and_probes_real_stdio(tmp_path):
         directory = tmp_path / "Agent 安装 有空格"
         command = [node, str(installer), "--url", endpoint, "--directory", str(directory)]
         results = []
-        for _ in range(2):
-            installed = subprocess.run(command, capture_output=True, text=True, timeout=180)
+        for index in range(2):
+            # Explicit --url overrides an unrelated environment value; an
+            # environment-only reinstall must preserve the actual custom port.
+            arguments = command if index == 0 else [node, str(installer), "--directory", str(directory)]
+            environment = {**os.environ, "MANGAFLOW_MCP_URL": "http://localhost:1/mangaflow" if index == 0 else endpoint}
+            installed = subprocess.run(arguments, capture_output=True, text=True, timeout=180, env=environment)
             assert installed.returncode == 0, installed.stderr
             result = json.loads(installed.stdout)
             assert result["installed"] and result["probe"]["verified"]

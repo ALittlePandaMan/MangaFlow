@@ -6,6 +6,7 @@ import json
 import os
 import re
 import secrets
+import socket
 import subprocess
 import tempfile
 import time
@@ -44,8 +45,18 @@ def smoke(archive: Path, images: dict[str, str], *, anonymous: bool = True) -> N
             docker_prefix += ["--config", str(docker_config)]
             for image in images.values():
                 subprocess.run([*docker_prefix, "pull", image], check=True, env=environment)
+        # Exercise the shipped variables, rather than replacing Compose ports.
+        reservations = [socket.socket(), socket.socket()]
+        try:
+            for reservation in reservations:
+                reservation.bind(("127.0.0.1", 0))
+            web_port, api_port = [reservation.getsockname()[1] for reservation in reservations]
+        finally:
+            for reservation in reservations:
+                reservation.close()
         (deployment / ".env").write_text(
-            f"MANGAFLOW_POSTGRES_PASSWORD={secrets.token_hex(24)}\nMANGAFLOW_AUTO_PROVISION_MODELS=false\n", encoding="utf-8")
+            f"MANGAFLOW_POSTGRES_PASSWORD={secrets.token_hex(24)}\nMANGAFLOW_AUTO_PROVISION_MODELS=false\n"
+            f"MANGAFLOW_WEB_PORT={web_port}\nMANGAFLOW_API_PORT={api_port}\n", encoding="utf-8")
         (deployment / "config.yaml").write_bytes((deployment / "config.example.yaml").read_bytes())
         # Docker creates absent bind-mount directories as root on Linux.
         # Keep the mount roots writable by this test's host user.
@@ -55,10 +66,8 @@ def smoke(archive: Path, images: dict[str, str], *, anonymous: bool = True) -> N
         override.write_text(
             "services:\n  backend:\n"
             f"    image: {images['backend']}\n    pull_policy: never\n    gpus: !reset []\n"
-            '    ports: !override ["127.0.0.1::8000"]\n'
             "  frontend:\n"
-            f"    image: {images['frontend']}\n    pull_policy: never\n"
-            '    ports: !override ["127.0.0.1::80"]\n', encoding="utf-8")
+            f"    image: {images['frontend']}\n    pull_policy: never\n", encoding="utf-8")
         compose = [*docker_prefix, "compose", "--project-name", project, "--project-directory", str(deployment),
                    "-f", str(deployment / "docker-compose.yml"), "-f", str(override)]
 
@@ -72,12 +81,19 @@ def smoke(archive: Path, images: dict[str, str], *, anonymous: bool = True) -> N
         try:
             run("up", "-d", "--wait", "--wait-timeout", "180")
             base = f"http://127.0.0.1:{port()}"
+            assert port() == web_port
             with urlopen(base, timeout=20) as response:
                 assert response.status == 200 and re.search(rb'<div\b[^>]*\bid="root"', response.read())
             backend_port = int(run("port", "backend", "8000").rsplit(":", 1)[1])
+            assert backend_port == api_port
             health, _ = request(f"http://127.0.0.1:{backend_port}/health")
             assert health["status"] == "ok"
             assert health["version"] == (deployment / "VERSION").read_text().strip()
+            manifest, _ = request(base + "/mangaflow/setup.json")
+            assert manifest["endpoint"] == base + "/mangaflow"
+            assert manifest["guide_url"] == base + "/mangaflow/setup"
+            saved, _ = request(base + "/api/mcp-settings")
+            assert saved["public_url"] == ""
             project_data, _ = request(base + "/api/projects", {"name": "Release persistence test"})
             identifier = project_data["id"]
             header = {"Accept": "application/json, text/event-stream"}

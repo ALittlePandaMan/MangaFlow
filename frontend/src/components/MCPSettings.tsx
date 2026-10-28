@@ -5,7 +5,7 @@ import {buttonClass, inputClass} from '../ui'
 import {SettingsField, SettingsSection} from './SettingsControls'
 import {useGlobalAlert} from './GlobalAlert'
 import {ApiKeyInput} from './ApiKeyInput'
-import {DEFAULT_MCP_URL, mcpConfig, mcpSetupUrl, type MCPTransport} from '../features/settings/mcpConfig'
+import {mcpEndpoint, mcpConfig, mcpSetupUrl, type MCPTransport} from '../features/settings/mcpConfig'
 
 interface Configuration {enabled: boolean; public_url: string; token: string}
 async function request(path: string, init?: RequestInit): Promise<Configuration> {
@@ -33,7 +33,7 @@ export function MCPSettings() {
   }
   const copy = async (text: string) => {await navigator.clipboard.writeText(text); alert({message:t('已复制'),tone:'success'})}
   if (!config) return <button className={buttonClass} onClick={() => void execute(async () => setConfig(await request('')))}>{t('重新加载')}</button>
-  const url = config.public_url || DEFAULT_MCP_URL
+  const url = mcpEndpoint(config.public_url)
   const remote = Boolean(config.public_url)
   const snippet=mcpConfig(transport,url,remote)
   const setupUrl=mcpSetupUrl(url)

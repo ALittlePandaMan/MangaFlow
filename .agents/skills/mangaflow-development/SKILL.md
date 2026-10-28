@@ -23,6 +23,7 @@ description: 开发、排查或维护 MangaFlow 的后端、编辑器、模型�
 - 服务端使用固定的 20 个工具，本地连接程序额外提供 4 个传输工具；不能自动公开整组路由或增加通用绕过入口。参数、工具说明、工作流和连接程序一起核对。
 - 保持 `operation_id` 去重、预期版本、预览证据失效、有限纠错和并行领取校验。查询状态不修改页面、不自动领取或提交任务。
 - 网页与 MCP 共享项目、模型和队列；网页活动框和 toast 只展示网页发起的任务。修改任务来源过滤时覆盖处理队列和文件任务。
+- 部署地址遵循[配置说明](../../../docs/configuration.md#部署与访问)：明确远程地址优先，其余根据实际入口生成；不要将默认示例端口写入配置。开发启动脚本与 Vite 共用端口解析，代理保留完整 Host；宿主机端口不改变容器内部通信。
 - UI 使用现有表单、Dialog、全局 toast 与右上角活动框；新增文案覆盖简中、繁中、英语和日语。前端预览、后端渲染、MCP 图片及导出保持几何和角度解释一致。
 
 ## 验证与交付
@@ -35,9 +36,11 @@ description: 开发、排查或维护 MangaFlow 的后端、编辑器、模型�
 | 前端交互 | `npm run lint --prefix frontend`；`npm test --prefix frontend -- <相关测试文件>` |
 | UI 文案与类型 | `npm run i18n:check --prefix frontend`；`npm run visual:typecheck --prefix frontend`；`npm run build --prefix frontend` |
 | 本地 MCP 连接程序 | `npm test --prefix connectors/mangaflow-mcp`，同时检查对应后端协议测试 |
+| 启动、代理与部署包 | `bash scripts/test-backend.sh -q backend/tests/test_development_server.py backend/tests/test_bootstrap_config.py backend/tests/test_release_deployment.py backend/tests/test_mcp_deployment_origin.py`；`npm test --prefix frontend -- devServer.test.ts` |
 | 需要全量检查 | `bash scripts/check.sh`；连接程序单独运行上面的测试命令 |
 
 - 后端测试使用 `scripts/test-backend.sh` 自动创建、清理独立 PostgreSQL 测试容器；显式提供测试数据库时，仅使用专用 `mangaflow_test_` 数据库，禁止指向真实项目数据库。测试数据、文件和模型替代物保持隔离。
 - 处理流程测试优先用确定性样本及替代模型；真实模型、付费服务、Photoshop、WorkBuddy 等客户端的实测结果另行说明，不能用协议测试代替视觉质量结论。
+- 启动器验证使用真实 Uvicorn，覆盖实际服务子进程失败、热重载和清理；部署验证使用隔离 Compose 项目，通过公开端口变量访问，不能仅覆盖测试端口而绕过配置。发布与旧版升级按 [Docker 发布文档](../../../docs/docker-release.md)核对镜像、部署文件及客户端地址。
 - 文档或 Skill 修改检查相对链接、Markdown、参数和实际命令，无需为文字改动启动漫画处理。同步更新受影响文档及官方 Skill，避免维护多份不同的工作流。
 - 交付时说明行为变化、完成的验证和实际限制。提交、推送、发布及部署按用户请求执行，不由本 Skill 自动触发。

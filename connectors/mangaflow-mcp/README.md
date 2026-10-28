@@ -19,8 +19,10 @@ tools are required; existing connectors forward the backend's current tool schem
 
 ## Install or upgrade
 
-Give the Agent the installation request from Settings → MCP, or ask it to read
-`http://localhost:8080/mangaflow/setup` (replace the address for remote hosting).
+Give the Agent the installation request from Settings → MCP. It uses the current
+website's protocol, host and port unless an explicit remote URL is configured.
+For example, a deployment at `http://localhost:18080` serves the installation guide
+at `http://localhost:18080/mangaflow/setup`.
 The official standalone installer downloads a checksum-verified package, runs
 `npm ci --ignore-scripts` in `~/.mangaflow/mcp-connector`, and probes real stdio.
 It returns absolute Node/index paths for the current client's MCP configuration.
@@ -29,7 +31,11 @@ Preserve other servers, reload/reconnect, and confirm `mcp_status` reports
 
 Manual setup: download the connector ZIP from Settings, extract it, run `npm ci`
 inside it, and configure `node <absolute-index.mjs>`. Requires Node.js >=20.11.
-Set `MANGAFLOW_MCP_URL` (default `http://localhost:8080/mangaflow`). Remote HTTPS
+Set `MANGAFLOW_MCP_URL` to the address shown in Settings → MCP. There is no fixed-port
+fallback: the connector fails clearly when this variable is missing. The installer
+accepts `--url` or `MANGAFLOW_MCP_URL`, with the command-line value taking precedence.
+After changing the deployment port, copy an updated configuration or rerun the installer
+and reconnect the client. Existing saved client configurations are not rewritten by the server. Remote HTTPS
 and legacy `/mcp` use `MANGAFLOW_MCP_TOKEN`. Keep the token out of prompts/config examples.
 
 ## Local files

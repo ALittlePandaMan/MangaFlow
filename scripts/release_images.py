@@ -118,6 +118,7 @@ def publish(version: str, digest_dir: Path, assets: Path) -> None:
     if not re.fullmatch(r"\d+\.\d+\.\d+", latest_version):
         raise ValueError("Latest release tag is not a supported stable version; inspect before promotion")
     is_latest = tuple(map(int, version.split("."))) >= tuple(map(int, latest_version.split(".")))
+    notes = ROOT / "docs" / "releases" / f"{version}.md"
     for image, digest in images.items():
         command("docker", "buildx", "imagetools", "create", "--prefer-index=false", "--tag", f"{REGISTRY}/{image}:{version}",
                 f"{REGISTRY}/{image}@{digest}")
@@ -125,13 +126,14 @@ def publish(version: str, digest_dir: Path, assets: Path) -> None:
             raise RuntimeError(f"Version tag did not retain the tested image: {image}")
     if existing_release(version) is None:
         command("gh", "release", "create", version, "--repo", REPO, "--verify-tag", "--draft",
-                "--title", version, "--generate-notes")
+                "--title", version, *(["--notes-file", str(notes)] if notes.is_file() else ["--generate-notes"]))
     command("gh", "release", "upload", version, str(archive), str(checksum), "--repo", REPO, "--clobber")
     if is_latest:
         for image, digest in images.items():
             command("docker", "buildx", "imagetools", "create", "--prefer-index=false", "--tag", f"{REGISTRY}/{image}:latest",
                     f"{REGISTRY}/{image}@{digest}")
-    command("gh", "release", "edit", version, "--repo", REPO, "--draft=false", f"--latest={str(is_latest).lower()}")
+    command("gh", "release", "edit", version, "--repo", REPO, "--draft=false",
+            *(["--notes-file", str(notes)] if notes.is_file() else []), f"--latest={str(is_latest).lower()}")
     print(f"Published {version}; stable latest updated: {is_latest}")
 
 

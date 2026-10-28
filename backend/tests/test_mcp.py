@@ -53,7 +53,7 @@ def test_discovery_and_credentials(client):
     assert client.post('/mcp', headers={'Host': 'localhost'}).status_code == 401
     assert client.post('/mcp', headers={**headers, 'Origin': 'https://evil.invalid'}).status_code == 403
     assert client.post('/mcp', headers={**headers, 'Host': 'evil.invalid'}).status_code == 403
-    preflight = client.options('/mcp', headers={'Host':'localhost', 'Origin':'http://localhost:8080',
+    preflight = client.options('/mcp', headers={'Host':'localhost:8080', 'Origin':'http://localhost:8080',
         'Access-Control-Request-Method':'POST','Access-Control-Request-Headers':'authorization,content-type'})
     assert preflight.status_code == 200
     assert preflight.headers['access-control-allow-origin'] == 'http://localhost:8080'

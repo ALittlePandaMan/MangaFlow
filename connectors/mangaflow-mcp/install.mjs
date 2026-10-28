@@ -12,7 +12,11 @@ const FILES = ['index.mjs', 'directory-import.mjs', 'package.json', 'package-loc
 const MAX_PACKAGE = 8 * 1024 * 1024
 
 export function setupUrl(value) {
+  if (!value?.trim()) throw new Error('Provide --url or MANGAFLOW_MCP_URL using the service address shown in MangaFlow Settings > MCP')
+  const authority = value.match(/^[^:]+:\/\/([^/?#]+)\/(?:mangaflow|mcp)\/?$/)?.[1]
+  if (!authority || /[\s\\\u0000-\u001f\u007f]/u.test(value) || /[@%]/.test(authority) || authority.endsWith(':')) throw new Error('Invalid MangaFlow service URL')
   const url = new URL(value)
+  if (url.port === '0') throw new Error('MangaFlow service port must be between 1 and 65535')
   if (url.username || url.password || url.search || url.hash || !['/mangaflow', '/mcp'].includes(url.pathname.replace(/\/$/, ''))) {
     throw new Error('MangaFlow URL must end in /mangaflow or /mcp without credentials, query or fragment')
   }
@@ -193,7 +197,7 @@ export async function install({url: value, directory = join(homedir(), '.mangafl
 export async function main(args = process.argv.slice(2)) {
   const [major, minor] = process.versions.node.split('.').map(Number)
   if (major < 20 || (major === 20 && minor < 11)) throw new Error('Node.js >=20.11 and npm are required')
-  const options = {url: process.env.MANGAFLOW_MCP_URL || 'http://localhost:8080/mangaflow'}
+  const options = {url: process.env.MANGAFLOW_MCP_URL}
   for (let index = 0; index < args.length; index += 2) {
     if (!['--url', '--directory'].includes(args[index]) || !args[index + 1]) throw new Error('Usage: node install.mjs [--url URL] [--directory ABSOLUTE_DIRECTORY]')
     options[args[index] === '--url' ? 'url' : 'directory'] = args[index + 1]

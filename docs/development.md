@@ -13,7 +13,13 @@
 ./scripts/dev.sh
 ```
 
-前端地址为 `http://localhost:5173`，FastAPI 文档为 `http://localhost:8000/docs`。Docker 开发可使用：
+前端默认地址为 `http://localhost:5173`，FastAPI 文档默认地址为 `http://localhost:8000/docs`。在根目录 `.env` 或进程环境中设置 `MANGAFLOW_DEV_PORT=15173`、`MANGAFLOW_API_PORT=18000`，启动后即可通过 `http://localhost:15173` 访问，API、图片、MCP 和 WebSocket 代理均连接 `18000`。启动脚本与 Vite 共用 dotenv 解析，进程环境优先，其余遵循 Vite 的 `.env`、`.env.local` 和对应模式文件优先级；只向启动脚本输出端口，不执行 `.env` 内容。
+
+端口须为 `1`–`65535`，前后端不能相同。端口占用时明确退出，不自动切换；任一开发服务退出会停止本次启动的另一服务。直接运行 `npm run dev --prefix frontend` 时也使用同一配置，后端需要另行启动到匹配的端口。Docker 的网页端口另用 `MANGAFLOW_WEB_PORT`（默认 `8080`），容器内部端口保持不变。
+
+开发启动器保留 Uvicorn 热重载，并监督实际服务子进程；模块导入或应用启动失败时，会退出并清理本次启动的前端。停止时最多等待 30 秒，再清理残留进程。首次模型准备不使用短时间健康检查作为失败判据。
+
+正常开发页面使用同源代理，不需随端口变化扩展 CORS。Docker 开发可使用：
 
 ```bash
 ./scripts/docker.sh up --build -d
