@@ -175,3 +175,135 @@ def test_release_lookup_auth_failure_is_not_treated_as_absent(modules, monkeypat
     monkeypatch.setattr(release, "command", command)
     with pytest.raises(RuntimeError, match="authentication"):
         release.existing_release("0.1.2")
+
+
+@pytest.fixture
+def recovery_run(modules, monkeypatch):
+    _, release = modules
+    sha = "c" * 40
+    run = {"event": "push", "path": ".github/workflows/release.yml", "head_branch": "0.1.2",
+           "head_sha": sha, "status": "completed"}
+    source = {"sha": sha}
+    jobs = {"total_count": 5, "jobs": [
+        {"name": name, "status": "completed", "conclusion": "success"}
+        for name in ("Validate release", "Release checks / Backend / Python 3.12", "Build backend", "Build frontend")
+    ] + [{"name": "Verify and publish", "status": "completed", "conclusion": "failure"}]}
+    calls = []
+
+    def command(*args):
+        calls.append(args)
+        return json.dumps(jobs if "/jobs?" in args[-1] else source if "/commits/" in args[-1] else run)
+
+    monkeypatch.setattr(release, "command", command)
+    return release, run, source, jobs, calls
+
+
+def test_recovery_accepts_original_checks_and_images_without_changing_tag(recovery_run, tmp_path, monkeypatch):
+    release, _, source, _, calls = recovery_run
+    output = tmp_path / "github-output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+    release.validate_recovery("0.1.2", "123")
+    assert output.read_text() == f"source_sha={source['sha']}\n"
+    assert all(call[:2] == ("gh", "api") for call in calls)
+
+
+@pytest.mark.parametrize("broken", ["tag", "sha", "workflow", "event", "running", "ci", "image", "missing", "pagination"])
+def test_recovery_rejects_unrelated_incomplete_or_unverified_builds(broken, recovery_run, tmp_path, monkeypatch):
+    release, run, source, jobs, _ = recovery_run
+    output = tmp_path / "github-output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+    if broken == "tag":
+        run["head_branch"] = "0.1.3"
+    elif broken == "sha":
+        source["sha"] = "d" * 40
+    elif broken == "workflow":
+        run["path"] = ".github/workflows/ci.yml"
+    elif broken == "event":
+        run["event"] = "pull_request"
+    elif broken == "running":
+        run["status"] = "in_progress"
+    elif broken == "ci":
+        jobs["jobs"][1]["conclusion"] = "failure"
+    elif broken == "image":
+        jobs["jobs"][2]["conclusion"] = "failure"
+    elif broken == "missing":
+        jobs["jobs"].pop(3)
+    else:
+        jobs["total_count"] = 101
+    with pytest.raises(ValueError):
+        release.validate_recovery("0.1.2", "123")
+    assert not output.exists()
+
+
+@pytest.mark.parametrize("version,run_id", [("../0.1.2", "123"), ("0.1.2", "../123")])
+def test_recovery_validates_parameters_before_accessing_github(version, run_id, recovery_run):
+    release, _, _, _, calls = recovery_run
+    with pytest.raises(ValueError):
+        release.validate_recovery(version, run_id)
+    assert not calls
+
+
+@pytest.mark.parametrize("failure", [None, "startup", "cleanup"])
+def test_smoke_handles_linux_bind_mount_ownership_and_always_tears_down(failure, public_tree, modules, tmp_path, monkeypatch):
+    packager, _ = modules
+    smoke = importlib.import_module("smoke_release")
+    if smoke.os.name != "posix":
+        pytest.skip("Linux bind-mount ownership regression")
+    archive = packager.package(public_tree, tmp_path / "assets")
+    calls = []
+    deployments = []
+
+    def command(args, **kwargs):
+        deployment = Path(args[args.index("--project-directory") + 1])
+        deployments.append(deployment)
+        action = args[args.index(str(deployment / "smoke.override.yml")) + 1:]
+        calls.append(action)
+        if action[0] == "up":
+            # The daemon must never create these host roots as root.
+            for folder in ("data", "models"):
+                assert (deployment / folder).is_dir()
+                assert (deployment / folder).stat().st_uid == smoke.os.getuid()
+            if failure == "startup":
+                raise subprocess.CalledProcessError(1, args)
+        if action[0] == "port":
+            return "127.0.0.1:18080\n" if action[1] == "frontend" else "127.0.0.1:18000\n"
+        if action[0] == "exec":
+            for folder in ("data", "models"):
+                assert (deployment / folder / "release-smoke.txt").read_text() == f"persistent-{folder}"
+        if action[0] == "run":
+            assert action == ["run", "--rm", "--no-deps", "--user", "0:0", "--entrypoint", "chown", "backend",
+                              "-R", "--no-dereference", f"{smoke.os.getuid()}:{smoke.os.getgid()}", "/data", "/models"]
+            if failure == "cleanup":
+                raise subprocess.CalledProcessError(1, args)
+        return ""
+
+    def request(url, body=None, headers=None):
+        if url.endswith("/health"):
+            return {"status": "ok", "version": "0.1.2"}, {}
+        if url.endswith("/mangaflow"):
+            return {"result": {"tools": list(range(20))}}, {"Mcp-Session-Id": "smoke-session"}
+        return {"id": "test-project"}, {}
+
+    class Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return b'<div id="root"></div>'
+
+    monkeypatch.setattr(smoke.subprocess, "check_output", command)
+    monkeypatch.setattr(smoke, "request", request)
+    monkeypatch.setattr(smoke, "urlopen", lambda *args, **kwargs: Response())
+    if failure:
+        with pytest.raises(subprocess.CalledProcessError):
+            smoke.smoke(archive, {"backend": "test-backend", "frontend": "test-frontend"}, anonymous=False)
+    else:
+        smoke.smoke(archive, {"backend": "test-backend", "frontend": "test-frontend"}, anonymous=False)
+    assert [call[0] for call in calls[-3:]] == ["stop", "run", "down"]
+    assert calls[-1] == ["down", "--volumes", "--remove-orphans"]
+    assert deployments and not deployments[-1].exists()

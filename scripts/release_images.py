@@ -78,6 +78,32 @@ def staged_images(digest_dir: Path) -> dict[str, str]:
     return images
 
 
+def validate_recovery(version: str, run_id: str) -> None:
+    """Accept only successful builds of this exact, unchanged release tag."""
+    if not re.fullmatch(r"(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)", version):
+        raise ValueError("Recovery requires a stable release version")
+    if not re.fullmatch(r"[1-9]\d*", run_id):
+        raise ValueError("Recovery requires a numeric source run ID")
+    run = json.loads(command("gh", "api", f"repos/{REPO}/actions/runs/{run_id}"))
+    source = json.loads(command("gh", "api", f"repos/{REPO}/commits/{version}"))
+    if (run["event"] != "push" or run["path"] != ".github/workflows/release.yml"
+            or run["head_branch"] != version or run["head_sha"] != source["sha"]
+            or run["status"] != "completed"):
+        raise ValueError("Source run must be a completed release build of the unchanged tag")
+    jobs = json.loads(command("gh", "api", f"repos/{REPO}/actions/runs/{run_id}/jobs?per_page=100"))
+    completed = {job["name"] for job in jobs["jobs"]
+                 if job["status"] == "completed" and job["conclusion"] == "success"}
+    prerequisites = [job for job in jobs["jobs"] if job["name"] != "Verify and publish"]
+    if (jobs["total_count"] > 100 or not {"Build backend", "Build frontend", "Validate release"} <= completed
+            or not any(job["name"].startswith("Release checks /") for job in prerequisites)
+            or any(job["status"] != "completed" or job["conclusion"] != "success" for job in prerequisites)):
+        raise ValueError("All original release checks and both image builds must have succeeded")
+    if output := os.environ.get("GITHUB_OUTPUT"):
+        with Path(output).open("a", encoding="utf-8") as target:
+            target.write(f"source_sha={source['sha']}\n")
+    print(f"Verified release {version} source run {run_id} at {source['sha']}")
+
+
 def publish(version: str, digest_dir: Path, assets: Path) -> None:
     release_version(ROOT, version)
     if prepare(version):
@@ -111,12 +137,17 @@ def publish(version: str, digest_dir: Path, assets: Path) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("prepare", "verify", "publish"))
+    parser.add_argument("action", choices=("prepare", "verify", "publish", "validate-recovery"))
     parser.add_argument("--version", required=True)
+    parser.add_argument("--source-run-id")
     parser.add_argument("--digest-dir", type=Path, default=ROOT / "dist/digests")
     parser.add_argument("--assets", type=Path, default=ROOT / "dist/release")
     args = parser.parse_args()
-    if args.action == "prepare":
+    if args.action == "validate-recovery":
+        if not args.source_run_id:
+            parser.error("--source-run-id is required for recovery")
+        validate_recovery(args.version, args.source_run_id)
+    elif args.action == "prepare":
         prepare(args.version)
     elif args.action == "verify":
         release_version(ROOT, args.version)

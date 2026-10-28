@@ -1,0 +1,90 @@
+name: Recover release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Existing release tag to finish publishing
+        required: true
+        default: '0.1.2'
+        type: string
+      source_run_id:
+        description: Original Release run with successful checks and image builds
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  packages: write
+  actions: read
+
+concurrency:
+  group: mangaflow-release-publish
+  cancel-in-progress: false
+
+jobs:
+  recover:
+    name: Verify existing images and finish release
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      RELEASE_VERSION: ${{ inputs.version }}
+      SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          path: recovery-tools
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - run: python -m pip install 'PyYAML>=6,<7'
+      - name: Validate original release checks, builds and tag
+        id: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python recovery-tools/scripts/release_images.py validate-recovery --version "$RELEASE_VERSION" --source-run-id "$SOURCE_RUN_ID"
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ steps.source.outputs.source_sha }}
+          path: release-source
+      - name: Check whether release is already published
+        id: release
+        working-directory: release-source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/release_images.py prepare --version "$RELEASE_VERSION"
+      - name: Reserve space for CUDA runtime
+        if: steps.release.outputs.published != 'true'
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+      - uses: actions/download-artifact@v4
+        if: steps.release.outputs.published != 'true'
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.source_run_id }}
+          pattern: release-digest-*
+          path: release-source/dist/digests
+          merge-multiple: true
+      - name: Package the original tagged deployment
+        if: steps.release.outputs.published != 'true'
+        working-directory: release-source
+        run: python scripts/package_release.py --version "$RELEASE_VERSION"
+      - name: Verify anonymous pulls, startup, MCP and persistence
+        if: steps.release.outputs.published != 'true'
+        working-directory: release-source
+        run: |
+          python scripts/release_images.py verify --version "$RELEASE_VERSION"
+          python ../recovery-tools/scripts/smoke_release.py "dist/release/mangaflow-docker-$RELEASE_VERSION.zip" --digest-dir dist/digests
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        if: steps.release.outputs.published != 'true'
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        if: steps.release.outputs.published != 'true'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Promote the verified original images and publish assets
+        if: steps.release.outputs.published != 'true'
+        working-directory: release-source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/release_images.py publish --version "$RELEASE_VERSION"

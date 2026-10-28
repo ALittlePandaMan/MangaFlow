@@ -47,6 +47,10 @@ def smoke(archive: Path, images: dict[str, str], *, anonymous: bool = True) -> N
         (deployment / ".env").write_text(
             f"MANGAFLOW_POSTGRES_PASSWORD={secrets.token_hex(24)}\nMANGAFLOW_AUTO_PROVISION_MODELS=false\n", encoding="utf-8")
         (deployment / "config.yaml").write_bytes((deployment / "config.example.yaml").read_bytes())
+        # Docker creates absent bind-mount directories as root on Linux.
+        # Keep the mount roots writable by this test's host user.
+        for folder in ("data", "models"):
+            (deployment / folder).mkdir()
         override = deployment / "smoke.override.yml"
         override.write_text(
             "services:\n  backend:\n"
@@ -117,7 +121,17 @@ def smoke(archive: Path, images: dict[str, str], *, anonymous: bool = True) -> N
         finally:
             # This random, private test project is created above; its volumes
             # are disposable and can never name the normal mangaflow project.
-            run("down", "--volumes", "--remove-orphans")
+            try:
+                if os.name == "posix":
+                    # The backend also creates private, root-owned children.
+                    # Stop writers, then restore ownership through this isolated
+                    # Compose service's exact mounts before TemporaryDirectory
+                    # cleans them. Do not relax secret permissions or follow links.
+                    run("stop")
+                    run("run", "--rm", "--no-deps", "--user", "0:0", "--entrypoint", "chown", "backend",
+                        "-R", "--no-dereference", f"{os.getuid()}:{os.getgid()}", "/data", "/models")
+            finally:
+                run("down", "--volumes", "--remove-orphans")
 
 
 def main() -> None:
