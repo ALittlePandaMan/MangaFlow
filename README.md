@@ -4,7 +4,7 @@
 
 <p align="center">
   <a href="https://github.com/ALittlePandaMan/MangaFlow/actions/workflows/ci.yml"><img src="https://github.com/ALittlePandaMan/MangaFlow/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="VERSION"><img src="https://img.shields.io/badge/version-v0.1.3-blue" alt="版本 v0.1.3"></a>
+  <a href="VERSION"><img src="https://img.shields.io/badge/version-v0.1.4-blue" alt="版本 v0.1.4"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="MIT License"></a>
 </p>
 
@@ -39,27 +39,39 @@ PSD 普通区域提供可编辑文字层；透视、混合字体等特殊排版�
 
 ### 1. 准备运行环境
 
-当前默认 Docker 配置使用 **NVIDIA GPU / CUDA 12.6**，需要兼容的显卡驱动，以及支持 Compose `gpus` 配置的 Docker Compose 版本。
+Docker 支持 Linux amd64，使用 Docker Compose **2.30+**。默认 GPU 模式采用 **NVIDIA GPU / CUDA 12.6**，需要兼容的显卡驱动和容器 GPU 访问。
 
 - **Windows**：使用 WSL2 和 Docker Desktop，启用 WSL 集成；在 WSL 的 Bash 终端执行下方命令。
-- **Linux**：安装 Docker、Docker Compose 和 NVIDIA Container Toolkit。
-- **CPU / 其他环境**：按[本地模型依赖说明](docs/development.md#本地模型依赖)安装匹配硬件的依赖。当前默认 Compose 包含 `gpus: all`，需要 GPU 运行环境。
+- **Linux**：安装 Docker 和 Docker Compose；GPU 模式另需 NVIDIA Container Toolkit。
+- **CPU 部署**：0.1.4 新增独立 CPU 镜像，使用已完成 Release 提供的版本标签；0.1.3 没有 CPU 标签。无可用 NVIDIA GPU 时不推荐批量部署；用户接受较长等待后，在部署目录的私有 `.env` 设置 `MANGAFLOW_RUNTIME=cpu` 再拉取和启动，无需安装 NVIDIA 依赖。操作和性能边界见 [Agent 部署指南](docs/agent-deployment.md)。
+
+让 Agent 部署时，可直接提供以下提示词；官方 [部署 Skill](.agents/skills/mangaflow-deploy/SKILL.md)也使用同一流程：
+
+```text
+请帮我部署 MangaFlow，先读取官方部署指南：
+https://github.com/ALittlePandaMan/MangaFlow/blob/main/docs/agent-deployment.md
+检查实际部署电脑或服务器的 CPU、内存、磁盘、NVIDIA 显卡和 Docker GPU 访问，
+再选择部署方式。
+有显卡但驱动或容器透传失败时，先说明具体缺项。确认无可用 NVIDIA GPU 时，
+先提醒不推荐本地批量部署、CPU 检测和修复会很慢；我明确接受后再部署 CPU 版。
+不要把硬件未知当作没有 GPU，不覆盖已有配置和项目数据，不使用未发布镜像标签。
+```
 
 ### 2. 拉取镜像并启动
 
 **预构建镜像已发布，并通过匿名拉取及部署验证。** 从 [Releases](https://github.com/ALittlePandaMan/MangaFlow/releases) 下载对应版本的 `mangaflow-docker-版本号.zip`，解压后进入部署目录。该安装包只包含公开配置与启动脚本，无需克隆源码或本地构建。
 
-以下以 `0.1.3` 部署包为例；可下载版本以 Releases 列表为准。在 Bash 中执行：
+以下以 `0.1.4` 部署包为例；可下载版本以 Releases 列表为准。GPU 模式在 Bash 中执行：
 
 ```bash
-cd mangaflow-docker-0.1.3
+cd mangaflow-docker-0.1.4
 bash scripts/docker.sh pull
 bash scripts/docker.sh up -d
 ```
 
 默认打开 [http://localhost:8080](http://localhost:8080)。需要修改端口时，在私有 `.env` 中设置 `MANGAFLOW_WEB_PORT`（网页，默认 `8080`）和 `MANGAFLOW_API_PORT`（后端对外端口，默认 `8000`），再执行 `up -d`。例如网页端口为 `18080` 时，打开 `http://localhost:18080`，MCP 也使用该入口。首次模型准备较慢时可查看状态与日志：
 
-端口环境变量及 MCP 地址自动适配从 **0.1.3** 起提供。由 0.1.2 升级时，先备份，再将新部署包的 Compose 和启动脚本合并到原目录，并更新 `MANGAFLOW_IMAGE_TAG=0.1.3`；保留原 `.env`、`config.yaml`、数据目录和数据库卷。只修改旧部署包的环境变量或只更新镜像不能完成此次升级，具体步骤见[更新与备份](docs/docker-release.md#更新与备份)。
+端口环境变量及 MCP 地址自动适配从 **0.1.3** 起提供。升级到 0.1.4 时，先备份，再将新部署包的 `docker-compose.yml`、`docker-compose.cpu.yml` 和 `scripts/` 合并到原目录，并更新 `MANGAFLOW_IMAGE_TAG=0.1.4`；保留原 `.env`、`config.yaml`、数据目录和数据库卷。具体步骤见[更新与备份](docs/docker-release.md#更新与备份)。
 
 ```bash
 bash scripts/docker.sh ps

@@ -55,6 +55,8 @@ def test_bundle_contains_only_public_files_and_can_be_rebuilt_identically(public
         for service in ("backend", "frontend"):
             assert compose["services"][service]["image"].endswith("${MANGAFLOW_IMAGE_TAG:-0.1.2}")
         assert b"MANGAFLOW_IMAGE_TAG=0.1.2" in source.read(prefix + ".env.example")
+        assert b"(docs/agent-deployment.md)" in source.read(prefix + "README.md")
+        assert prefix + "docs/agent-deployment.md" in source.namelist()
         for variable in ("MANGAFLOW_WEB_PORT", "MANGAFLOW_API_PORT", "MANGAFLOW_DEV_PORT"):
             assert variable.encode() in source.read(prefix + ".env.example")
         assert "${MANGAFLOW_WEB_PORT:-8080}" in compose["services"]["frontend"]["ports"][0]
@@ -131,8 +133,8 @@ def staged(tmp_path, modules, public_tree, monkeypatch):
     digests = tmp_path / "digests"
     digests.mkdir()
     values = {f"mangaflow-{service}": "sha256:" + character * 64
-              for service, character in (("backend", "a"), ("frontend", "b"))}
-    for service in ("backend", "frontend"):
+              for service, character in (("backend", "a"), ("frontend", "b"), ("backend-cpu", "c"))}
+    for service in ("backend", "frontend", "backend-cpu"):
         (digests / f"{service}.digest").write_text(values[f"mangaflow-{service}"])
     assets = tmp_path / "assets"
     packager.package(public_tree, assets)
@@ -148,7 +150,7 @@ def test_failure_never_updates_latest_or_publishes_release(failure, staged, monk
     def anonymous(image, reference):
         if failure == "private" and image == "mangaflow-frontend":
             raise RuntimeError("Set BOTH GHCR packages to public")
-        return values[image]
+        return reference if reference.startswith("sha256:") else values[image + ("-cpu" if reference.endswith("-cpu") else "")]
 
     def command(*args):
         calls.append(args)
@@ -160,7 +162,7 @@ def test_failure_never_updates_latest_or_publishes_release(failure, staged, monk
     monkeypatch.setattr(release, "command", command)
     if failure == "missing_digest":
         (digests / "frontend.digest").unlink()
-    with pytest.raises((RuntimeError, FileNotFoundError)):
+    with pytest.raises((RuntimeError, ValueError)):
         release.publish("0.1.2", digests, assets)
     assert not any(":latest" in arg for call in calls for arg in call)
     assert not any(call[:3] == ("gh", "release", "edit") for call in calls)
@@ -177,7 +179,7 @@ def test_both_images_are_verified_before_promotion_and_older_release_cannot_down
 
     def anonymous(image, reference):
         events.append(("anonymous", image, reference))
-        return values[image]
+        return reference if reference.startswith("sha256:") else values[image + ("-cpu" if reference.endswith("-cpu") else "")]
 
     def command(*args):
         events.append(args)
@@ -189,7 +191,7 @@ def test_both_images_are_verified_before_promotion_and_older_release_cannot_down
     assert events[0][:2] == ("anonymous", "mangaflow-backend")
     assert events[1][:2] == ("anonymous", "mangaflow-frontend")
     latest_calls = [event for event in events if any(":latest" in arg for arg in event)]
-    assert len(latest_calls) == (2 if promote else 0)
+    assert len(latest_calls) == (3 if promote else 0)
     assert events[-1][-1] == f"--latest={str(promote).lower()}"
 
 
@@ -207,7 +209,8 @@ def test_release_includes_versioned_upgrade_notes(staged, monkeypatch):
     notes.write_text("Upgrade the deployment files and images together.\n")
     calls = []
     monkeypatch.setattr(release, "existing_release", lambda tag: None)
-    monkeypatch.setattr(release, "anonymous_manifest", lambda image, reference: values[image])
+    monkeypatch.setattr(release, "anonymous_manifest", lambda image, reference: reference if reference.startswith("sha256:")
+                        else values[image + ("-cpu" if reference.endswith("-cpu") else "")])
     monkeypatch.setattr(release, "command", lambda *args: calls.append(args) or "")
     release.publish("0.1.2", digests, assets)
     for call in calls:
@@ -241,6 +244,8 @@ def recovery_run(modules, monkeypatch):
 
     def command(*args):
         calls.append(args)
+        if "/git/trees/" in args[-1]:
+            return json.dumps({"tree": []})
         return json.dumps(jobs if "/jobs?" in args[-1] else source if "/commits/" in args[-1] else run)
 
     monkeypatch.setattr(release, "command", command)
@@ -254,6 +259,42 @@ def test_recovery_accepts_original_checks_and_images_without_changing_tag(recove
     release.validate_recovery("0.1.2", "123")
     assert output.read_text() == f"source_sha={source['sha']}\n"
     assert all(call[:2] == ("gh", "api") for call in calls)
+
+
+def test_cpu_recovery_requires_original_cpu_build(recovery_run, monkeypatch):
+    release, _, _, jobs, _ = recovery_run
+    original = release.command
+    monkeypatch.setattr(release, "command", lambda *args: json.dumps({"tree": [
+        {"path": "docker-compose.release.cpu.yml"}]}) if "/git/trees/" in args[-1] else original(*args))
+    with pytest.raises(ValueError, match="required image builds"):
+        release.validate_recovery("0.1.2", "123")
+    jobs["jobs"].append({"name": "Build backend-cpu", "status": "completed", "conclusion": "success"})
+    jobs["total_count"] += 1
+    release.validate_recovery("0.1.2", "123")
+
+
+def test_new_release_cannot_omit_cpu_digest(staged, monkeypatch):
+    release, digests, _, _ = staged
+    (digests / "backend-cpu.digest").unlink()
+    monkeypatch.setattr(release, "anonymous_manifest", lambda image, reference: reference)
+    with pytest.raises(ValueError, match="backend-cpu.digest"):
+        release.staged_images(digests)
+
+
+def test_legacy_release_keeps_two_image_contract(staged, monkeypatch):
+    release, digests, assets, _ = staged
+    (release.ROOT / "docker-compose.release.cpu.yml").unlink()
+    (digests / "backend-cpu.digest").unlink()
+    monkeypatch.setattr(release, "anonymous_manifest", lambda image, reference: reference)
+    assert set(release.staged_images(digests)) == {"backend", "frontend"}
+    calls = []
+    monkeypatch.setattr(release, "existing_release", lambda tag: None)
+    monkeypatch.setattr(release, "command", lambda *args: calls.append(args) or "")
+    values = release.staged_images(digests)
+    monkeypatch.setattr(release, "anonymous_manifest", lambda image, reference: reference if reference.startswith("sha256:")
+                        else values[image.removeprefix("mangaflow-")])
+    release.publish("0.1.2", digests, assets)
+    assert not any("latest-cpu" in argument for call in calls for argument in call)
 
 
 @pytest.mark.parametrize("broken", ["tag", "sha", "workflow", "event", "running", "ci", "image", "missing", "pagination"])
@@ -293,7 +334,8 @@ def test_recovery_validates_parameters_before_accessing_github(version, run_id, 
 
 
 @pytest.mark.parametrize("failure", [None, "startup", "cleanup"])
-def test_smoke_handles_linux_bind_mount_ownership_and_always_tears_down(failure, public_tree, modules, tmp_path, monkeypatch):
+@pytest.mark.parametrize("runtime", ["gpu", "cpu"])
+def test_smoke_handles_linux_bind_mount_ownership_and_always_tears_down(failure, runtime, public_tree, modules, tmp_path, monkeypatch):
     packager, _ = modules
     smoke = importlib.import_module("smoke_release")
     if smoke.os.name != "posix":
@@ -307,8 +349,16 @@ def test_smoke_handles_linux_bind_mount_ownership_and_always_tears_down(failure,
         deployments.append(deployment)
         action = args[args.index(str(deployment / "smoke.override.yml")) + 1:]
         calls.append(action)
+        if action[0] == "config":
+            assert runtime == "cpu"
+            return json.dumps({"services": {"backend": {"environment": {
+                "CUDA_VISIBLE_DEVICES": "", "MANGAFLOW_SEGMENTATION_BACKEND": "opencv", "MANGAFLOW_RUNTIME": "cpu"}}}})
         if action[0] == "up":
             assert "ports:" not in (deployment / "smoke.override.yml").read_text()
+            if runtime == "cpu":
+                assert "gpus:" not in (deployment / "smoke.override.yml").read_text()
+                assert str(deployment / "docker-compose.cpu.yml") in args
+                assert "MANGAFLOW_RUNTIME=cpu" in (deployment / ".env").read_text()
             # The daemon must never create these host roots as root.
             for folder in ("data", "models"):
                 assert (deployment / folder).is_dir()
@@ -320,6 +370,9 @@ def test_smoke_handles_linux_bind_mount_ownership_and_always_tears_down(failure,
             variable = "MANGAFLOW_WEB_PORT" if action[1] == "frontend" else "MANGAFLOW_API_PORT"
             return f"127.0.0.1:{environment[variable]}\n"
         if action[0] == "exec":
+            if action[-1] == "/usr/local/bin/mangaflow-verify-cpu":
+                assert runtime == "cpu"
+                return ""
             for folder in ("data", "models"):
                 assert (deployment / folder / "release-smoke.txt").read_text() == f"persistent-{folder}"
         if action[0] == "run":
@@ -358,9 +411,9 @@ def test_smoke_handles_linux_bind_mount_ownership_and_always_tears_down(failure,
     monkeypatch.setattr(smoke, "urlopen", lambda *args, **kwargs: Response())
     if failure:
         with pytest.raises(subprocess.CalledProcessError):
-            smoke.smoke(archive, {"backend": "test-backend", "frontend": "test-frontend"}, anonymous=False)
+            smoke.smoke(archive, {"backend": "test-backend", "frontend": "test-frontend"}, anonymous=False, runtime=runtime)
     else:
-        smoke.smoke(archive, {"backend": "test-backend", "frontend": "test-frontend"}, anonymous=False)
+        smoke.smoke(archive, {"backend": "test-backend", "frontend": "test-frontend"}, anonymous=False, runtime=runtime)
     assert [call[0] for call in calls[-3:]] == ["stop", "run", "down"]
     assert calls[-1] == ["down", "--volumes", "--remove-orphans"]
     assert deployments and not deployments[-1].exists()

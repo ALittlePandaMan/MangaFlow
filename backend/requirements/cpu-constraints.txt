@@ -1,0 +1,3 @@
+# Keep downstream model dependencies on the already installed CPU wheels.
+torch==2.6.0+cpu
+torchvision==0.21.0+cpu

@@ -49,7 +49,19 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        service: [backend, frontend]
+        include:
+          - service: backend
+            image: backend
+            dockerfile: backend.Dockerfile
+            suffix: ''
+          - service: backend-cpu
+            image: backend
+            dockerfile: backend.cpu.Dockerfile
+            suffix: '-cpu'
+          - service: frontend
+            image: frontend
+            dockerfile: frontend.Dockerfile
+            suffix: ''
     steps:
       - uses: actions/checkout@v5
       - name: Reserve space for CUDA build
@@ -66,10 +78,10 @@ jobs:
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
-          file: docker/${{ matrix.service }}.Dockerfile
+          file: docker/${{ matrix.dockerfile }}
           platforms: linux/amd64
           push: true
-          tags: ghcr.io/alittlepandaman/mangaflow-${{ matrix.service }}:build-${{ github.run_id }}-${{ github.run_attempt }}
+          tags: ghcr.io/alittlepandaman/mangaflow-${{ matrix.image }}:build-${{ github.run_id }}-${{ github.run_attempt }}${{ matrix.suffix }}
           labels: |
             org.opencontainers.image.source=https://github.com/ALittlePandaMan/MangaFlow
             org.opencontainers.image.version=${{ github.ref_name }}
@@ -95,7 +107,7 @@ jobs:
     name: Verify and publish
     needs: images
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     permissions:
       contents: write
       packages: write
@@ -128,7 +140,7 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ github.token }}
-      - name: Promote both images and publish release assets
+      - name: Promote all verified images and publish release assets
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_VERSION: ${{ github.ref_name }}

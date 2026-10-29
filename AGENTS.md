@@ -3,6 +3,7 @@
 MangaFlow 是保留原图、支持人工精修的漫画翻译工作台。按当前任务读取对应 Skill：
 
 - **翻译、复核或修正漫画**：读取 [mangaflow-translate](.agents/skills/mangaflow-translate/SKILL.md)，通过已连接的 MCP 执行业务操作。
+- **部署、升级或切换 CPU／GPU 模式**：读取 [mangaflow-deploy](.agents/skills/mangaflow-deploy/SKILL.md)，先检查实际部署主机；无可用 NVIDIA GPU 时说明不推荐批量部署，用户接受 CPU 性能后再继续。
 - **修改、排查或维护项目代码**：读取 [mangaflow-development](.agents/skills/mangaflow-development/SKILL.md)，再按需查阅[架构说明](docs/architecture.md)和[开发指南](docs/development.md)。
 
 加载方式和调用示例见 [Agent 资源说明](.agents/README.md)。用户当前指令决定任务范围；翻译漫画不默认包含修改代码、安装依赖或部署服务。

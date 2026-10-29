@@ -122,3 +122,4 @@ jobs:
           unzip -q /tmp/mangaflow-release/mangaflow-docker-*.zip -d /tmp/mangaflow-deploy
           cd /tmp/mangaflow-deploy/mangaflow-docker-*
           bash scripts/docker.sh config --quiet
+          MANGAFLOW_RUNTIME=cpu bash scripts/docker.sh config --quiet

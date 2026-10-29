@@ -12,7 +12,7 @@ from threading import RLock, Thread
 from app.core.config import get_settings
 from app.services.base import OCRProvider, OCRResult, ProviderCapabilities, ProviderError
 from app.services.execution import serialized_model_call
-from app.services.infra.device import is_accelerator_error
+from app.services.infra.device import effective_device_request, is_accelerator_error
 from app.services.ocr.local_catalog import (
     LOCAL_OCR_DEFAULT_MAX_TOKENS,
     LOCAL_OCR_MODELS,
@@ -26,8 +26,8 @@ PROTOCOL = "mangaflow-local-ocr-v1"
 
 class LocalOCRWorker:
     def __init__(self, provider: str, device: str):
-        self.provider, self.device = provider, device
-        self.effective_device = device
+        self.provider, self.device = provider, effective_device_request(device)
+        self.effective_device = self.device
         self.fallback_reason = None
         self.process = None
         self.messages = queue.Queue()
@@ -140,7 +140,7 @@ class IsolatedOCRProvider(OCRProvider):
     @serialized_model_call
     def load(self):
         directory, auxiliary = resolve_assets(self.capabilities.name, download=get_settings().auto_provision_models)
-        requested = str(self.config.get("device", "auto"))
+        requested = effective_device_request(self.config.get("device", "auto"))
         self._fallback_reason = self.worker.fallback_reason
         try:
             self.worker.start(directory, auxiliary)
@@ -197,7 +197,7 @@ class IsolatedOCRProvider(OCRProvider):
             # device can change after another configuration falls back to CPU.
             self._device = self.worker.actual_device
             self._fallback_reason = self.worker.fallback_reason or (
-                "accelerator_unavailable" if self._device == "cpu" and self.config.get("device", "auto") != "cpu" else None)
+                "accelerator_unavailable" if self._device == "cpu" and effective_device_request(self.config.get("device", "auto")) != "cpu" else None)
             spec = LOCAL_OCR_MODELS[self.capabilities.name]
             return OCRResult(reply["text"], .8 if reply["text"] else 0., orientation,
                 {"model": spec.repository, "revision": spec.revision, "device": self._device,

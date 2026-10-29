@@ -24,7 +24,9 @@ def request(url: str, body: dict | None = None, headers: dict | None = None):
         return json.loads(content), dict(response.headers)
 
 
-def smoke(archive: Path, images: dict[str, str], *, anonymous: bool = True) -> None:
+def smoke(archive: Path, images: dict[str, str], *, anonymous: bool = True, runtime: str = "gpu") -> None:
+    if runtime not in {"gpu", "cpu"}:
+        raise ValueError("Runtime must be gpu or cpu")
     with tempfile.TemporaryDirectory(prefix="mangaflow-release-smoke-") as temporary:
         root = Path(temporary)
         with ZipFile(archive) as source:
@@ -56,7 +58,7 @@ def smoke(archive: Path, images: dict[str, str], *, anonymous: bool = True) -> N
                 reservation.close()
         (deployment / ".env").write_text(
             f"MANGAFLOW_POSTGRES_PASSWORD={secrets.token_hex(24)}\nMANGAFLOW_AUTO_PROVISION_MODELS=false\n"
-            f"MANGAFLOW_WEB_PORT={web_port}\nMANGAFLOW_API_PORT={api_port}\n", encoding="utf-8")
+            f"MANGAFLOW_WEB_PORT={web_port}\nMANGAFLOW_API_PORT={api_port}\nMANGAFLOW_RUNTIME={runtime}\n", encoding="utf-8")
         (deployment / "config.yaml").write_bytes((deployment / "config.example.yaml").read_bytes())
         # Docker creates absent bind-mount directories as root on Linux.
         # Keep the mount roots writable by this test's host user.
@@ -65,11 +67,15 @@ def smoke(archive: Path, images: dict[str, str], *, anonymous: bool = True) -> N
         override = deployment / "smoke.override.yml"
         override.write_text(
             "services:\n  backend:\n"
-            f"    image: {images['backend']}\n    pull_policy: never\n    gpus: !reset []\n"
+            f"    image: {images['backend']}\n    pull_policy: never\n"
+            + ("    gpus: !reset []\n" if runtime == "gpu" else "") +
             "  frontend:\n"
             f"    image: {images['frontend']}\n    pull_policy: never\n", encoding="utf-8")
         compose = [*docker_prefix, "compose", "--project-name", project, "--project-directory", str(deployment),
-                   "-f", str(deployment / "docker-compose.yml"), "-f", str(override)]
+                   "-f", str(deployment / "docker-compose.yml")]
+        if runtime == "cpu":
+            compose += ["-f", str(deployment / "docker-compose.cpu.yml")]
+        compose += ["-f", str(override)]
 
         def run(*args):
             return subprocess.check_output([*compose, *args], text=True, encoding="utf-8",
@@ -79,7 +85,15 @@ def smoke(archive: Path, images: dict[str, str], *, anonymous: bool = True) -> N
             return int(run("port", "frontend", "80").rsplit(":", 1)[1])
 
         try:
+            if runtime == "cpu":
+                backend = json.loads(run("config", "--format", "json"))["services"]["backend"]
+                assert not backend.get("gpus")
+                assert backend["environment"]["MANGAFLOW_RUNTIME"] == "cpu"
+                assert backend["environment"]["CUDA_VISIBLE_DEVICES"] == ""
+                assert backend["environment"]["MANGAFLOW_SEGMENTATION_BACKEND"] == "opencv"
             run("up", "-d", "--wait", "--wait-timeout", "180")
+            if runtime == "cpu":
+                run("exec", "-T", "backend", "python", "/usr/local/bin/mangaflow-verify-cpu")
             base = f"http://127.0.0.1:{port()}"
             assert port() == web_port
             with urlopen(base, timeout=20) as response:
@@ -128,7 +142,7 @@ def smoke(archive: Path, images: dict[str, str], *, anonymous: bool = True) -> N
                     f"from pathlib import Path; assert Path('/{folder}/release-smoke.txt').read_text() == 'persistent-{folder}'")
             assert (deployment / "config.yaml").read_bytes() == config_before
             assert (deployment / ".env").read_bytes() == secret_before
-            print(json.dumps({"project": project, "status": "passed", "tools": 20,
+            print(json.dumps({"project": project, "runtime": runtime, "status": "passed", "tools": 20,
                               "persistence": True, "anonymous_pull": anonymous}))
         except Exception:
             # Avoid dumping environment/configuration or provider secrets.
@@ -155,19 +169,27 @@ def main() -> None:
     parser.add_argument("archive", type=Path)
     parser.add_argument("--digest-dir", type=Path)
     parser.add_argument("--local-images", action="store_true", help="Verify locally built images without claiming anonymous pull")
+    parser.add_argument("--runtime", choices=("all", "gpu", "cpu"), default="all")
     args = parser.parse_args()
-    images = {}
-    for service in ("backend", "frontend"):
-        if args.local_images:
-            images[service] = f"mangaflow-{service}:latest"
-        else:
-            if not args.digest_dir:
-                parser.error("--digest-dir is required for registry verification")
-            digest = (args.digest_dir / f"{service}.digest").read_text().strip()
-            if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
-                parser.error("Invalid staged image digest")
-            images[service] = f"ghcr.io/alittlepandaman/mangaflow-{service}@{digest}"
-    smoke(args.archive, images, anonymous=not args.local_images)
+    with ZipFile(args.archive) as archive:
+        cpu_available = any(name.endswith("/docker-compose.cpu.yml") for name in archive.namelist())
+    runtimes = (["gpu", "cpu"] if cpu_available else ["gpu"]) if args.runtime == "all" else [args.runtime]
+    if "cpu" in runtimes and not cpu_available:
+        parser.error("This older deployment bundle has no CPU variant")
+    for runtime in runtimes:
+        images = {}
+        for service in ("backend", "frontend"):
+            variant = "backend-cpu" if service == "backend" and runtime == "cpu" else service
+            if args.local_images:
+                images[service] = "mangaflow-backend:cpu-dev" if variant == "backend-cpu" else f"mangaflow-{service}:latest"
+            else:
+                if not args.digest_dir:
+                    parser.error("--digest-dir is required for registry verification")
+                digest = (args.digest_dir / f"{variant}.digest").read_text().strip()
+                if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+                    parser.error("Invalid staged image digest")
+                images[service] = f"ghcr.io/alittlepandaman/mangaflow-{service}@{digest}"
+        smoke(args.archive, images, anonymous=not args.local_images, runtime=runtime)
 
 
 if __name__ == "__main__":

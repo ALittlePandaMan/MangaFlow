@@ -7,6 +7,8 @@ description: 开发、排查或维护 MangaFlow 的后端、编辑器、模型�
 
 先读取仓库 [AGENTS.md](../../../AGENTS.md)，检查工作区已有改动，再按任务阅读[架构说明](../../../docs/architecture.md)和[开发指南](../../../docs/development.md)。按现有模块边界定位修改，不默认重构无关代码。运行环境、依赖和命令以当前仓库文件为准。
 
+用户实际要求部署服务或切换 CPU／GPU 时，读取 [mangaflow-deploy](../mangaflow-deploy/SKILL.md)，先检查目标硬件；维护部署代码本身不触发部署。
+
 ## 业务与数据约束
 
 - HTTP／MCP 入口复用业务服务和应用命令，处理复用现有流水线、队列和文件任务。涉及页面或区域写入，保留版本校验、撤销历史、操作来源及异步结果发布保护。
@@ -36,7 +38,7 @@ description: 开发、排查或维护 MangaFlow 的后端、编辑器、模型�
 | 前端交互 | `npm run lint --prefix frontend`；`npm test --prefix frontend -- <相关测试文件>` |
 | UI 文案与类型 | `npm run i18n:check --prefix frontend`；`npm run visual:typecheck --prefix frontend`；`npm run build --prefix frontend` |
 | 本地 MCP 连接程序 | `npm test --prefix connectors/mangaflow-mcp`，同时检查对应后端协议测试 |
-| 启动、代理与部署包 | `bash scripts/test-backend.sh -q backend/tests/test_development_server.py backend/tests/test_bootstrap_config.py backend/tests/test_release_deployment.py backend/tests/test_mcp_deployment_origin.py`；`npm test --prefix frontend -- devServer.test.ts` |
+| 启动、代理与部署包 | `bash scripts/test-backend.sh -q backend/tests/test_development_server.py backend/tests/test_bootstrap_config.py backend/tests/test_release_deployment.py backend/tests/test_cpu_deployment.py backend/tests/test_mcp_deployment_origin.py`；`npm test --prefix frontend -- devServer.test.ts` |
 | 需要全量检查 | `bash scripts/check.sh`；连接程序单独运行上面的测试命令 |
 
 - 后端测试使用 `scripts/test-backend.sh` 自动创建、清理独立 PostgreSQL 测试容器；显式提供测试数据库时，仅使用专用 `mangaflow_test_` 数据库，禁止指向真实项目数据库。测试数据、文件和模型替代物保持隔离。

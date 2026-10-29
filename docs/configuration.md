@@ -53,6 +53,8 @@ Compose 将 `config.yaml` 和 `.env` 以文件形式挂载到后端容器，网�
 
 宿主机网页端口通过 `MANGAFLOW_WEB_PORT` 配置，默认 `8080`；后端对外端口通过 `MANGAFLOW_API_PORT` 配置，默认 `8000`。源码开发也使用 `MANGAFLOW_API_PORT`，前端另用 `MANGAFLOW_DEV_PORT`（默认 `5173`）。修改私有 `.env` 后重新启动对应服务。Docker 内部端口、数据库连接和健康检查不跟随宿主机端口变化。
 
+Docker 运行模式通过 `MANGAFLOW_RUNTIME=gpu|cpu` 明确选择，默认 `gpu`，不自动降级。CPU 模式使用独立镜像和 Compose 覆盖配置，关闭 GPU 请求与 CUDA；就绪检查和实际推理均按 CPU 执行，保留模型设备偏好、项目及云端服务配置。CPU 预构建镜像从 0.1.4 起提供，以对应 Release 完成为准；0.1.3 没有 CPU 标签。模式切换需重新执行 `up -d`。硬件检查与操作流程见 [Agent 部署指南](agent-deployment.md)。
+
 网页、媒体、下载和 MCP 使用同一部署入口。MCP 设置页自动生成当前访问地址；远程 HTTPS 地址明确配置后优先使用，自动推导地址不写入数据库。旧 Agent 客户端需要更新保存的配置并重连。`MANGAFLOW_CORS_ORIGINS` 可显式覆盖，正常同源页面无需额外配置跨域来源。
 
 远程 Agent 接入可以使用受保护的 MCP 与文件传输接口，按 [MCP 接入说明](mcp.md#接入与升级)设置 HTTPS 和密钥。网页与 MCP 共用后端、数据库、模型和任务队列；进度按任务来源区分，不代表存在两套处理服务。

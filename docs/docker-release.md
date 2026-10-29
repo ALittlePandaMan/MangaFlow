@@ -9,7 +9,7 @@ bash scripts/docker.sh pull
 bash scripts/docker.sh up -d
 ```
 
-无需 Git、Python、Node.js 或编译工具。部署包使用 Linux amd64 镜像；Windows 通过 WSL2 与 Docker Desktop 运行，Linux 安装 Docker Compose 和 NVIDIA Container Toolkit。默认需要 NVIDIA CUDA GPU，并支持 Compose `gpus` 配置。模型权重另行下载到 `models/`，镜像内只有应用和模型运行依赖。
+无需 Git、Python、Node.js 或编译工具。部署包使用 Linux amd64 镜像，需要 Docker Compose 2.30+；Windows 通过 WSL2 与 Docker Desktop 运行。默认 GPU 模式需要兼容的 NVIDIA 驱动及容器 GPU 访问，Linux 使用 NVIDIA Container Toolkit；明确选择 CPU 模式无需 NVIDIA 依赖。模型权重另行下载到 `models/`，镜像内只有应用和模型运行依赖。
 
 正式镜像地址：
 
@@ -19,6 +19,12 @@ bash scripts/docker.sh up -d
 | 前端 | `ghcr.io/alittlepandaman/mangaflow-frontend` |
 
 每个部署包默认固定同一个正式版本。`latest` 供希望跟随最新稳定版的用户使用；默认安装保持版本固定，避免拉取时混入其他版本。
+
+Agent 先按[部署指南](agent-deployment.md)检查实际目标主机；无可用 NVIDIA GPU 时不推荐本地批量部署，用户接受 CPU 性能后才继续。CPU 预构建镜像从 **0.1.4** 起提供，以对应 Release 完成为准；0.1.3 没有 `0.1.3-cpu` 标签。
+
+私有 `.env` 的 `MANGAFLOW_RUNTIME` 只接受 `gpu`（默认）或 `cpu`，进程环境优先，不自动降级。CPU 模式加载 `docker-compose.cpu.yml` 覆盖文件，后端使用同一 GHCR 包的 `<版本>-cpu`，前端仍用 `<版本>`；稳定 CPU 别名为 `latest-cpu`。CPU 镜像不含 CUDA 运行依赖，但保留本地模型功能与独立运行环境，权重另行下载。源码构建目录使用对应 CPU Dockerfile，正式部署包仅引用镜像。
+
+模式切换保留原目录、服务名、Compose 项目名、数据库卷、端口和私有配置；选择模式后再执行 `pull`／`up -d`，不更改已有 OCR、翻译或字体配置。当前仅支持 Linux amd64，不自动模拟 ARM64。
 
 默认模型为 RF-DETR、**PaddleOCR-VL 1.6**、LaMa 和 Pillow。网页“安装推荐配置”负责准备本地组件，翻译服务另行设置；MangaOCR 和其他 OCR 继续可选。升级只补齐缺失配置，不覆盖用户的模型选择或人工修改。
 
@@ -37,7 +43,9 @@ bash scripts/docker.sh up -d
 
 **0.1.2 → 0.1.3** 需要同步更新部署文件和镜像：备份后，在原目录合并 0.1.3 部署包的 `docker-compose.yml`、`scripts/`，将私有 `.env` 的 `MANGAFLOW_IMAGE_TAG` 改为 `0.1.3`，按需加入端口变量，然后执行 `pull` 和 `up -d`。保留原 `.env`、`config.yaml`、数据和卷。新增端口变量从 0.1.3 开始生效；旧 Compose 仍写死端口。更新后从设置页复制实际地址，更新旧 MCP 客户端或重新运行安装器并重连。
 
-`docker-compose.yml` 保留源码构建；`docker-compose.release.yml` 只引用镜像。打包脚本将正式 Compose 写入部署包的 `docker-compose.yml`，因此相同启动脚本无需识别运行模式。已有源码部署可继续使用原流程。
+**升级到 0.1.4**：备份后，在原目录合并新部署包的 `docker-compose.yml`、`docker-compose.cpu.yml` 和 `scripts/`，设置 `MANGAFLOW_IMAGE_TAG=0.1.4`，按实际需要设置 `MANGAFLOW_RUNTIME=gpu|cpu`，再执行 `pull`、`up -d`。CPU 模式会覆盖运行时设备选择而保留原模型设备偏好；切回 GPU 后重建服务即可恢复。只执行 `restart` 不会更新镜像或容器环境。
+
+`docker-compose.yml` 保留源码构建；`docker-compose.release.yml` 只引用镜像。打包脚本将正式 Compose 写入部署包的 `docker-compose.yml`，同一启动脚本可用于源码目录和部署包，并根据显式的 `MANGAFLOW_RUNTIME` 加载 CPU 覆盖文件。源码目录切换模式时使用 `up --build -d`，CPU 构建使用独立本地镜像标签，避免切回 GPU 时复用 CPU 镜像。
 
 ## 维护者发布
 
@@ -45,15 +53,15 @@ bash scripts/docker.sh up -d
 
 1. 提交并推送待发布代码。标签创建前确认当前版本的变更已经准备好。
 2. 推送对应正式版本标签，Release 工作流重新执行同一提交的现有 CI。
-3. 前后端分别构建为暂存镜像并记录 digest；任一失败均不会更新版本标签、`latest` 或正式 Release。
-4. 工作流使用没有 Docker 登录配置的环境拉取两个暂存镜像，以独立 Compose 项目、临时目录和随机端口检查网页、健康接口、20 个 MCP 工具、数据库与配置的重建持久化。此检查不下载或推理真实模型，也不验证实际翻译质量。
-5. 验证成功后按 digest 推广两个版本标签，上传白名单部署 ZIP 和 SHA-256 校验文件。两个镜像均准备好后再更新 `latest` 并公开 Release；发布较旧版本不会将 `latest` 降级。
+3. GPU 后端、CPU 后端和共享前端分别构建为暂存镜像并记录 digest；任一失败均不会公开正式 Release 或更新稳定入口。CPU 构建检查三个 Python 环境均使用 CPU PyTorch，禁止重新引入 NVIDIA、GPU Paddle、GPU ONNX Runtime 等依赖。
+4. 工作流匿名拉取全部暂存镜像，分别通过独立 CPU／GPU 配置，以临时 Compose 项目、数据目录和非默认端口检查网页、健康接口、20 个 MCP 工具与重建持久化。普通 Linux runner 的 GPU 镜像只验证无模型启动；CPU 验证不通过额外覆盖移除 GPU 请求，并执行 CPU 依赖检查。此发布 smoke 不下载或推理真实模型，不代替模型质量验证。
+5. 全部验证成功后，按 digest 推广 `<版本>`、`<版本>-cpu` 与前端版本标签，上传公开部署 ZIP 和 SHA-256 校验文件，再更新适用的 `latest`、`latest-cpu` 并公开 Release；发布较旧版本不会降级稳定入口。
 
 GHCR 首次创建的包默认私有。第一次构建完成后，维护者需在两个包的 Package settings 中将 Visibility 改为 Public。否则匿名拉取检查明确失败，稳定标签和正式 Release 不会发布。改为公开后重跑工作流即可，不需要向用户提供 GitHub 凭据。[GitHub Container Registry 说明](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry#pushing-container-images)
 
 已完整发布的相同版本再次运行会直接跳过，保留原镜像与附件。中断后存在的草稿可以重新完成；失败构建的暂存标签不作为用户安装入口。不要移动已发布版本的 Git 标签。正式发布成功后，同步 README 与本文的部署状态。
 
-若原版本的 CI 与两份镜像构建均成功，但后续验证脚本失败，可在修复验证脚本后运行 Actions 的 **Recover release**，填写原版本和原 Release 的运行 ID。恢复流程核对原运行、Git 标签和提交一致，复用其 digest 附件及已构建镜像；部署包仍从原标签生成，使用修正后的隔离验证脚本重新检查，通过后再发布。无需移动标签或重新构建模型镜像；原运行的 digest 附件必须尚未过期。
+若原版本的 CI 与所需镜像构建均成功，但后续验证脚本失败，可在修复验证脚本后运行 Actions 的 **Recover release**，填写原版本和原 Release 的运行 ID。恢复流程核对原运行、Git 标签和提交一致，按原提交是否包含 CPU 配置要求两份或三份构建成功，复用其 digest 附件及镜像；部署包仍从原标签生成，使用修正后的隔离验证脚本重新检查，通过后再发布。旧版两镜像发布仍兼容；新版不能遗漏 CPU 产物。无需移动标签或重新构建模型镜像；原运行的 digest 附件必须尚未过期。
 
 Linux 隔离验证预先创建宿主机挂载目录，并在停止测试容器后恢复临时数据的所有权，解决容器生成 root 所有文件导致的持久化写入及清理失败。此处理仅作用于随机测试 Compose 项目，不更改实际部署的数据权限。
 

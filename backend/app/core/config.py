@@ -37,6 +37,7 @@ class Settings(BaseSettings):
     max_import_page_pixels: int = Field(default=50_000_000, ge=1)
     ocr_review_threshold: float = 0.65
     task_concurrency: int = Field(default=4, ge=1, le=8)
+    runtime: Literal["gpu", "cpu"] = "gpu"
     execution_mode: Literal["auto", "fixed", "serial"] = "auto"
     cpu_workers: int = Field(default=4, ge=1, le=8)
     memory_reserve_mb: int = Field(default=1024, ge=256, le=16384)

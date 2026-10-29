@@ -16,6 +16,9 @@ config.yaml
 !/.agents/skills/mangaflow-development/
 /.agents/skills/mangaflow-development/*
 !/.agents/skills/mangaflow-development/SKILL.md
+!/.agents/skills/mangaflow-deploy/
+/.agents/skills/mangaflow-deploy/*
+!/.agents/skills/mangaflow-deploy/SKILL.md
 
 # Python environments and caches
 .venv/

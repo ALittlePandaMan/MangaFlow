@@ -1,4 +1,4 @@
-"""Release orchestration. Build jobs stage both images before stable promotion."""
+"""Release orchestration. Stage every required image before stable promotion."""
 from __future__ import annotations
 
 import argparse
@@ -11,7 +11,7 @@ from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-from package_release import REGISTRY, ROOT, release_version
+from package_release import REGISTRY, ROOT, image_variants, release_version
 
 REPO = "ALittlePandaMan/MangaFlow"
 ACCEPT = ", ".join(("application/vnd.oci.image.index.v1+json",
@@ -67,14 +67,16 @@ def prepare(version: str) -> bool:
 
 def staged_images(digest_dir: Path) -> dict[str, str]:
     images = {}
-    for service in ("backend", "frontend"):
-        digest = (digest_dir / f"{service}.digest").read_text(encoding="utf-8").strip()
+    for service, (image, _suffix) in image_variants(ROOT).items():
+        path = digest_dir / f"{service}.digest"
+        if not path.is_file():
+            raise ValueError(f"Required staged image artifact is missing: {service}.digest")
+        digest = path.read_text(encoding="utf-8").strip()
         if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
             raise ValueError(f"Invalid {service} image digest")
-        image = f"mangaflow-{service}"
         if anonymous_manifest(image, digest) != digest:
             raise ValueError(f"Published digest mismatch: {service}")
-        images[image] = digest
+        images[service] = digest
     return images
 
 
@@ -93,11 +95,15 @@ def validate_recovery(version: str, run_id: str) -> None:
     jobs = json.loads(command("gh", "api", f"repos/{REPO}/actions/runs/{run_id}/jobs?per_page=100"))
     completed = {job["name"] for job in jobs["jobs"]
                  if job["status"] == "completed" and job["conclusion"] == "success"}
+    tree = json.loads(command("gh", "api", f"repos/{REPO}/git/trees/{source['sha']}"))
+    required = {"Build backend", "Build frontend", "Validate release"}
+    if any(item["path"] == "docker-compose.release.cpu.yml" for item in tree["tree"]):
+        required.add("Build backend-cpu")
     prerequisites = [job for job in jobs["jobs"] if job["name"] != "Verify and publish"]
-    if (jobs["total_count"] > 100 or not {"Build backend", "Build frontend", "Validate release"} <= completed
+    if (jobs["total_count"] > 100 or not required <= completed
             or not any(job["name"].startswith("Release checks /") for job in prerequisites)
             or any(job["status"] != "completed" or job["conclusion"] != "success" for job in prerequisites)):
-        raise ValueError("All original release checks and both image builds must have succeeded")
+        raise ValueError("All original release checks and required image builds must have succeeded")
     if output := os.environ.get("GITHUB_OUTPUT"):
         with Path(output).open("a", encoding="utf-8") as target:
             target.write(f"source_sha={source['sha']}\n")
@@ -119,18 +125,22 @@ def publish(version: str, digest_dir: Path, assets: Path) -> None:
         raise ValueError("Latest release tag is not a supported stable version; inspect before promotion")
     is_latest = tuple(map(int, version.split("."))) >= tuple(map(int, latest_version.split(".")))
     notes = ROOT / "docs" / "releases" / f"{version}.md"
-    for image, digest in images.items():
-        command("docker", "buildx", "imagetools", "create", "--prefer-index=false", "--tag", f"{REGISTRY}/{image}:{version}",
+    variants = image_variants(ROOT)
+    for service, digest in images.items():
+        image, suffix = variants[service]
+        tag = version + suffix
+        command("docker", "buildx", "imagetools", "create", "--prefer-index=false", "--tag", f"{REGISTRY}/{image}:{tag}",
                 f"{REGISTRY}/{image}@{digest}")
-        if anonymous_manifest(image, version) != digest:
+        if anonymous_manifest(image, tag) != digest:
             raise RuntimeError(f"Version tag did not retain the tested image: {image}")
     if existing_release(version) is None:
         command("gh", "release", "create", version, "--repo", REPO, "--verify-tag", "--draft",
                 "--title", version, *(["--notes-file", str(notes)] if notes.is_file() else ["--generate-notes"]))
     command("gh", "release", "upload", version, str(archive), str(checksum), "--repo", REPO, "--clobber")
     if is_latest:
-        for image, digest in images.items():
-            command("docker", "buildx", "imagetools", "create", "--prefer-index=false", "--tag", f"{REGISTRY}/{image}:latest",
+        for service, digest in images.items():
+            image, suffix = variants[service]
+            command("docker", "buildx", "imagetools", "create", "--prefer-index=false", "--tag", f"{REGISTRY}/{image}:latest{suffix}",
                     f"{REGISTRY}/{image}@{digest}")
     command("gh", "release", "edit", version, "--repo", REPO, "--draft=false",
             *(["--notes-file", str(notes)] if notes.is_file() else []), f"--latest={str(is_latest).lower()}")
@@ -154,7 +164,7 @@ def main() -> None:
     elif args.action == "verify":
         release_version(ROOT, args.version)
         staged_images(args.digest_dir)
-        print("Both staged images are anonymously accessible.")
+        print("All required staged images are anonymously accessible.")
     else:
         publish(args.version, args.digest_dir, args.assets)
 

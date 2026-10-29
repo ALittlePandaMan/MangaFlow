@@ -15,14 +15,24 @@ REPOSITORY = "https://github.com/ALittlePandaMan/MangaFlow"
 REGISTRY = "ghcr.io/alittlepandaman"
 PUBLIC_FILES = {
     "docker-compose.yml": "docker-compose.release.yml",
+    "docker-compose.cpu.yml": "docker-compose.release.cpu.yml",
     ".env.example": ".env.example",
     "config.example.yaml": "config.example.yaml",
     "scripts/docker.sh": "scripts/docker.sh",
     "scripts/prepare-config.sh": "scripts/prepare-config.sh",
     "README.md": "docker/README.deploy.md",
+    "docs/agent-deployment.md": "docs/agent-deployment.md",
     "VERSION": "VERSION",
     "LICENSE": "LICENSE",
 }
+
+
+def image_variants(root: Path) -> dict[str, tuple[str, str]]:
+    """The source tree determines whether this release includes a CPU build."""
+    variants = {"backend": ("mangaflow-backend", ""), "frontend": ("mangaflow-frontend", "")}
+    if (root / "docker-compose.release.cpu.yml").is_file():
+        variants["backend-cpu"] = ("mangaflow-backend", "-cpu")
+    return variants
 
 
 def release_version(root: Path, requested: str | None = None) -> str:
@@ -44,15 +54,21 @@ def public_files(root: Path, version: str) -> dict[str, bytes]:
         if path.is_symlink() or not path.is_file():
             raise ValueError(f"Missing or linked public deployment file: {source}")
         text = path.read_text(encoding="utf-8").replace("\r\n", "\n")
-        if name == "docker-compose.yml":
+        if name in {"docker-compose.yml", "docker-compose.cpu.yml"}:
             text = re.sub(r"\$\{MANGAFLOW_IMAGE_TAG:-[^}]+\}", "${MANGAFLOW_IMAGE_TAG:-" + version + "}", text)
-            compose = yaml.safe_load(text.replace("${MANGAFLOW_IMAGE_TAG:-" + version + "}", version))
+            compose = yaml.safe_load(text.replace("${MANGAFLOW_IMAGE_TAG:-" + version + "}", version).replace("!reset []", "[]"))
             services = compose["services"]
             if any("build" in item for item in services.values()):
                 raise ValueError("Release Compose must not contain build instructions")
-            for service in ("backend", "frontend"):
-                if services[service]["image"] != f"{REGISTRY}/mangaflow-{service}:{version}":
+            for service in (("backend", "frontend") if name == "docker-compose.yml" else ("backend",)):
+                suffix = "-cpu" if name == "docker-compose.cpu.yml" else ""
+                if services[service]["image"] != f"{REGISTRY}/mangaflow-{service}:{version}{suffix}":
                     raise ValueError("Release image names and versions must match")
+            if name == "docker-compose.cpu.yml" and (services["backend"].get("gpus") != [] or
+                    services["backend"]["environment"].get("MANGAFLOW_RUNTIME") != "cpu" or
+                    services["backend"]["environment"].get("CUDA_VISIBLE_DEVICES") != "" or
+                    services["backend"]["environment"].get("MANGAFLOW_SEGMENTATION_BACKEND") != "opencv"):
+                raise ValueError("CPU deployment must disable GPU requests and CUDA inference")
         if name == ".env.example":
             # The generated Compose pins its defaults; this override is the
             # explicit upgrade control and is never copied over an existing .env.
@@ -60,7 +76,7 @@ def public_files(root: Path, version: str) -> dict[str, bytes]:
             if re.search(r"^MANGAFLOW_POSTGRES_PASSWORD=.+", text, re.MULTILINE):
                 raise ValueError("The public template must not contain a database password")
         if name == "README.md":
-            text = text.replace("{{VERSION}}", version)
+            text = text.replace("{{VERSION}}", version).replace("(../docs/agent-deployment.md)", "(docs/agent-deployment.md)")
         files[name] = text.encode("utf-8")
     ocr = yaml.safe_load(files["config.example.yaml"])["stages"]["ocr"]
     if ocr["provider"] != "paddleocr-vl-1.6" or "model" in ocr.get("config", {}):

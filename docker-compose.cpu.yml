@@ -1,0 +1,12 @@
+# Source build override; scripts/docker.sh selects this only for explicit CPU mode.
+services:
+  backend:
+    image: mangaflow-backend:cpu-local
+    build:
+      dockerfile: docker/backend.cpu.Dockerfile
+    gpus: !reset []
+    environment:
+      MANGAFLOW_RUNTIME: cpu
+      CUDA_VISIBLE_DEVICES: ""
+      NVIDIA_VISIBLE_DEVICES: void
+      MANGAFLOW_SEGMENTATION_BACKEND: opencv

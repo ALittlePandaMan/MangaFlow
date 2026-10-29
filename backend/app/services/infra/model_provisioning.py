@@ -11,7 +11,7 @@ from app.core.database import SessionLocal, initialize_database
 from app.core.secrets import get_secret_store
 from app.models import ModelConfig
 from app.services.base import ProviderError
-from app.services.infra.device import paddle_cuda_available, torch_cuda_available
+from app.services.infra.device import effective_device_request, paddle_cuda_available, torch_cuda_available
 from app.services.ocr.generic import GENERIC_OCR_DEFAULTS, GenericCloudOCRProvider
 from app.services.ocr.local_catalog import LOCAL_OCR_DEFAULT_MAX_TOKENS
 from app.services.ocr.prompts import DEFAULT_OCR_PROMPT
@@ -312,7 +312,7 @@ def setup_status_report(db: Session, *, validate_models: bool = False) -> dict[s
                 GenericCloudOCRProvider(config).ensure_loaded()
             except ProviderError as exc:
                 status, message = "error", str(exc)
-        elif str(item.config.get("device", "cpu")).lower().startswith(("cuda", "gpu")):
+        elif effective_device_request(item.config.get("device", "cpu")).startswith(("cuda", "gpu")):
             if kind == "ocr" and item.provider == "paddleocr" and not paddle_cuda_available():
                 status, message = "error", "Paddle CUDA 当前不可用，请改用 CPU 或修复 GPU 环境"
             elif (kind == "inpainting" or (kind == "ocr" and item.provider != "paddleocr") or (kind == "detection" and item.provider == "rfdetr")) and not torch_cuda_available():

@@ -18,7 +18,7 @@ from typing import Any
 from app.core.config import get_settings
 from app.services.base import ProviderError
 from app.services.detection.layout_protocol import decode_predictions
-from app.services.infra.device import is_accelerator_error
+from app.services.infra.device import effective_device_request, is_accelerator_error
 
 MODEL_REVISION = "aed55fdb8ca953c6bec33cf6ed6dd52a9b72bfa2"
 MODEL_REPOSITORY = "mayocream/koharu-layout-rfdetr-seg-2xl-1152"
@@ -40,7 +40,7 @@ def classifier_python(options: dict[str, Any]) -> Path:
 class LayoutTextClassifier:
     def __init__(self, config: dict[str, Any]) -> None:
         self.options = dict(config)
-        self.device = str(self.options.get("device", config.get("device", "auto")))
+        self.device = effective_device_request(self.options.get("device", "auto"))
         self._effective_device = self.device
         self._actual_device = None
         self._fallback_reason = None

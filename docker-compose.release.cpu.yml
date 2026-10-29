@@ -1,0 +1,10 @@
+# Prebuilt CPU override; CPU tags start with the first release containing this file.
+services:
+  backend:
+    image: ghcr.io/alittlepandaman/mangaflow-backend:${MANGAFLOW_IMAGE_TAG:-0.1.4}-cpu
+    gpus: !reset []
+    environment:
+      MANGAFLOW_RUNTIME: cpu
+      CUDA_VISIBLE_DEVICES: ""
+      NVIDIA_VISIBLE_DEVICES: void
+      MANGAFLOW_SEGMENTATION_BACKEND: opencv

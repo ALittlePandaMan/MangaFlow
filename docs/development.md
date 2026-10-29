@@ -28,6 +28,8 @@
 
 上述命令从源码构建。用户免构建安装与维护者的正式镜像发布流程见 [Docker 部署与发布](docker-release.md)。公开配置模板默认使用 PaddleOCR-VL 1.6，已有 MangaOCR 等配置继续保留。
 
+Docker 源码 CPU 构建：在私有 `.env` 设置 `MANGAFLOW_RUNTIME=cpu` 后执行同一 `scripts/docker.sh up --build -d`。启动器选择 CPU Dockerfile；GPU 默认路径不变。实际部署先按 [Agent 部署指南](agent-deployment.md)检查目标硬件，无 NVIDIA 时用户明确接受性能后再继续。CPU 预构建镜像从 0.1.4 起提供，以对应 Release 完成为准；0.1.3 没有 CPU 标签。模型、部署及镜像体积的验证范围见 [CPU 验证记录](cpu-validation.md)。
+
 ## 本地模型依赖
 
 `bootstrap.sh` 安装后端开发依赖和前端依赖。运行本地检测、OCR 或 LaMa 还需准备相应模型环境；Docker 镜像已包含这些运行依赖，权重另行下载。
@@ -36,9 +38,9 @@ CPU 开发环境可在项目根目录执行：
 
 ```bash
 source .venv/bin/activate
-python -m pip install torch==2.6.0 torchvision==0.21.0 --index-url https://download.pytorch.org/whl/cpu
-python -m pip install --extra-index-url https://www.paddlepaddle.org.cn/packages/stable/cpu/ -r backend/requirements/models.txt
-python -m pip install simple-lama-inpainting==0.1.2
+python -m pip install torch==2.6.0+cpu torchvision==0.21.0+cpu --index-url https://download.pytorch.org/whl/cpu
+python -m pip install -c backend/requirements/cpu-constraints.txt -r backend/requirements/base.txt -r backend/requirements/models.txt
+python -m pip install --no-deps simple-lama-inpainting==0.1.2
 ```
 
 PyTorch 与 torchvision 的版本配对见 [PyTorch 官方安装说明](https://pytorch.org/get-started/previous-versions/#v260)。GPU 开发需选择匹配驱动的 CUDA 构建；默认 Docker 使用 PyTorch 2.6.0／CUDA 12.6。Linux 本机渲染建议安装 Noto Sans CJK 字体，或上传包含目标字符的字体。

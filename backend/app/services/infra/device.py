@@ -7,6 +7,8 @@ import os
 import platform
 from typing import Any
 
+from app.core.config import get_settings
+
 logger = logging.getLogger(__name__)
 
 
@@ -133,9 +135,17 @@ def paddle_cuda_available() -> bool:
         return False
 
 
+def effective_device_request(requested: object = "auto") -> str:
+    """Apply the deployment policy without rewriting a saved model preference."""
+    normalized = str(requested or "auto").strip().lower()
+    if get_settings().runtime == "cpu":
+        return "cpu"
+    return normalized
+
+
 def resolve_torch_device(requested: object = "auto") -> str:
     """Resolve an automatic/CUDA request to a usable PyTorch device."""
-    normalized = str(requested or "auto").strip().lower()
+    normalized = effective_device_request(requested)
     wants_cuda = normalized in {"auto", "gpu", "cuda"} or normalized.startswith("cuda:")
     if not wants_cuda:
         return normalized
@@ -148,7 +158,7 @@ def resolve_torch_device(requested: object = "auto") -> str:
 
 def resolve_paddle_device(requested: object = "auto") -> str:
     """Resolve common device names to Paddle's cpu/gpu:N notation."""
-    normalized = str(requested or "auto").strip().lower()
+    normalized = effective_device_request(requested)
     wants_cuda = (
         normalized in {"auto", "gpu", "cuda"}
         or normalized.startswith("gpu:")
